@@ -5,15 +5,25 @@ polygon caves, collect every apple, touch the flower to finish. Two sprung
 wheels, and a rider whose **head is a death sphere** — touch it to terrain and
 the run is over.
 
-**This repo is at milestone 1.** Milestone 1 is one bike, one deliberately ugly
-hand-written test level, and a live tuning panel — ridden until it feels good.
-Nothing downstream starts until that lands, because if the bike does not feel
-good, nothing downstream rescues it.
+**Milestone 1 is done and signed off.** It was one bike, one deliberately ugly
+test level and a live tuning panel, ridden until it felt good — because if the
+bike does not feel good, nothing downstream rescues it. The user drove every
+preset in the dropdown, picked a character out of the spread, dialled the one
+number that was wrong, and called it *"close to original"*, which is the highest
+praise available here. That bike is now frozen and everything else is built
+against it.
+
+Since then: ten hand-authored levels forming a teaching curriculum, replays as
+exportable files, remote tuning from a terminal, level navigation, and a
+deployment.
 
 ```
-bin/dev     # then open http://127.0.0.1:5173/ and drive
-            # ...or http://127.0.0.1:5173/?level=bowl for the arc level
+bin/dev                    # dev server, hot-reloads levels as you author them
+bin/deploy                 # build, restart, health-check the live service
 ```
+
+**Live at https://velo.cush.rocks** — 127.0.0.1:9422, systemd `velo.service`,
+behind the cush-auth device gate.
 
 ## What this is not
 
