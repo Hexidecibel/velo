@@ -55,6 +55,9 @@ fi
 ensure_deps() {
   if [[ ! -d "$ROOT/node_modules" ]]; then
     echo "==> node_modules missing, installing"
-    (cd "$ROOT" && "$NPM" install)
+    # --include=dev explicitly: a shell (or a systemd unit) with NODE_ENV=production
+    # makes npm silently omit devDependencies and then report "up to date" with
+    # an empty node_modules, which costs twenty minutes the first time you see it.
+    (cd "$ROOT" && "$NPM" install --include=dev --no-audit --no-fund)
   fi
 }
