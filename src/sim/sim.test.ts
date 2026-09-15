@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { parseLevel } from './level.ts';
 import { createSim } from './sim.ts';
 import { DEFAULT_SPEC, cloneSpec } from './spec.ts';
+import type { BikeSpec } from './spec.ts';
 import { TEST_LEVEL } from './testlevel.ts';
 import { IN_FLIP, IN_LEAN_L, IN_THROTTLE, TICKS_PER_FRAME } from './consts.ts';
 
@@ -186,5 +187,129 @@ describe('the death sphere and the objects', () => {
     expect(sim.state.applesLeft).toBe(1);
     for (let f = 0; f < 128 * 4 && !sim.state.finished && !sim.state.dead; f++) sim.advance(IN_THROTTLE);
     expect(sim.state.applesLeft).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rotation authority
+// ---------------------------------------------------------------------------
+//
+// The bike used to rotate by gravity weight transfer alone, which is strongest
+// upright and useless inverted — exactly backwards from what a player needs,
+// and it showed up in a playtest as "spin just keeps going, need to be able to
+// correct easily". `rider.attitudeTorque` is the fix, and these are the three
+// properties it has to have. They test the SHAPE of the control, not today's
+// numbers, so tuning does not churn them.
+
+/** A 400 m shaft, so the bike can rotate in free fall without touching anything. */
+const AIR = parseLevel({
+  format: 'velo-level',
+  start: { x: 0, y: 0 },
+  flower: { x: 0, y: -395 },
+  polygons: [{ kind: 'cave', points: [[-40, -400], [40, -400], [40, 20], [-40, 20]] }],
+});
+
+/** The shipping bike, pinned here so that dragging a slider cannot turn these red. */
+function tuned(weightTransfer = 0.6): BikeSpec {
+  const s = cloneSpec(DEFAULT_SPEC);
+  s.chassis.inertia = 12;
+  s.damping.angular = 3.0;
+  s.rider.attitudeTorque = 340;
+  s.rider.weightTransfer = weightTransfer;
+  return s;
+}
+
+/**
+ * Spin up in free fall from a given attitude, holding one lean key.
+ *
+ * The whole pose is rotated, not just the rotor: the wheels are re-seated on
+ * their anchors and the arm on its rest direction. Rotating the chassis alone
+ * would leave the wheels hanging in the wrong place, and the suspension would
+ * then supply a torque of its own — which is exactly the confound this test is
+ * trying to exclude.
+ */
+function spin(spec: BikeSpec, ox: number, oy: number, mask: number, frames: number, w0 = 0): number {
+  const sim = createSim(AIR, spec);
+  const s = sim.state;
+  s.ox = ox;
+  s.oy = oy;
+  s.w = w0;
+  const rx = (x: number, y: number): number => ox * x - oy * y;
+  const ry = (x: number, y: number): number => oy * x + ox * y;
+  for (let i = 0; i < 2; i++) {
+    const a = spec.wheel.anchors[i];
+    s.wx[i] = s.px + rx(a.x, a.y);
+    s.wy[i] = s.py + ry(a.x, a.y);
+    s.wvx[i] = s.vx;
+    s.wvy[i] = s.vy;
+  }
+  s.ax = rx(spec.rider.rest.x, spec.rider.rest.y);
+  s.ay = ry(spec.rider.rest.x, spec.rider.rest.y);
+  s.aw = w0;
+  for (let f = 0; f < frames; f++) sim.advance(mask);
+  return sim.state.w;
+}
+
+describe('rotation authority', () => {
+  it('is attitude-independent: the same lean does the same thing inverted', () => {
+    // With gravity weight transfer switched off, what remains is the attitude
+    // torque, and it must not care which way up the bike is. Equal to ten
+    // decimal places rather than bit-exactly: the same physics evaluated in a
+    // rotated frame rounds differently in the last ulp or two, which is a float
+    // artefact and not an attitude dependence. A real one would show up in the
+    // second decimal, because the term this replaced peaked at 192 N m.
+    const s = tuned(0);
+    const upright = spin(s, 1, 0, IN_LEAN_L, 64);
+    const inverted = spin(s, -1, 0, IN_LEAN_L, 64);
+    const nose = spin(s, 0, 1, IN_LEAN_L, 64);
+    expect(upright).toBeGreaterThan(1);
+    expect(inverted).toBeCloseTo(upright, 10);
+    expect(nose).toBeCloseTo(upright, 10);
+  });
+
+  it('arrests a runaway spin from any attitude, in well under half a second', () => {
+    // The playtest complaint, as an assertion. -8 rad/s is faster than the bike
+    // can reach on its own.
+    const s = tuned();
+    for (const [ox, oy] of [[1, 0], [0, 1], [-1, 0], [0, -1]]) {
+      const after = spin(s, ox, oy, IN_LEAN_L, 64, -8); // 64 frames = 0.5 s
+      expect(after, `from attitude (${ox}, ${oy})`).toBeGreaterThan(0);
+    }
+  });
+
+  it('converges to a terminal rate instead of accelerating forever', () => {
+    // A constant torque against linear angular damping gives
+    // w(t) = w_inf * (1 - e^(-c t)). That is what makes a tap a nudge and a
+    // hold a clean flip, with no ramp or charge-up mechanic anywhere.
+    //
+    // Measured with weight transfer OFF, because that term is a function of the
+    // arm's world-horizontal component and therefore adds a once-per-revolution
+    // wobble to the rate — real, wanted, and not the thing being asserted here.
+    const s = tuned(0);
+    const at1 = spin(s, 1, 0, IN_LEAN_L, 128);
+    const at3 = spin(s, 1, 0, IN_LEAN_L, 384);
+    const at4 = spin(s, 1, 0, IN_LEAN_L, 512);
+    expect(at3).toBeGreaterThan(at1);
+    expect(Math.abs(at4 - at3)).toBeLessThan(0.05);
+    // Fast enough to flip satisfyingly, slow enough to read and reverse.
+    expect(at4).toBeGreaterThan(3.5);
+    expect(at4).toBeLessThan(7);
+  });
+
+  it('still lets the rider weight lift the front under power', () => {
+    // Weight transfer is demoted to flavour, not deleted: leaning back on the
+    // throttle must still produce a wheelie, because it is the single most
+    // important thing a rider does.
+    const withTransfer = createSim(level, tuned(0.4));
+    const without = createSim(level, tuned(0));
+    let a = 0;
+    let b = 0;
+    for (let f = 0; f < 128; f++) {
+      withTransfer.advance(IN_THROTTLE);
+      without.advance(IN_THROTTLE);
+      a = Math.max(a, withTransfer.state.oy);
+      b = Math.max(b, without.state.oy);
+    }
+    expect(a).toBeGreaterThan(b);
   });
 });

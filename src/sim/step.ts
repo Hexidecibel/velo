@@ -151,9 +151,10 @@ export function stepTick(w: World, s: SimState, mask: number): void {
 
   // --- 1. rider servo ---------------------------------------------------
   // The volt. A PD servo drives the arm toward a chassis-local target and puts
-  // the equal-and-opposite torque on the chassis, so volt authority is finite
-  // and closed-form: dw ~= (m_r * L^2 * d_theta) / I_total. There is a return
-  // stroke, so volting costs something and mashing is not free.
+  // the equal-and-opposite torque on the chassis. It still MOVES THE ARM, and
+  // therefore the head, which is what makes volting into a low ceiling lethal —
+  // a real skill worth keeping. What it is no longer is the main source of
+  // rotation: see `attitudeTorque` below and in spec.ts.
   const leanL = (mask & IN_LEAN_L) !== 0;
   const leanR = (mask & IN_LEAN_R) !== 0;
   let tlx = sp.rider.rest.x;
@@ -194,7 +195,25 @@ export function stepTick(w: World, s: SimState, mask: number): void {
   // What is still missing is the arm's INERTIAL reaction on the pivot (the
   // m*a term); only the static weight is transferred. That is the top
   // candidate for M2 and it needs a SIM_REV bump.
-  tq += -sp.rider.mass * sp.gravity * sp.rider.armLength * s.ax;
+  //
+  // `weightTransfer` scales it, because this term must not be the bike's
+  // rotation authority. It depends on the arm's WORLD-horizontal component, so
+  // over a revolution it averages to zero — during a spin it is a wobble, not a
+  // brake — and it is strongest upright and useless inverted, which is exactly
+  // backwards from what a player needs. It stays because leaning back on the
+  // throttle producing a wheelie is the single most important thing a rider
+  // does; it is demoted to flavour.
+  tq += -sp.rider.mass * sp.gravity * sp.rider.armLength * s.ax * sp.rider.weightTransfer;
+
+  // Attitude control. A constant torque on the chassis while a lean key is
+  // held, sign from the direction, with NO dependence on chassis orientation or
+  // on gravity. This is the primary rotation control and it is a gameplay term,
+  // not a physical one: nothing receives the reaction, so angular momentum is
+  // not conserved. That is deliberate and Elma-faithful — left and right rotate
+  // the bike identically at every attitude, which is the whole reason a spin is
+  // recoverable there. The full reasoning, including the physically-honest
+  // version that was rejected, is on `attitudeTorque` in spec.ts.
+  if (leanL !== leanR) tq += leanL ? sp.rider.attitudeTorque : -sp.rider.attitudeTorque;
 
   // --- 2. drive and brake -----------------------------------------------
   // Torque ON THE WHEEL with reaction on the chassis, not a force at the

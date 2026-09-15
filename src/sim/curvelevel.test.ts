@@ -31,10 +31,12 @@ const level = parseLevel(CURVE_LEVEL);
 function ridingBike(): BikeSpec {
   const s = cloneSpec(DEFAULT_SPEC);
   s.drive.maxTorque = 140;
-  s.chassis.inertia = 8;
-  s.damping.angular = 0.5;
-  // 60 degrees of lean, baked to unit vectors the way the panel bakes them.
-  const r = (60 * Math.PI) / 180;
+  s.chassis.inertia = 12;
+  s.damping.angular = 3.0;
+  s.rider.attitudeTorque = 340;
+  s.rider.weightTransfer = 0.6;
+  // 28 degrees of lean, baked to unit vectors the way the panel bakes them.
+  const r = (28 * Math.PI) / 180;
   s.rider.leanL = { x: -Math.sin(r), y: Math.cos(r) };
   s.rider.leanR = { x: Math.sin(r), y: Math.cos(r) };
   return s;

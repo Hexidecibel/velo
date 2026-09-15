@@ -8,9 +8,14 @@
 // the client boots on a tuned candidate instead, and the plan's numbers are one
 // click away for comparison.
 //
-// The candidate differs in exactly four numbers, and the reasoning for each is
-// below. Everything else — suspension, grip, geometry, masses, brake — is the
-// plan's.
+// The candidate differs in six numbers, and the reasoning for each is below.
+// Everything else — suspension, grip, geometry, masses, brake — is the plan's.
+//
+// Four of them came out of the user's own hands on the sliders: drive torque,
+// chassis inertia, angular damping and lean angle. The other two are the
+// rotation-authority fix, and they are set HERE together because they only make
+// sense together — attitude torque, chassis inertia and angular damping jointly
+// decide the flip rate.
 import { DEFAULT_SPEC, cloneSpec } from '@/sim/spec.ts';
 import type { BikeSpec } from '@/sim/spec.ts';
 
@@ -36,22 +41,68 @@ function m1Candidate(): BikeSpec {
   // ~14 m/s top speed and a bike that goes where you point it.
   s.drive.maxTorque = 140;
 
-  // 11 -> 8 kg m^2. 11 implies a radius of gyration of 0.6 m, i.e. all of the
-  // chassis mass at the axles. 8 leaves the volt with enough authority to
-  // actually rotate the bike without making the throttle loop it faster.
-  s.chassis.inertia = 8;
+  // 11 -> 12 kg m^2. The user's number, arrived at on the sliders. It reads as
+  // a heavier, calmer bike on the ground, and together with the angular damping
+  // below it sets the flip rate — see attitudeTorque.
+  s.chassis.inertia = 12;
 
-  // 0.15 -> 0.5 /s. Barely matters for translation; it is here to take the
-  // ring out of the pitch axis after a landing.
-  s.damping.angular = 0.5;
+  // 0.15 -> 3.0 /s. Also the user's. Barely matters for translation; on the
+  // pitch axis it is what stops the bike ringing after a landing, and it is
+  // half of what makes a held lean converge to a rate rather than accelerate
+  // forever: w(t) = w_inf * (1 - e^(-c t)), so 3.0 /s is a 0.33 s time constant.
+  s.damping.angular = 3.0;
 
-  // 40 -> 60 degrees. This is the one that makes the volt a real mechanic.
-  // Below ~50 degrees the servo's reaction torque dominates and a volt pitches
-  // the bike the WRONG way; above it, the rider's weight transfer wins and
-  // leaning back lifts the front, which is what a player expects. At 60:
-  // a 0.1 s tap gives a 35 degree wheelie and a 30 cm hop, a 0.2 s hold
-  // backflips the bike. Both are measured on flat ground.
-  Object.assign(s.rider, leanVectors(60));
+  // 40 -> 28 degrees. The user's again, and the earlier note that "below ~50
+  // degrees a volt pitches the bike the WRONG way" no longer applies: that was
+  // true when the servo's reaction torque was the only rotation authority
+  // there was. With attitudeTorque carrying the rotation, lean angle is back to
+  // being what it should be — where the rider's WEIGHT and HEAD go — and 28
+  // degrees keeps the head out of low ceilings.
+  Object.assign(s.rider, leanVectors(28));
+
+  // NEW, and the fix for "spin just keeps going, need to be able to correct
+  // easily". 340 N m of attitude-independent torque while a lean key is held.
+  // Measured in free fall against inertia 12 and damping 3.0:
+  //
+  //   a 6-frame tap      46 degrees      an attitude nudge (47 ms)
+  //   a 13-frame tap     89 degrees      a committed correction (0.1 s)
+  //   a 1 s hold        267 degrees      past inverted, still recoverable
+  //   held           4.16-5.74 rad/s     terminal, wobbling once per revolution
+  //   first full flip    1.61 s          from rest, including the spin-up
+  //   at terminal        1.26 s          per revolution
+  //   arresting -6 rad/s 0.18 s          which is the user's actual complaint
+  //   arresting -8 rad/s 0.21 s          faster than the bike can reach alone
+  //
+  // No ramp or charge-up mechanic: a constant torque against linear angular
+  // damping already gives w(t) = w_inf * (1 - e^(-c t)), so a tap is a nudge
+  // and a hold accelerates to a ceiling. That is what "the longer you hold, the
+  // faster you spin (slightly)" wants, and it falls out for free.
+  //
+  // On flat ground a held lean does NOT lift the front on its own: 340 N m is
+  // under the ~410 N m it takes to tip 68 kg over a 0.6 m half-wheelbase. That
+  // is the right split — the ground holds you, the air is where you rotate.
+  s.rider.attitudeTorque = 340;
+
+  // 1 -> 0.6. Gravity weight transfer is now flavour, not authority. The term
+  // peaks at m*g*L = 192 N m, and at full strength that is over half the
+  // attitude torque and the wrong half: it depends on the arm's WORLD-horizontal
+  // component, so it modulates the spin rate once per revolution and, with a
+  // weaker attitude torque than this, it can hold the bike inverted outright —
+  // the rider hangs below the pivot and that is a stable equilibrium. Which is
+  // precisely the "spin just keeps going" the player felt.
+  //
+  // What it costs to turn down is almost nothing, which is the surprise here.
+  // Measured on flat ground, a 26-frame lean hold from rest:
+  //
+  //   weightTransfer 1.0   11 deg of pitch, a 12 cm hop, spin band 3.57-6.23
+  //   weightTransfer 0.6    9 deg of pitch, a 10 cm hop, spin band 4.16-5.74
+  //   weightTransfer 0.4    9 deg of pitch, a  9 cm hop, spin band 4.44-5.49
+  //
+  // So the ground feel the user signed off on survives, and the airborne spin
+  // rate stops swinging by 75%. 0.6 keeps a visible once-per-revolution wobble,
+  // which reads as the rider's weight swinging round rather than as noise. It
+  // is a slider; 1.0 is the old behaviour exactly.
+  s.rider.weightTransfer = 0.6;
 
   return s;
 }

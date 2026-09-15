@@ -94,7 +94,7 @@ reproducible and silently keeping one would be worse than losing it.
 ## State of the bike
 
 Honest status, measured rather than asserted. All of it on flat ground with the
-plan's geometry.
+plan's geometry, and re-measured after the rotation-authority change below.
 
 - The plan's `DEFAULT_SPEC` is **not driveable**. Holding the throttle from a
   standstill pitches the bike past 90 degrees within 0.4 s and backflips it into
@@ -102,36 +102,110 @@ plan's geometry.
   wheel is 1800 N of thrust on a 71 kg bike — 2.5 g, far past the ~910 N the
   contact patch can actually put down — so the wheel spins and the reaction
   torque loops the chassis.
-- The client therefore boots on **M1 candidate**, which differs in four numbers:
-  drive torque 450 → 140, chassis inertia 11 → 8, angular damping 0.15 → 0.5,
-  lean angle 40° → 60°. The plan's spec is one click away in the preset menu for
-  comparison.
-- With the candidate, measured on flat ground: 16 m/s top speed; **holding left
-  rotates the bike counter-clockwise at roughly 60–100°/s** and holding right
-  rotates it clockwise, so a tap is a wheelie and a hold is a backflip; a 0.1 s
-  volt tap gives a 35° pitch and a 30 cm hop. That is an Elma-shaped control set.
-  Whether it *feels* right is a question only hands on the keys can answer.
-- **The throttle has no pitch authority of its own, and the margin is one
-  newton-metre wide.** Swept on flat ground: at 145 N·m the bike holds 5° of
-  pitch under full gas; at 150 N·m it backflips. There is no drive torque at
-  which it holds a wheelie, because a wheelie is an unstable equilibrium — the
-  restoring moment falls as the nose rises while the driving moment does not.
-  That is true of real bikes too, but a real rider modulates continuously and a
-  binary key cannot. Consequence: every bit of rotation comes from the lean
-  keys, and the gas feels planted. Nudging drive torque to 145–148 buys a bike
-  that lifts under power at the cost of sitting one notch from a loop; that
-  trade is the user's to make, and it is the first slider to reach for.
-- The **lean angle is the sharpest knob on the panel** and its behaviour is not
-  monotonic. Below about 50° the servo's transient reaction torque dominates and
-  a volt pitches the bike the *wrong* way; above it the rider's weight transfer
-  wins and leaning back lifts the front, which is what a player expects. If the
-  volt ever feels inverted, that slider is why.
+- The client therefore boots on **M1 candidate**, which now differs in six
+  numbers. Four came from the user's own hands on the sliders — drive torque
+  450 → 140, chassis inertia 11 → 12, angular damping 0.15 → 3.0, lean angle
+  40° → 28° — and two are the rotation-authority fix below: `attitudeTorque`
+  0 → 340 and `weightTransfer` 1 → 0.6. The plan's spec is one click away in the
+  preset menu for comparison.
+- With the candidate, measured on flat ground: **12.7 m/s** top speed, reached in
+  about 8 s; full throttle from a standstill **stays upright** and pitches only
+  3°; 200 N·m of drive torque loops it at 1.4 s, so the margin is now 60 N·m
+  rather than 5.
+- **Rotation is its own control now, and that is a physics change, not a tuning
+  one.** See below.
+
+### Rotation authority, and why the pendulum alone was wrong
+
+A playtest found it: *"spin just keeps going, need to be able to correct
+easily."* That was not a slider being off. The rider was a driven pendulum and
+nothing else, and three things combined to make rotation uncontrollable:
+
+- the servo's lean target is **chassis-relative**, so when the chassis spins the
+  target spins with it, the arm tracks it happily, and no correcting torque is
+  produced at all;
+- servo torque **vanishes as the arm arrives**, so rotation authority was a
+  one-shot impulse rather than sustained control;
+- the only sustained term was gravity weight transfer, which depends on the
+  arm's **world-horizontal** component and therefore **averages to zero over a
+  revolution**. During a spin it is a wobble, not a brake.
+
+Net: rotation control was strongest upright and useless inverted — exactly
+backwards from what a player needs. Elasto Mania's left and right rotate the
+bike **identically at every attitude**, and that orientation-independence is
+precisely why a spin there is recoverable.
+
+So `rider.attitudeTorque` is now the primary rotation control: a constant torque
+on the chassis while a lean key is held, sign from the direction, with no
+dependence on orientation or on gravity. **It is a gameplay term, not a physical
+one** — nothing receives the reaction, so it does not conserve angular momentum.
+That is deliberate. The physically honest version would react against wheel
+angular momentum the way a motocross rider does, and it was rejected because
+authority would then vanish whenever the wheels are stopped, which is exactly
+when the player most needs to correct.
+
+The servo and the pendulum arm are unchanged. They still move the arm and
+therefore the **head**, which is what makes volting under a low ceiling lethal —
+a real skill worth keeping. `rider.weightTransfer` (0–1) scales the gravity term
+so that leaning back on the throttle still produces a wheelie without gravity
+dominating rotation.
+
+Measured on the candidate, in free fall, at 340 N·m against inertia 12 and
+angular damping 3.0:
+
+| input | result |
+| --- | --- |
+| 6-frame tap (47 ms) | 46° — an attitude nudge |
+| 13-frame tap (0.1 s) | 89° — a committed correction |
+| 1 s hold | 267° — past inverted, still recoverable |
+| held | terminal 4.16–5.74 rad/s, ~63% of it by 0.33 s |
+| held, from rest | first full flip at **1.61 s** |
+| held, at terminal | **1.26 s** per revolution |
+| arresting a −6 rad/s spin | **0.18 s** |
+| arresting a −8 rad/s spin | 0.21 s |
+
+**"The longer you hold, the faster you spin" falls out and needed no special
+case.** A constant torque against linear angular damping gives
+`ω(t) = ω∞·(1 − e^(−ct))`, so a tap is a nudge, a hold accelerates toward a
+ceiling, and a sustained hold does clean continuous flips. There is deliberately
+**no ramp or charge-up mechanic**; if the plain exponential still feels too
+abrupt near neutral, a ramp should be a separate, argued change rather than
+something smuggled in here.
+
+On flat ground a held lean does **not** lift the front on its own: 340 N·m is
+under the ~410 N·m it takes to tip 68 kg over a 0.6 m half-wheelbase. A 26-frame
+hold from rest gives 9° of pitch and a 10 cm hop. That split is intentional —
+the ground holds you, the air is where you rotate.
+
+`weightTransfer` costs less than expected to turn down, which is worth knowing
+before reaching for the slider. Same 26-frame hold from rest:
+
+| `weightTransfer` | ground pitch | hop | airborne spin band |
+| --- | --- | --- | --- |
+| 1.0 | 11° | 12 cm | 3.57–6.23 rad/s |
+| 0.6 | 9° | 10 cm | 4.16–5.74 rad/s |
+| 0.4 | 9° | 9 cm | 4.44–5.49 rad/s |
+
+So the ground feel survives being turned down and the airborne spin rate stops
+swinging by 75%. 0.6 keeps a visible once-per-revolution wobble, which reads as
+the rider's weight swinging round rather than as noise. 1.0 is the old behaviour
+exactly.
+
+Still true, and still the first slider to reach for:
+
 - **Throttle held through airtime rotates the bike backwards**, hard — drive
   torque is reacted on the chassis and an airborne wheel gives the reaction
   nothing to push against. That is a real Elma technique rather than a bug, but
   it also means holding gas through a spawn drop or a crest commits you to a
-  loop. The test level's start was lowered to a 5 cm settle for exactly this
-  reason.
+  loop. Both test levels start with a 5 cm settle for exactly this reason.
+- **A wheelie is an unstable equilibrium**, so there is no drive torque at which
+  the bike holds one: the restoring moment falls as the nose rises while the
+  driving moment does not. Under power, a 6-frame lean tap gives 25° and a
+  12-frame tap loops you. That cliff is inherent, not a tuning miss.
+- The earlier note that *"below ~50° a volt pitches the bike the wrong way"* no
+  longer applies. It was true when the servo's reaction torque was the only
+  rotation authority there was. Lean angle is now back to meaning what it should
+  — where the rider's **weight and head** go — which is why 28° is fine.
 
 ## Determinism
 
@@ -346,7 +420,9 @@ the rev and their leaderboards move. A level's own `sagTolerance` is level data
 rather than engine data, so that one is caught by `simHash` alone. Adding the
 arc primitive itself did **not** bump the rev: no existing level contains an
 arc, `levels/test01.json` hashes bit-identically, and no line of the sim
-changed. **Through milestone 1 it bumps freely and times reset**; the HUD says so.
+changed. **Replacing the rider's rotation model did**: `SIM_REV` is now **2**,
+and rev 1's code is not kept. Through milestone 1 the rev bumps freely and times
+reset — freezing revs into directories is a launch-time job, not a today job. **Through milestone 1 it bumps freely and times reset**; the HUD says so.
 Tuning must stay cheap, and any scheme that makes retuning expensive during M1
 makes the game worse.
 

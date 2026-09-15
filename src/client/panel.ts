@@ -91,11 +91,21 @@ const GROUPS: Group[] = [
   },
   {
     title: 'Volt authority',
-    why: 'The rider is a driven pendulum. Lean angle is the big one — below ~50 degrees the servo reaction wins and a volt pitches the bike the WRONG way.',
+    why: 'Attitude torque is the big one — it is the primary rotation control and it works identically upright, inverted and spinning. The pendulum below it moves the rider and therefore the HEAD, which is what makes volting under a low ceiling lethal.',
     fields: [
       {
+        label: 'attitude torque', min: 0, max: 900, step: 5,
+        hint: 'Constant N m on the chassis while a lean key is held. Against angular damping c this converges to tau/(I*c); a tap is a nudge, a hold flips you.',
+        get: (s) => s.rider.attitudeTorque, set: (s, v) => { s.rider.attitudeTorque = v; },
+      },
+      {
+        label: 'weight transfer', min: 0, max: 1, step: 0.01,
+        hint: 'Scales the rider-weight torque. 1 lets gravity dominate rotation and settles the bike inverted in the air; ~0.4 keeps the wheelie and not the fight.',
+        get: (s) => s.rider.weightTransfer, set: (s, v) => { s.rider.weightTransfer = v; },
+      },
+      {
         label: 'lean angle (deg)', min: 0, max: 90, step: 0.5,
-        hint: 'Baked to a unit vector here. The sim never calls Math.cos.',
+        hint: 'Where the rider WEIGHT and HEAD go. Baked to a unit vector here; the sim never calls Math.cos.',
         get: (s) => leanAngleOf(s),
         set: (s, v) => { Object.assign(s.rider, leanVectors(v)); },
       },

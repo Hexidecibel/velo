@@ -111,6 +111,48 @@ export interface BikeSpec {
     /** Servo derivative gain, N m s/rad, against arm-relative-to-chassis rate. */
     servoD: number;
     servoMaxTorque: number;
+    /**
+     * PRIMARY ROTATION CONTROL. Constant torque on the chassis, N m, applied
+     * every tick a lean key is held, sign from the direction, INDEPENDENT of
+     * chassis orientation and of gravity.
+     *
+     * Be honest about what this is: a GAMEPLAY term, not a physical one.
+     * Nothing receives the reaction, so it does not conserve angular momentum.
+     * It is here because the pendulum alone cannot do the job and the reason is
+     * structural, not a tuning miss:
+     *
+     *   - the servo's target is chassis-relative, so when the chassis spins the
+     *     target spins with it and the arm tracks it happily, producing no
+     *     correcting torque at all;
+     *   - the servo torque vanishes as the arm arrives, so rotation authority
+     *     is a one-shot impulse rather than sustained control;
+     *   - the only sustained term is gravity weight transfer, which depends on
+     *     the arm's WORLD-horizontal component and therefore averages to zero
+     *     over a revolution. During a spin it is a wobble, not a brake.
+     *
+     * Net, the pendulum-only model makes rotation control strongest upright and
+     * useless inverted — exactly backwards from what a player needs. Elasto
+     * Mania's left/right rotate the bike identically at every attitude, and that
+     * orientation-independence is precisely why a spin there is recoverable.
+     *
+     * The physically honest version would react against wheel angular momentum,
+     * the way a motocross rider actually does. Deliberately NOT built: authority
+     * would vanish whenever the wheels are stopped, which is exactly when the
+     * player most needs to correct.
+     *
+     * Against linear angular damping this gives w(t) = w_inf * (1 - e^(-c t))
+     * with w_inf = tau / (I * c) and time constant 1/c — so a tap is a nudge, a
+     * hold accelerates to a ceiling, and a sustained hold flips cleanly. No ramp
+     * or charge-up mechanic is needed to get that; it falls out.
+     */
+    attitudeTorque: number;
+    /**
+     * 0..1, scaling the gravity weight-transfer torque. 1 keeps leaning back on
+     * the throttle producing a wheelie — which is the single most important
+     * thing a rider does — while `attitudeTorque` above carries the rotation
+     * authority, so gravity no longer has to.
+     */
+    weightTransfer: number;
   };
 
   damping: {
@@ -177,6 +219,15 @@ export const DEFAULT_SPEC: BikeSpec = deepFreeze({
     servoP: 2500,
     servoD: 220,
     servoMaxTorque: 900,
+    // Measured against the M1 candidate's inertia 12 and angular damping 3.0:
+    // terminal 4.98 rad/s, a full revolution in 1.26 s at that rate, and a
+    // runaway -6 rad/s spin arrested in 0.18 s. Note the effective inertia is
+    // NOT chassis.inertia alone — the chassis has to drag the rider's arm round
+    // with it, and m*L^2 = 10.6 kg m^2 is nearly as much again as the chassis's
+    // 12 — so the naive tau/(I*c) over-predicts the rate by about 2x. See
+    // presets.ts, which is where these numbers are actually set together.
+    attitudeTorque: 340,
+    weightTransfer: 1,
   },
 
   damping: {
@@ -260,6 +311,8 @@ export function specHash(s: BikeSpec): string {
   h.num(s.rider.servoP);
   h.num(s.rider.servoD);
   h.num(s.rider.servoMaxTorque);
+  h.num(s.rider.attitudeTorque);
+  h.num(s.rider.weightTransfer);
   h.num(s.damping.linear);
   h.num(s.damping.angular);
   return h.digest();

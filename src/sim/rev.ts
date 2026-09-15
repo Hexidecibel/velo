@@ -22,7 +22,7 @@ import type { Replay, VerifyResult } from './replay.ts';
 import type { Level } from './level.ts';
 import type { BikeSpec } from './spec.ts';
 
-export const SIM_REV = 1;
+export const SIM_REV = 2;
 
 export interface Engine {
   rev: number;
@@ -32,8 +32,15 @@ export interface Engine {
   verifyReplay(level: Level, spec: BikeSpec, replay: Replay): VerifyResult;
 }
 
-const ENGINE_1: Engine = {
-  rev: 1,
+/**
+ * Rev 2 replaced the pendulum-only rider with a continuous, attitude-independent
+ * `rider.attitudeTorque` on the chassis, and demoted gravity weight transfer to
+ * a scaled flavour term. Rev 1's code is NOT kept: through milestone 1 the rev
+ * bumps freely and times reset, which is the whole reason freezing revs into
+ * directories is a launch-time job rather than a today job.
+ */
+const ENGINE_CURRENT: Engine = {
+  rev: 2,
   dt: DT,
   ticksPerFrame: TICKS_PER_FRAME,
   createSim,
@@ -42,8 +49,8 @@ const ENGINE_1: Engine = {
 
 export function getEngine(rev: number): Engine {
   switch (rev) {
-    case 1:
-      return ENGINE_1;
+    case 2:
+      return ENGINE_CURRENT;
     default:
       throw new Error(`unknown SIM_REV ${rev}; this build knows ${SIM_REV}`);
   }
