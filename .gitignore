@@ -24,3 +24,8 @@ data/
 
 # Screenshots from bin/shots. Judged, not committed.
 shots/
+
+# Published build. Written only by bin/deploy; the service serves THIS, not dist/.
+release/
+release.new/
+release.old/

@@ -17,6 +17,10 @@
 #   3. precompress — .br/.gz siblings for the server's `precompressed: true`.
 #                  A deploy step rather than a build step: bin/dev and
 #                  bin/preview neither produce nor want them.
+#   3b. publish  — dist/ -> release/, atomically. The service serves release/,
+#                  so THIS is the step that makes a build go live. Before it
+#                  existed the service read dist/ and every build published
+#                  itself; see the block at the step for how that was found.
 #   4. units     — /etc reconciled with deploy/ BEFORE the restart, or the
 #                  restart applies the old unit and the change appears to have
 #                  done nothing.
@@ -49,6 +53,26 @@ echo "==> Building client"
 echo "==> Precompressing static assets"
 "$ROOT/node_modules/.bin/tsx" src/server/precompress.ts dist
 
+# PUBLISH — the step that makes a build go live, and the only one.
+#
+# The service serves ./release, not ./dist. It used to serve dist/ directly, and
+# because serveStatic reads from disk per request that meant ANY bin/build in
+# this tree went live the instant it finished — no deploy, no health check, no
+# commit, nobody choosing to publish. It was found the honest way: an agent
+# rebuilt dist/ for screenshots and a half-ported renderer appeared on the public
+# URL six hours after the last restart.
+#
+# Copy to a staging dir and rename into place, so the swap is atomic and a
+# request landing mid-deploy never sees a half-copied tree.
+echo "==> Publishing dist/ -> release/"
+rm -rf "$ROOT/release.new"
+cp -a "$ROOT/dist" "$ROOT/release.new"
+rm -rf "$ROOT/release.old"
+[[ -d "$ROOT/release" ]] && mv "$ROOT/release" "$ROOT/release.old"
+mv "$ROOT/release.new" "$ROOT/release"
+rm -rf "$ROOT/release.old"
+echo "    $(find "$ROOT/release" -type f | wc -l) files"
+
 echo "==> Reconciling systemd unit with deploy/"
 "$ROOT/bin/install-units"
 
@@ -77,9 +101,9 @@ fi
 # bytes in it. Parsed out of the built HTML rather than hardcoded, because Vite
 # content-hashes the filename on every build.
 echo "==> Verifying the built bundle is actually served"
-asset="$(grep -oE 'src="/assets/[^"]+\.js"' dist/index.html | head -1 | sed 's/^src="//; s/"$//')"
+asset="$(grep -oE 'src="/assets/[^"]+\.js"' release/index.html | head -1 | sed 's/^src="//; s/"$//')"
 if [[ -z "$asset" ]]; then
-  echo "!! could not find a script tag in dist/index.html — is the build complete?" >&2
+  echo "!! could not find a script tag in release/index.html — did the publish step run?" >&2
   exit 1
 fi
 bytes="$(curl -fsS -o /dev/null -w '%{size_download}' "http://127.0.0.1:${PORT}${asset}" 2>/dev/null || echo 0)"

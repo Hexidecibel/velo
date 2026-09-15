@@ -54,12 +54,27 @@ app.get('/api/health', (c) => c.json({ status: 'ok', service: 'velo' }));
 // down.
 app.get('/api/spec', (c) => c.json(specPayload()));
 
-// The built client. `precompressed` makes serveStatic prefer a `.br`/`.gz`
-// sibling when the request's Accept-Encoding allows it — bin/deploy writes
-// those after the bundle. HAProxy does NOT compress this backend, so if the
-// siblings are missing the bundle simply goes out uncompressed; nothing breaks,
-// it is just bigger.
-app.use('/*', serveStatic({ root: './dist', precompressed: true }));
+// WHAT IS PUBLISHED IS NOT WHAT IS BUILT, AND THAT SEPARATION IS THE POINT.
+//
+// This used to serve `./dist` directly. serveStatic reads from disk per request,
+// so ANY `bin/build` in this working tree went live instantly — no deploy step,
+// no health check, no commit, nobody choosing to publish. It was found the
+// honest way: an agent rebuilt dist/ for screenshots and the user saw a
+// half-ported renderer on the public URL six hours after the last restart.
+//
+// Now the service serves a separate release directory that only `bin/deploy`
+// writes, after the build has typechecked, bundled, precompressed and passed
+// its bundle check. Builds stay local; publishing is a deliberate act.
+//
+// Override with VELO_STATIC_ROOT for a preview of an arbitrary directory.
+const STATIC_ROOT = process.env.VELO_STATIC_ROOT || './release';
+
+// `precompressed` makes serveStatic prefer a `.br`/`.gz` sibling when the
+// request's Accept-Encoding allows it — bin/deploy writes those after the
+// bundle. HAProxy does NOT compress this backend, so if the siblings are
+// missing the bundle simply goes out uncompressed; nothing breaks, it is just
+// bigger.
+app.use('/*', serveStatic({ root: STATIC_ROOT, precompressed: true }));
 
 // SPA fallback. Anything that is not an /api route and did not match a real
 // file gets index.html, so a deep link or a refresh lands in the game rather
@@ -68,7 +83,7 @@ app.use('/*', serveStatic({ root: './dist', precompressed: true }));
 // would report "unexpected token '<'" instead of "404".
 app.get('*', (c, next) => {
   if (c.req.path.startsWith('/api')) return next();
-  return serveStatic({ root: './dist', path: 'index.html' })(c, next);
+  return serveStatic({ root: STATIC_ROOT, path: 'index.html' })(c, next);
 });
 
 // PORT from the environment with a literal fallback, never a bare literal in
@@ -79,7 +94,7 @@ const port = Number.parseInt(process.env.PORT || '9422', 10);
 const hostname = process.env.HOST || '127.0.0.1';
 
 console.log(`velo server listening on http://${hostname}:${port}`);
-console.log('  static root: ./dist (precompressed)');
+console.log(`  static root: ${STATIC_ROOT} (precompressed) — written only by bin/deploy`);
 console.log('  api:         /api/health, /api/spec (read-only live tune)');
 console.log(`  live tune:   ${SPEC_FILE} — change it with bin/spec`);
 

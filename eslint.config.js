@@ -14,7 +14,13 @@ import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
   {
-    ignores: ['**/dist/**', '**/build/**', '**/.expo/**', '**/node_modules/**', '**/*.d.ts'],
+    // `release/` is the published build — a copy of dist/ that bin/deploy makes
+    // and the service actually serves. It holds the same minified bundle, so
+    // linting it reports hundreds of errors about somebody else's output.
+    ignores: [
+      '**/dist/**', '**/release/**', '**/release.new/**', '**/release.old/**',
+      '**/build/**', '**/.expo/**', '**/node_modules/**', '**/*.d.ts',
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

@@ -1052,12 +1052,28 @@ function drawFX(
   ctx: CanvasRenderingContext2D, p: Pose, state: SimState, P: Palette, px: number, t: number,
 ): void {
   const speed = Math.sqrt(state.vx * state.vx + state.vy * state.vy);
-  // Exhaust from the pipe tip, in chassis-local (-0.9, -0.14).
-  const tipX = p.px + p.ox * -0.9 - p.oy * -0.14;
-  const tipY = p.py + p.oy * -0.9 + p.ox * -0.14;
+
+  // EVERYTHING HERE MUST MIRROR WITH `facing`.
+  //
+  // drawBike mirrors the whole bike with ctx.scale(facing, 1), so the drawn
+  // exhaust pipe swaps ends on a flip. These effects are emitted in world space
+  // instead, so they did not — reported from play: "exhaust doesn't follow when
+  // i switch directions". The pipe was on the right of the bike and the smoke
+  // was still coming out of the left.
+  //
+  // Three separate places had the same assumption baked in, which is why the
+  // fix is a single `f` threaded through all of them rather than one sign flip.
+  const f = state.facing;
+
+  // Exhaust from the pipe tip, chassis-local (-0.9, -0.14) — the x mirrors.
+  const lx = -0.9 * f;
+  const ly = -0.14;
+  const tipX = p.px + p.ox * lx - p.oy * ly;
+  const tipY = p.py + p.oy * lx + p.ox * ly;
   for (let k = 0; k < 4; k++) {
     const u = (t * 1.1 + k * 0.6) % 2.4;
-    const x = tipX - u * 0.8;
+    // Puffs trail BEHIND, and behind is whichever way the bike is not facing.
+    const x = tipX - u * 0.8 * f;
     const y = tipY + u * 0.28;
     const R = 0.07 + u * 0.11;
     const a = Math.max(0, 1 - u / 2.4) * 0.5;
@@ -1077,11 +1093,14 @@ function drawFX(
   // Dust behind a driven wheel, and speed lines once it is worth mentioning.
   // Both read the sim: no contact, no dust.
   if (state.grounded !== 0 && speed > 3) {
-    const gx = p.wx[0];
-    const gy = p.wy[0] - 0.25;
+    // The DRIVEN wheel, which swaps on a flip — step.ts picks the rear the same
+    // way. Hardcoding wheel 0 threw dust off the front wheel when facing -x.
+    const rear = f > 0 ? 0 : 1;
+    const gx = p.wx[rear];
+    const gy = p.wy[rear] - 0.25;
     for (let k = 0; k < 5; k++) {
       const u = (t * 2 + k * 0.37) % 1;
-      const x = gx - u * 1.2 - k * 0.1;
+      const x = gx - (u * 1.2 + k * 0.1) * f;
       const y = gy + u * 0.45;
       const R = 0.07 + u * 0.15 + k * 0.012;
       ctx.save();
