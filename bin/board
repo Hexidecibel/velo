@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Inspect, check, rebuild and prune the leaderboard store.
+#
+#   bin/board                            every level, with entry counts
+#   bin/board 04-switchback              one board
+#   bin/board 04-switchback --category tas --rev 2
+#   bin/board player <playerId>          one player's PBs; no id lists them
+#   bin/board check                      integrity pass, exits 1 on a problem
+#   bin/board rebuild [--verify]         boards + player files from the log
+#   bin/board prune [--apply]            replay blobs nothing references
+#
+# WHY A SCRIPT FOR SOMETHING `jq` COULD DO. The store is plain JSON on disk
+# precisely so it can be read by hand — and that is what makes the write side
+# dangerous: an ad-hoc `rm` in data/replays/ can delete a blob a board still
+# points at, and nothing would notice until somebody's ghost 404'd. `prune`
+# computes the keep-set from the boards and the player files, and is a dry run
+# unless you say --apply.
+#
+# `rebuild` is a real rebuild: every accepted submission is appended to
+# data/submissions.jsonl and the boards are derived from it, so an index that
+# got corrupted or hand-edited can be regenerated. `--verify` re-simulates every
+# replay on the way past, which is the one command that answers "is anything on
+# this board not real".
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+exec "$ROOT/node_modules/.bin/tsx" "$ROOT/bin/_board.ts" "$@"

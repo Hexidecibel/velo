@@ -82,7 +82,8 @@ export function createLegend(root: HTMLElement): void {
     '<b>SPACE</b> flip direction — this is how you double back<br>' +
     '<b>TAB</b> hold to see the whole level (time stops)<br>' +
     '<b>R</b> restart &nbsp; <b>T</b> replay &nbsp; <b>E</b> export replay<br>' +
-    '<b>[ / ]</b> level &nbsp; <b>+ / -</b> zoom &nbsp; <b>H</b> tuning sliders<br>' +
+    '<b>B</b> leaderboard and ghost &nbsp; <b>[ / ]</b> level<br>' +
+    '<b>+ / -</b> zoom &nbsp; <b>H</b> tuning sliders<br>' +
     '<b>G</b> show the true collision edge &nbsp; <b>V</b> art on / off';
   d.append(body);
   d.addEventListener('toggle', () => saveFlag('legend', d.open));

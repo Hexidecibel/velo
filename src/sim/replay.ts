@@ -68,9 +68,22 @@ export function encodeInputs(masks: readonly number[]): string {
   return parts.join(',');
 }
 
-export function decodeInputs(s: string): number[] {
+/**
+ * `maxFrames` is the DoS guard, and it has to live here rather than in the
+ * caller because the allocation happens here. A 512 KB upload of `0*10000000,`
+ * repeated decodes to ~650 billion entries and takes the process out before any
+ * length check downstream ever runs; the per-run 1e7 cap below does not help,
+ * because the attack is the number of RUNS, not the size of one.
+ *
+ * Omitted, the behaviour is exactly what it always was — every existing caller
+ * (the client, `bin/replay`, the tests) reads a file a human chose, and a cap
+ * there would only turn a long honest run into a parse error. The server passes
+ * one, because the server reads bytes a stranger uploaded.
+ */
+export function decodeInputs(s: string, maxFrames?: number): number[] {
   const out: number[] = [];
   if (s.length === 0) return out;
+  const cap = maxFrames === undefined ? Infinity : maxFrames;
   for (const part of s.split(',')) {
     const star = part.indexOf('*');
     const maskStr = star < 0 ? part : part.slice(0, star);
@@ -82,6 +95,11 @@ export function decodeInputs(s: string): number[] {
     }
     if (!Number.isInteger(count) || count < 1 || count > 1e7) {
       throw new Error(`replay.inputs: bad run length ${JSON.stringify(countStr)}`);
+    }
+    // Checked BEFORE the loop, so the refusal costs nothing even when the
+    // declared run length is absurd.
+    if (out.length + count > cap) {
+      throw new Error(`replay.inputs: more than ${cap} input frames — refusing to decode`);
     }
     for (let i = 0; i < count; i++) out.push(mask);
   }
@@ -116,10 +134,39 @@ export function buildReplay(args: {
 
 /**
  * Re-simulate an input stream and check it against everything the replay
- * claims. This is the function a server route will call, unchanged, once there
- * is a server: the sim imports nothing, so the same bytes run in both places.
+ * claims. This is the function the server route calls, unchanged, on bytes a
+ * stranger uploaded: the sim imports nothing, so the same bytes run in both
+ * places and a browser-recorded run re-verifies bit-identically on the box.
+ *
+ * It is a thin driver over `verifyReplaySteps` below, and there is exactly ONE
+ * implementation of the checks on purpose. The server needs to verify in slices
+ * so it can yield the event loop and abandon a run that overruns its budget;
+ * a second copy of the anti-cheat loop that drifts from this one is the single
+ * worst bug this file could have.
  */
 export function verifyReplay(level: Level, spec: BikeSpec, replay: Replay): VerifyResult {
+  const it = verifyReplaySteps(level, spec, replay, Infinity);
+  let step = it.next();
+  while (!step.done) step = it.next();
+  return step.value;
+}
+
+/**
+ * The verifier, sliced. Yields the number of input frames simulated so far
+ * every `slice` frames; returns the same `VerifyResult` `verifyReplay` does.
+ *
+ * `slice` is a scheduling knob and NOTHING ELSE — it cannot affect the outcome,
+ * because it only decides where the loop pauses, never what the loop does. A
+ * run verified in one slice and the same run verified in twenty produce the
+ * identical result, and replay.test.ts asserts that rather than trusting this
+ * sentence.
+ */
+export function* verifyReplaySteps(
+  level: Level,
+  spec: BikeSpec,
+  replay: Replay,
+  slice = 4096,
+): Generator<number, VerifyResult, void> {
   const fail = (reason: string, extra?: Partial<VerifyResult>): VerifyResult => ({
     ok: false,
     reason,
@@ -153,7 +200,9 @@ export function verifyReplay(level: Level, spec: BikeSpec, replay: Replay): Veri
 
   const sim = createSim(level, spec);
   const every = replay.hashEvery > 0 ? replay.hashEvery : 0;
+  const chunk = slice >= 1 ? slice : 1;
   let hi = 0;
+  let sinceYield = 0;
   for (let f = 0; f < masks.length; f++) {
     sim.advance(masks[f]);
     if (every > 0 && (f + 1) % every === 0) {
@@ -171,6 +220,10 @@ export function verifyReplay(level: Level, spec: BikeSpec, replay: Replay): Veri
           finalHash: got,
         });
       }
+    }
+    if (++sinceYield >= chunk) {
+      sinceYield = 0;
+      yield f + 1;
     }
   }
 
@@ -303,6 +356,26 @@ export function checkReplayCompat(
 }
 
 /**
+ * THE REV REFUSAL, in one place.
+ *
+ * `bin/replay` refuses a rev-mismatched file and so does the leaderboard's
+ * submission route, and the two must not word it differently — a player told
+ * one thing by the CLI and another by the server concludes one of them is
+ * broken. It is a refusal rather than a warning for the reason stated in it:
+ * replaying under different physics shows a run that is not the one recorded,
+ * which is worse than not replaying at all.
+ */
+export function revMismatchRefusal(replayRev: number): string {
+  return (
+    `SIM_REV mismatch: the replay is rev ${replayRev}, this build is rev ${SIM_REV}. ` +
+    'The physics changed between those revs. Re-running it here would show you a DIFFERENT run ' +
+    'than the one that was recorded, which is worse than not running it at all, so this is a ' +
+    'refusal rather than a warning. Through milestone 1 the rev bumps freely and replays do not ' +
+    'survive it.'
+  );
+}
+
+/**
  * The spec a replay file carries, but ONLY if it hashes to what the file
  * claims. A spec that does not is either corrupt or hand-edited, and adopting
  * it would produce a run that verifies against nothing.
@@ -348,7 +421,7 @@ export class ReplayError extends Error {}
  * still PARSE under rev 3 — otherwise the version mismatch surfaces as "corrupt
  * file" instead of as the accurate "recorded under a different physics rev".
  */
-export function parseReplayFile(raw: unknown): ReplayFile {
+export function parseReplayFile(raw: unknown, opts: { maxFrames?: number } = {}): ReplayFile {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new ReplayError('replay: expected an object');
   const r = raw as Record<string, unknown>;
   if (r.format !== 'velo-replay') {
@@ -359,11 +432,19 @@ export function parseReplayFile(raw: unknown): ReplayFile {
   if (!Array.isArray(hashesRaw)) throw new ReplayError('replay.hashes: expected an array');
   const hashes = hashesRaw.map((h, i) => str(h, `replay.hashes[${i}]`));
 
-  const frames = int(r.frames, 'replay.frames', 0, 1e8);
+  const cap = opts.maxFrames;
+  const frames = int(r.frames, 'replay.frames', 0, cap === undefined ? 1e8 : cap);
   const inputs = str(r.inputs, 'replay.inputs');
   // Decode eagerly: a malformed stream must fail here, at load, with a message
-  // about the stream, not three screens later inside the verifier.
-  const masks = decodeInputs(inputs);
+  // about the stream, not three screens later inside the verifier. The cap is
+  // applied to the DECODE and not only to the declared `frames`, because the
+  // two are independent until this line proves they agree.
+  let masks: number[];
+  try {
+    masks = decodeInputs(inputs, cap);
+  } catch (e) {
+    throw new ReplayError(e instanceof Error ? e.message : String(e));
+  }
   if (masks.length !== frames) {
     throw new ReplayError(`replay: claims ${frames} frames but the input stream decodes to ${masks.length}`);
   }

@@ -145,7 +145,7 @@ export function renderArt(
   }
   drawFlower(ctx, level.flower.x, level.flower.y, state.applesLeft === 0, t, P, px);
 
-  if (opts.ghost) drawBike(ctx, opts.ghost, spec, px, P, state.facing, t, 0.3);
+  if (opts.ghost) drawBike(ctx, opts.ghost, spec, px, P, opts.ghostFacing ?? state.facing, t, 0.3);
   if (!state.dead && !state.finished) drawFX(ctx, pose, state, P, px, t);
   drawBike(ctx, pose, spec, px, P, state.facing, t, 1);
 

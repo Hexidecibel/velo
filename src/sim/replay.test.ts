@@ -8,6 +8,8 @@ import {
   buildReplay,
   checkReplayCompat,
   decodeInputs,
+  revMismatchRefusal,
+  verifyReplaySteps,
   encodeInputs,
   parseReplayFile,
   replayFileName,
@@ -232,5 +234,69 @@ describe('replay files', () => {
     expect(n.startsWith(`velo-rev${SIM_REV}-`)).toBe(true);
     expect(n.endsWith('.replay.json')).toBe(true);
     expect(n).not.toMatch(/[^a-zA-Z0-9._-]/);
+  });
+});
+
+describe('decodeInputs — the server cap', () => {
+  it('is unlimited when no cap is given, exactly as it always was', () => {
+    expect(decodeInputs('0*100000').length).toBe(100000);
+  });
+
+  it('refuses before allocating when the total would exceed the cap', () => {
+    // The trivial CPU/memory kill, `[0, 4294967295]`: the existing per-run
+    // limit catches this one...
+    expect(() => decodeInputs('0*4294967295', 1000)).toThrow(/run length/);
+    // ...but not this one. Each run here is individually legal and there are
+    // enough of them to exhaust memory, which is why the cap has to be on the
+    // decoded TOTAL and has to be checked before the inner loop runs.
+    const many = new Array(50).fill('0*1000000').join(',');
+    expect(() => decodeInputs(many, 76800)).toThrow(/refusing to decode/);
+  });
+
+  it('allows a stream exactly at the cap', () => {
+    expect(decodeInputs('0*100', 100).length).toBe(100);
+    expect(() => decodeInputs('0*101', 100)).toThrow(/refusing to decode/);
+  });
+
+  it('parseReplayFile passes the cap through to the decode', () => {
+    const r = { format: 'velo-replay', simRev: SIM_REV, simHash: 'x', bike: 'default', specHash: 'y',
+      frames: 4294967295, inputs: '0*4294967295', hashEvery: 0, hashes: [],
+      finished: false, dead: false, timeTicks: 0, applesLeft: 0 };
+    expect(() => parseReplayFile(r, { maxFrames: 1000 })).toThrow();
+    // And the declared frame count is bounded by the same number, so a lie
+    // about `frames` is caught before the stream is even looked at.
+    expect(() => parseReplayFile({ ...r, frames: 2000, inputs: '0*2000' }, { maxFrames: 1000 })).toThrow(/frames/);
+  });
+});
+
+describe('verifyReplaySteps', () => {
+  it('gives the identical result however it is sliced', () => {
+    // The slice size is a SCHEDULING knob and nothing else — it decides where
+    // the loop pauses, never what the loop does. The server depends on that
+    // being true, because it verifies in slices and the CLI does not.
+    const replay = record(400);
+    const whole = verifyReplay(level, DEFAULT_SPEC, replay);
+    expect(whole.ok).toBe(true);
+    for (const slice of [1, 7, 64, 1000, Infinity]) {
+      const it = verifyReplaySteps(level, DEFAULT_SPEC, replay, slice);
+      let step = it.next();
+      let yields = 0;
+      while (!step.done) {
+        yields++;
+        step = it.next();
+      }
+      expect(step.value).toEqual(whole);
+      if (slice === 1) expect(yields).toBe(replay.frames);
+      if (slice === Infinity) expect(yields).toBe(0);
+    }
+  });
+});
+
+describe('revMismatchRefusal', () => {
+  it('is one wording, shared by the CLI and the server', () => {
+    const msg = revMismatchRefusal(2);
+    expect(msg).toContain('the replay is rev 2');
+    expect(msg).toContain(`this build is rev ${SIM_REV}`);
+    expect(msg).toContain('refusal rather than a warning');
   });
 });

@@ -1,16 +1,22 @@
 // =============================================================================
 // velo — the server
 // =============================================================================
-// One Node process. Today it serves the built client out of dist/ and answers a
-// health probe, and that is ALL it does: there is no game API yet, because
-// replays and leaderboards are a later milestone and inventing their endpoints
-// now would freeze a wire format before the sim that feeds it has settled.
+// One Node process. It serves the published client out of release/, answers a
+// health probe, serves the read-only live-tune override, and runs the
+// leaderboard: replay submission with server-side re-simulation, the boards
+// themselves, and the replay blobs the ghosts are fetched from.
 //
-// It exists anyway, rather than being deferred until there is something to
-// serve, for two reasons. It is the thing HAProxy points at — a static bundle
-// still needs a process behind a backend — and it is the shell the leaderboard
-// API grows into, so `bin/deploy`, the unit, the port and the route all get
-// proven now against something trivial instead of all at once later.
+// The leaderboard is the reason the server was built from the first commit
+// rather than deferred. A replay is an INPUT STREAM of about a kilobyte, not a
+// trajectory, so re-simulating a submission here and deriving its time is what
+// makes the board cheat-proof by construction — you cannot fabricate a
+// trajectory the sim would not produce, because you never submit a trajectory.
+// That only works if determinism and shared sim code were designed in from the
+// start, which is exactly the thing that cannot be retrofitted.
+//
+// The routes live in api.ts; this file is the shell. `bin/deploy`, the unit,
+// the port and the HAProxy route were all proven against the health endpoint
+// long before there was anything interesting to serve, which was the point.
 //
 // NO AUTHENTICATION LIVES HERE, ON PURPOSE. This binds loopback and HAProxy
 // fronts it; the cush-auth device gate is what decides who gets in. That is
@@ -22,6 +28,8 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import { SPEC_FILE, specPayload } from './specfile.ts';
+import { createApi } from './api.ts';
+import { checkDataWritable } from './store.ts';
 
 const app = new Hono();
 
@@ -53,6 +61,11 @@ app.get('/api/health', (c) => c.json({ status: 'ok', service: 'velo' }));
 // it and keeps playing, because a typo in a tuning file must not take the game
 // down.
 app.get('/api/spec', (c) => c.json(specPayload()));
+
+// The leaderboard, ghosts and submission. Everything under /api that is not
+// health or spec. Mounted rather than declared inline so that this file stays
+// about HOW velo is served and api.ts stays about how it is played.
+app.route('/api', createApi());
 
 // WHAT IS PUBLISHED IS NOT WHAT IS BUILT, AND THAT SEPARATION IS THE POINT.
 //
@@ -96,6 +109,18 @@ const hostname = process.env.HOST || '127.0.0.1';
 console.log(`velo server listening on http://${hostname}:${port}`);
 console.log(`  static root: ${STATIC_ROOT} (precompressed) — written only by bin/deploy`);
 console.log('  api:         /api/health, /api/spec (read-only live tune)');
+console.log('               /api/rules, /api/levels, /api/leaderboard/:simHash,');
+console.log('               /api/replays/:replayId, /api/players/:playerId, POST /api/runs');
 console.log(`  live tune:   ${SPEC_FILE} — change it with bin/spec`);
+const data = checkDataWritable();
+console.log(`  board data:  ${data.dir} — plain JSON, inspect it with bin/board`);
+if (!data.ok) {
+  // Loud, and not fatal. The game is the product; the leaderboard is a feature
+  // of it, and refusing to serve the game because a directory is read-only
+  // would be the wrong trade every time.
+  console.error(`!! THE LEADERBOARD CANNOT WRITE: ${data.error}`);
+  console.error('   Submissions will be refused. The game itself is unaffected.');
+  console.error('   Most likely the systemd unit lost ReadWritePaths= for the repo.');
+}
 
 serve({ fetch: app.fetch, port, hostname });

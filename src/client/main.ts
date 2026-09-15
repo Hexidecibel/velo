@@ -26,7 +26,14 @@ import { LEVELS, adoptLevel, findBySimHash, resolveLevel } from './levels.ts';
 import type { LevelEntry } from './levels.ts';
 import { createLegend, createLevelBar } from './chrome.ts';
 import { downloadReplay, onReplayDropped, pickReplay } from './replayio.ts';
-import { clearStoredSpec, loadBests, loadFlag, loadLastLevel, loadStoredSpec, recordBest, saveFlag, saveLastLevel, saveStoredSpec } from './store.ts';
+import { clearStoredSpec, loadBests, loadChoice, loadFlag, loadLastLevel, loadStoredSpec, recordBest, saveChoice, saveFlag, saveLastLevel, saveStoredSpec } from './store.ts';
+import { fetchBoard, fetchReplay, submitRun } from './api.ts';
+import type { BoardEntry, BoardPayload, Category } from './api.ts';
+import { chooseGhost, createGhost, ghostCompat, GHOST_KINDS, GHOST_LABELS } from './ghost.ts';
+import type { Ghost, GhostKind } from './ghost.ts';
+import { hasName, loadIdentity, setName } from './identity.ts';
+import { createBoardUi } from './boardui.ts';
+import { parseReplayFile } from '@/sim/replay.ts';
 import { createLiveTune } from './livetune.ts';
 import { renderArt } from './artrender.ts';
 import { bakeLevel, bakeSignature } from './art/bake.ts';
@@ -40,6 +47,7 @@ const panelRoot = document.getElementById('panel') as HTMLElement;
 const levelbarRoot = document.getElementById('levelbar') as HTMLElement;
 const toastRoot = document.getElementById('toast') as HTMLElement;
 const legendRoot = document.getElementById('legend') as HTMLElement;
+const boardRoot = document.getElementById('board') as HTMLElement;
 const ctx = canvas.getContext('2d', { alpha: false }) as CanvasRenderingContext2D;
 
 // --- which level ------------------------------------------------------------
@@ -118,6 +126,40 @@ let bests = loadBests();
 let lastReplay: Replay | null = null;
 let replayNote = '';
 let playback: { masks: number[]; at: number } | null = null;
+
+// --- leaderboard and ghosts -------------------------------------------------
+//
+// The identity is a device-local id plus a name you type. Nothing authenticates
+// either — see identity.ts for why there is nothing to authenticate WITH, and
+// what the migration path is. Re-simulation on the server means a TIME cannot
+// be faked; whose time it is can be.
+const identity = loadIdentity();
+let boardCategory = loadChoice<Category>('boardCategory', ['human', 'tas'], 'human');
+// `above` by default: racing the run one place ahead of you is the one that
+// makes you ride harder, and it degrades to your own PB when nobody is ahead.
+let ghostKind = loadChoice<GhostKind>('ghost', GHOST_KINDS, 'above');
+let boardVisible = loadFlag('board', true);
+let board: BoardPayload | null = null;
+let boardStatus = '';
+let boardStatusKind: 'ok' | 'warn' | 'bad' | '' = '';
+let ghostNote = '';
+let ghost: Ghost | null = null;
+/** Which replay the live ghost was built from, so a refetch is not repeated. */
+let ghostReplayId = '';
+/**
+ * A finished run banked because it cannot be posted YET — no name chosen. It is
+ * kept rather than dropped because the alternative is somebody's first clean
+ * run disappearing while the game asks them who they are.
+ */
+let pendingSubmit: Replay | null = null;
+/**
+ * A spec the server has already refused. Live tuning makes every run
+ * unpostable, and re-asking on every finish would be one wasted round trip per
+ * death for as long as the panel is open.
+ */
+let refusedSpec = '';
+/** Guards against a slow fetch for level A landing after you switched to B. */
+let boardToken = 0;
 
 const cam = createCamera(cloneCamera(DEFAULT_CAMERA));
 cam.snap({ x: level.start.x, y: level.start.y, vx: 0, vy: 0 });
@@ -202,6 +244,17 @@ function restart(keepReplay = true): void {
   recorder.reset();
   playback = null;
   wasOver = false;
+  // The ghost restarts WITH you. The loop is die-retry-die-retry and a ghost
+  // that kept its position across a restart would be racing a phantom you are
+  // forty metres behind, which is worse than no ghost at all.
+  if (ghost) {
+    ghost.reset();
+    // Clears the "it starts with you on your next restart" note, which this IS.
+    if (ghostNote) {
+      ghostNote = '';
+      syncBoardUi();
+    }
+  }
   cam.snap({ x: level.start.x, y: level.start.y, vx: 0, vy: 0 });
 }
 
@@ -228,6 +281,11 @@ function setLevel(next: LevelEntry, note = ''): void {
   url.searchParams.set('level', entry.id);
   history.replaceState(null, '', url);
   levelBar.update(entry.id, bests);
+  // A ghost belongs to a level. Dropped before the fetch rather than after, so
+  // there is never a frame where last level's ghost is drawn on this one.
+  dropGhost('');
+  board = null;
+  refreshBoard();
 }
 
 function stepLevel(delta: number): void {
@@ -262,6 +320,10 @@ function recomputeSpec(carry: boolean): void {
   const p = PRESETS.find((x) => x.id === presetId);
   specIsTuned = p ? specHash(localSpec) !== specHash(p.spec) : true;
   panel.setTuned(specIsTuned);
+  // A ghost is a run on a SPECIFIC bike. Once the bike moves, those inputs
+  // describe a line nobody rode, so the ghost goes rather than lying quietly.
+  if (ghost) dropGhost('the bike changed, so the ghost was dropped — it was a run on a different bike');
+  syncBoardUi();
 }
 
 /** A panel slider moved: `localSpec` has already been mutated in place. */
@@ -351,6 +413,10 @@ function finishRun(): void {
   } else {
     replayNote = 'run banked — T replays it, E exports it as a file';
   }
+  // Post it. Only a finish goes on a board, and `submitRunIfPossible` is the
+  // one that decides that — not this line — so that "what gets posted" lives in
+  // one place beside the reasons it might not.
+  submitRunIfPossible(r);
 }
 
 function startPlayback(): void {
@@ -367,6 +433,232 @@ function startPlayback(): void {
   recorder.reset();
   playback = { masks: decodeInputs(lastReplay.inputs), at: 0 };
   cam.snap({ x: level.start.x, y: level.start.y, vx: 0, vy: 0 });
+}
+
+// --- the leaderboard, and the ghost --------------------------------------------
+
+function boardStatusSet(text: string, kind: 'ok' | 'warn' | 'bad' | '' = 'warn'): void {
+  boardStatus = text;
+  boardStatusKind = text ? kind : '';
+  syncBoardUi();
+}
+
+function syncBoardUi(): void {
+  boardUi.update({
+    visible: boardVisible,
+    category: boardCategory,
+    ghost: ghostKind,
+    playerId: identity.playerId,
+    name: identity.name,
+    board,
+    status: boardStatus,
+    statusKind: boardStatusKind,
+    ghostNote,
+  });
+}
+
+function dropGhost(note: string): void {
+  ghost = null;
+  ghostReplayId = '';
+  ghostNote = note;
+}
+
+/**
+ * Fetch the board for the level on screen, then pick a ghost from it.
+ *
+ * `boardToken` is the whole of the concurrency story: switching levels twice
+ * quickly leaves two fetches in flight and the FIRST one can land last. Without
+ * the guard that shows level A's board under level B's name, which is the kind
+ * of bug that gets reported as "the leaderboard is wrong sometimes".
+ */
+function refreshBoard(): void {
+  const token = ++boardToken;
+  const forLevel = level.simHash;
+  fetchBoard(forLevel, { category: boardCategory, playerId: identity.playerId }).then((r) => {
+    if (token !== boardToken || forLevel !== level.simHash) return;
+    if (!r.ok) {
+      board = null;
+      boardStatusSet(
+        r.offline
+          ? 'leaderboard offline — the game works fine without it; times are banked locally'
+          : r.error,
+        r.offline ? 'warn' : 'bad',
+      );
+      return;
+    }
+    board = r.value;
+    if (boardStatusKind !== 'ok') boardStatusSet('', '');
+    ensureGhost();
+  });
+}
+
+/**
+ * Make the live ghost match what the selector asks for and what the board
+ * offers. Idempotent and safe to call on every board refresh: it returns early
+ * when the right ghost is already running, which is what keeps a ghost from
+ * being rebuilt (and therefore restarted) under a player mid-run.
+ */
+function ensureGhost(): void {
+  if (!board) return;
+  const pick = chooseGhost(ghostKind, {
+    above: board.above,
+    you: board.you,
+    best: board.best,
+    rank: board.rank,
+  });
+  if (!pick.entry) {
+    dropGhost(
+      ghostKind === 'off'
+        ? ''
+        : board.total === 0
+          ? 'no ghost yet — nobody has finished this level'
+          : `no ${GHOST_LABELS[ghostKind]} to race yet`,
+    );
+    syncBoardUi();
+    return;
+  }
+  if (pick.entry.replayId === ghostReplayId) return;
+
+  const want = pick.entry;
+  const forLevel = level.simHash;
+  fetchReplay(want.replayId, forLevel).then((r) => {
+    if (forLevel !== level.simHash) return;
+    if (!r.ok) {
+      dropGhost(`could not load that ghost: ${r.error}`);
+      syncBoardUi();
+      return;
+    }
+    // Checked before it is built, never after. A ghost from another rev or
+    // another bike CANNOT be shown — playing those inputs under this build's
+    // physics would draw a line nobody rode, with somebody's name on it.
+    const compat = ghostCompat(level, spec, r.value);
+    if (!compat.ok) {
+      dropGhost(compat.reason);
+      syncBoardUi();
+      return;
+    }
+    ghost = createGhost(level, spec, r.value, {
+      kind: pick.kind,
+      name: want.name,
+      replayId: want.replayId,
+      rank: pick.rank,
+    });
+    ghostReplayId = want.replayId;
+    ghostNote = '';
+    // Line it up with where the player already is, because a ghost that arrived
+    // mid-run would otherwise start on the line racing nobody.
+    //
+    // BOUNDED, and the bound is the point. Fast-forwarding is synchronous, and
+    // a ten-minute run is 76,800 input frames — about 0.8 s of straight-line
+    // arithmetic on the main thread, which is a visible freeze rather than a
+    // hitch. 4,096 frames is 32 seconds of run and roughly 0.14 s, which is one
+    // dropped frame. Past that the ghost waits for the next restart and says
+    // so, which is honest and cannot stall the game.
+    const GHOST_CATCHUP_MAX = 4096;
+    if (recorder.frames > GHOST_CATCHUP_MAX) {
+      ghostNote = `${want.name}'s ghost is loaded — it starts with you on your next restart (R)`;
+    } else {
+      for (let i = 0; i < recorder.frames && !ghost.done; i++) ghost.advance();
+    }
+    syncBoardUi();
+  });
+}
+
+function setGhostKind(k: GhostKind): void {
+  ghostKind = k;
+  saveChoice('ghost', k);
+  if (k === 'off') {
+    dropGhost('');
+    syncBoardUi();
+    return;
+  }
+  ghostReplayId = '';
+  ensureGhost();
+}
+
+function setCategory(c: Category): void {
+  boardCategory = c;
+  saveChoice('boardCategory', c);
+  board = null;
+  ghostReplayId = '';
+  syncBoardUi();
+  refreshBoard();
+}
+
+/**
+ * Post a finished run.
+ *
+ * THE CLIENT NEVER POSTS A TIME, only the buttons that produced it: the server
+ * re-simulates the input stream and derives the time itself. That is what makes
+ * the board cheat-proof by construction, and it is why this function is allowed
+ * to be this trusting — there is nothing here worth lying to.
+ *
+ * Browser runs always go in as `human`. The TAS category exists because a
+ * solver-generated stream verifies perfectly and always will, so it is a
+ * declared category rather than a detected one — and it is posted with
+ * `bin/submit --category tas`, from the machine that generated it, rather than
+ * being a dropdown next to the player's own runs.
+ */
+function submitRunIfPossible(r: Replay): void {
+  if (!r.finished) return;
+  if (r.specHash === refusedSpec) {
+    boardStatusSet('not posted: this bike is not the shipped one (live tune or the tuning panel)', 'warn');
+    return;
+  }
+  if (!hasName(identity)) {
+    pendingSubmit = r;
+    boardStatusSet('pick a name above and this run gets posted', 'warn');
+    return;
+  }
+  pendingSubmit = null;
+  boardStatusSet('posting…', '');
+  submitRun({ playerId: identity.playerId, name: identity.name, category: 'human', replay: r }).then((res) => {
+    if (!res.ok) {
+      if (res.error.includes('shipped bike')) refusedSpec = r.specHash;
+      boardStatusSet(
+        res.offline ? 'leaderboard offline — the time is yours locally, it just did not post' : res.error,
+        res.offline ? 'warn' : 'bad',
+      );
+      return;
+    }
+    const v = res.value;
+    boardStatusSet(
+      v.placement.pb
+        ? `posted: #${v.placement.rank} of ${v.placement.total} at ${v.timeSeconds.toFixed(3)}s` +
+            (v.placement.previousTicks !== null
+              ? ` — ${ticksToSeconds(v.placement.previousTicks - v.entry.timeTicks).toFixed(3)}s off your best`
+              : '')
+        : `verified in ${v.verifyMs} ms, but slower than your ${ticksToSeconds(v.entry.timeTicks).toFixed(3)}s`,
+      'ok',
+    );
+    refreshBoard();
+  });
+}
+
+function onNameChosen(raw: string): void {
+  const clean = setName(raw);
+  identity.name = clean;
+  syncBoardUi();
+  if (clean && pendingSubmit) {
+    const r = pendingSubmit;
+    pendingSubmit = null;
+    submitRunIfPossible(r);
+  }
+}
+
+/** Watch one board entry's run from the start, with the normal playback path. */
+function watchEntry(e: BoardEntry): void {
+  fetchReplay(e.replayId, level.simHash).then((r) => {
+    if (!r.ok) {
+      boardStatusSet(`could not load that run: ${r.error}`, 'bad');
+      return;
+    }
+    try {
+      loadReplay(parseReplayFile(r.value), `${e.name} — ${ticksToSeconds(e.timeTicks).toFixed(3)}s`);
+    } catch (err) {
+      boardStatusSet(`that run did not parse: ${err instanceof Error ? err.message : String(err)}`, 'bad');
+    }
+  });
 }
 
 // --- replay files -----------------------------------------------------------
@@ -503,6 +795,7 @@ function step(): void {
       return;
     }
     sim.advance(playback.masks[playback.at++]);
+    ghost?.advance();
     return;
   }
 
@@ -520,6 +813,12 @@ function step(): void {
   wasOver = false;
   sim.advance(mask);
   recorder.capture(mask, sim);
+  // ONE GHOST FRAME FOR ONE PLAYER FRAME, and strictly after the player's own
+  // step. The ghost owns a separate Sim with a separate World and a cloned
+  // spec, so this line cannot reach the player's state — ghost.test.ts hashes a
+  // run with and without a ghost attached and asserts the chains are identical,
+  // which is the only way that claim stays true as this file changes.
+  ghost?.advance();
   if (sim.state.dead || sim.state.finished) {
     finishRun();
     wasOver = true;
@@ -539,10 +838,11 @@ function draw(alpha: number, dtMs: number): void {
     : null;
   cam.update({ x: pose.px, y: pose.py, vx: sim.state.vx, vy: sim.state.vy }, dtSec, cssW, cssH, ov);
 
-  const ghost: Pose | null = null;
+  const ghostPose: Pose | null = ghost ? ghost.pose(alpha) : null;
   const opts = {
     debug,
-    ghost,
+    ghost: ghostPose,
+    ghostFacing: ghost?.facing,
     overview: overview.blend,
     // Indicators are for driving, not for the overview — while the whole level
     // is on screen there is nothing off it to point at, and eight arrows
@@ -624,6 +924,20 @@ function updateHud(): void {
       ? `<span class="warn">bike is not the preset as shipped${specIsTuned ? ' (tuned)' : ''}${liveTune.heldPaths.size ? ` (${liveTune.heldPaths.size} field(s) held by bin/spec)` : ''} — H opens the panel</span>`
       : '',
     `<span class="k">recorded</span> ${recorder.frames} frames${lastReplay ? `  <span class="k">banked</span> ${lastReplay.frames}` : ''}  <span class="k">attempts</span> ${attempts.forLevel(level.simHash).length}`,
+    // The ghost gets a HUD line of its own because it is the thing on screen
+    // that is easiest to mistake for a bug: a second bike appears, and if you
+    // cannot see whose it is and how far ahead, it reads as a rendering fault.
+    ghost
+      ? `<span class="k">ghost</span> ${ghost.meta.name}${ghost.meta.rank !== null ? ` (#${ghost.meta.rank})` : ''} ` +
+        `<span class="v">${ticksToSeconds(ghost.timeTicks).toFixed(3)}s</span>  ` +
+        `<span class="k">${GHOST_LABELS[ghost.meta.kind]}</span>  ${ghost.done ? 'finished' : `${ghost.at}/${ghost.frames}`}` +
+        // A gap in METRES, not seconds. The ghost is stepped one frame for one
+        // frame with you, so the two clocks are identical by construction and a
+        // time gap would always read 0.00s. What differs is where you each are.
+        `   <span class="${s.px - ghost.x >= 0 ? 'ok' : 'warn'}">${Math.abs(s.px - ghost.x).toFixed(1)} m ${s.px - ghost.x >= 0 ? 'ahead' : 'behind'}</span>`
+      : ghostNote
+        ? `<span class="k">ghost</span> <span class="warn">${ghostNote}</span>`
+        : '',
     replayNote ? `<span class="${replayNote.startsWith('REPLAY DESYNC') || replayNote.startsWith('CANNOT PLAY') ? 'bad' : 'warn'}">${replayNote}</span>` : '',
     '',
     `<span class="k">rev ${SIM_REV} bumps freely during M1 — times reset on every physics change.</span>`,
@@ -643,6 +957,16 @@ const levelBar = createLevelBar(levelbarRoot, LEVELS, (id) => {
 });
 levelBar.update(entry.id, bests);
 createLegend(legendRoot);
+
+// The leaderboard panel. Created before live tune, because live tune's first
+// poll fires immediately and can reach `syncBoardUi` through recomputeSpec.
+const boardUi = createBoardUi(boardRoot, {
+  onCategory: (c) => setCategory(c),
+  onGhost: (k) => setGhostKind(k),
+  onName: (n) => onNameChosen(n),
+  onRefresh: () => refreshBoard(),
+  onWatch: (e) => watchEntry(e),
+});
 // Sync the URL on boot as well as on every change, so that the address bar is a
 // shareable link to what is on screen even when the level came from the stored
 // preference rather than from the URL.
@@ -760,6 +1084,12 @@ input.onCommand((code) => {
     case 'KeyH':
       panel.toggle();
       break;
+    case 'KeyB':
+      boardVisible = !boardVisible;
+      saveFlag('board', boardVisible);
+      syncBoardUi();
+      if (boardVisible) refreshBoard();
+      break;
     case 'KeyP':
       loop.paused = !loop.paused;
       break;
@@ -793,6 +1123,8 @@ input.onCommandUp((code) => {
 window.addEventListener('pointerdown', () => overview.skipIntro());
 
 loop.start();
+syncBoardUi();
+refreshBoard();
 
 // A handle for the headless smoke check in bin/smoke, and for poking at the sim
 // from devtools while tuning. Not load-bearing.
@@ -825,6 +1157,34 @@ interface VeloWindow extends Window {
   get attempts() {
     return attempts.all;
   },
+  // The leaderboard half, exposed for bin/smoke — which drives the real bundle
+  // against a real server and is the only check that can see the board fetch,
+  // the ghost fetch and the ghost's own sim all working through the built page.
+  get board() {
+    return board;
+  },
+  get ghost() {
+    return ghost
+      ? {
+          name: ghost.meta.name,
+          kind: ghost.meta.kind,
+          rank: ghost.meta.rank,
+          replayId: ghost.meta.replayId,
+          frames: ghost.frames,
+          at: ghost.at,
+          done: ghost.done,
+          x: ghost.x,
+          y: ghost.y,
+          timeTicks: ghost.timeTicks,
+        }
+      : null;
+  },
+  get ghostNote() {
+    return ghostNote;
+  },
+  identity,
+  refreshBoard,
+  setGhostKind,
   levels: LEVELS,
   art: artParams,
   /** Exposed so bin/shots can stop the loop repainting over a captured frame. */

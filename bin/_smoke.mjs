@@ -7,6 +7,14 @@
 //
 // It exists because a node-only unit test cannot see a broken bundle, a canvas
 // that never paints, or a sim that explodes one second after the start line.
+//
+// It also drives the LEADERBOARD end to end, against a real server: a real
+// velo server is started on a scratch data directory, a real replay is posted
+// to it and re-simulated there, and the page is then asked to fetch that board
+// and build a ghost out of it. Everything from `POST /api/runs` to a second sim
+// stepping beside the player's is exercised in the built bundle. A unit test
+// can prove a ghost does not touch the player's state; only this can prove the
+// fetch, the compatibility check and the frame loop are actually wired up.
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
@@ -24,11 +32,55 @@ const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/cs
 // through tuning with.
 let liveSpec = { version: 'none', present: false, override: {}, error: null };
 
+// A REAL velo server, on a scratch data directory, for the leaderboard half.
+//
+// Not a stub. A stub of `/api/runs` would assert that the client can talk to a
+// stub — the interesting half is that a browser-recorded input stream verifies
+// on the server and comes back as a ghost, and only the real thing can show
+// that. VELO_DATA_DIR keeps it away from the real board; the directory is
+// removed in the `finally`.
+const apiData = await mkdtemp(join(tmpdir(), 'velo-smoke-data-'));
+const apiPort = await freePort();
+const api = spawn(
+  join(ROOT, 'node_modules/.bin/tsx'),
+  ['src/server/index.ts'],
+  { cwd: ROOT, env: { ...process.env, PORT: String(apiPort), HOST: '127.0.0.1', VELO_DATA_DIR: apiData }, stdio: ['ignore', 'pipe', 'pipe'] },
+);
+const apiBase = `http://127.0.0.1:${apiPort}`;
+// Killed on ANY exit, not only through the `finally` below: the health wait
+// and the Chrome launch both happen before the try block, and a tsx child left
+// holding a port is the kind of orphan that makes the NEXT run look flaky.
+process.once('exit', () => api.kill('SIGKILL'));
+await waitForHealth(apiBase);
+console.log(`    api server on ${apiBase} (data in a scratch dir)`);
+
 const serve = createServer(async (req, res) => {
   const raw = decodeURIComponent((req.url || '/').split('?')[0]);
   if (raw === '/api/spec') {
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     res.end(JSON.stringify(liveSpec));
+    return;
+  }
+  // Everything else under /api goes to the real server. The page is served from
+  // this origin, so the leaderboard has to answer on this origin too — a proxy
+  // rather than a CORS hole, which is also exactly what production is (one
+  // process serving both).
+  if (raw.startsWith('/api/')) {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    const body = Buffer.concat(chunks);
+    try {
+      const upstream = await fetch(apiBase + (req.url || ''), {
+        method: req.method,
+        headers: { 'content-type': req.headers['content-type'] || 'application/json' },
+        body: req.method === 'GET' || req.method === 'HEAD' ? undefined : body,
+      });
+      const text = await upstream.text();
+      res.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type') || 'application/json' });
+      res.end(text);
+    } catch (e) {
+      res.writeHead(502).end(String(e));
+    }
     return;
   }
   const rel = normalize(raw === '/' ? '/index.html' : raw).replace(/^(\.\.[/\\])+/, '');
@@ -307,13 +359,92 @@ try {
   if (after.tick <= during.tick) throw new Error('the sim did not resume after TAB was released');
   if (after.zoom <= during.zoom) throw new Error('the camera never eased back toward play framing');
 
+  // --- the leaderboard and the ghost, end to end ---------------------------
+  //
+  // Posted from here rather than ridden in the browser, because finishing a
+  // level under scripted input is not something a smoke test can do reliably —
+  // and it is not the part that needs proving. What needs proving is the chain
+  // from a verified time on a real server to a second sim stepping beside the
+  // player's inside the built bundle, and that is what this checks.
+  const fixture = JSON.parse(await readFile(join(ROOT, 'src/server/fixture.replay.json'), 'utf8'));
+  const posted = await (await fetch(apiBase + '/api/runs', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ playerId: 'smokepilot01', name: 'Smoke Pilot', category: 'human', replay: fixture }),
+  })).json();
+  if (!posted.ok) throw new Error(`the server refused the fixture replay: ${posted.code} ${posted.reason}`);
+  console.log(`    posted: ${posted.levelName} ${posted.timeSeconds.toFixed(3)}s verified server-side in ${posted.verifyMs} ms`);
+
+  await cdp.send('Page.navigate', { url: url + '?level=01-first-light' });
+  await cdp.waitFor('Page.loadEventFired', 15000);
+
+  // The board fetch and then the ghost fetch, both real round trips.
+  const ghostDeadline = Date.now() + 10000;
+  for (;;) {
+    const g = await evalIn(cdp, `!!(window.velo && window.velo.ghost)`);
+    if (g === true) break;
+    if (Date.now() > ghostDeadline) {
+      const why = await evalIn(cdp, `JSON.stringify({ board: !!(window.velo && window.velo.board), note: window.velo && window.velo.ghostNote })`);
+      throw new Error(`no ghost appeared within 10 s — ${why}`);
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+
+  // Drive, and check the ghost steps WITH the player: one ghost frame per input
+  // frame is the contract, and it is what makes the gap on screen mean anything.
+  await evalIn(cdp, `(window.velo.restart(false), true)`);
+  await evalIn(cdp, `
+    (() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowUp', bubbles: true })); return true; })()
+  `);
+  await new Promise((r) => setTimeout(r, 1500));
+  await evalIn(cdp, `
+    (() => { window.dispatchEvent(new KeyboardEvent('keyup', { code: 'ArrowUp', bubbles: true })); return true; })()
+  `);
+  const lb = await evalIn(cdp, `
+    (() => {
+      const b = window.velo.board;
+      const g = window.velo.ghost;
+      return {
+        total: b && b.total,
+        top: b && b.top.map((e) => e.name),
+        rank: b && b.rank,
+        above: b && b.above && b.above.name,
+        rows: document.querySelectorAll('#board .bd-row').length,
+        shown: (document.getElementById('board').textContent || '').includes('Smoke Pilot'),
+        ghostName: g && g.name,
+        ghostKind: g && g.kind,
+        ghostAt: g && g.at,
+        ghostFrames: g && g.frames,
+        ghostMoved: g && (g.x !== window.velo.level.start.x),
+        recorded: window.velo.recordedFrames,
+        hudGhost: (document.getElementById('hud').textContent || '').includes('ghost'),
+      };
+    })()
+  `);
+  console.log('    leaderboard: ' + JSON.stringify(lb));
+  if (lb.total !== 1) throw new Error(`board did not reach the page (total=${lb.total})`);
+  if (!lb.shown || lb.rows < 1) throw new Error('the board panel rendered no rows');
+  // This browser profile is fresh, so it has no time here: the entry "just
+  // above" an unranked player is the slowest one on the board, which is the
+  // only one there is.
+  if (lb.rank !== null) throw new Error(`a fresh profile should have no rank (got ${lb.rank})`);
+  if (lb.above !== 'Smoke Pilot') throw new Error(`wrong ghost offered (above=${lb.above})`);
+  if (lb.ghostName !== 'Smoke Pilot' || lb.ghostKind !== 'above') throw new Error(`wrong ghost built (${lb.ghostName}/${lb.ghostKind})`);
+  if (!lb.ghostMoved) throw new Error('the ghost never left the start line — its sim is not being stepped');
+  if (lb.ghostAt !== lb.recorded) {
+    throw new Error(`the ghost is out of step with the player (${lb.ghostAt} ghost frames vs ${lb.recorded} recorded)`);
+  }
+  if (!lb.hudGhost) throw new Error('the HUD never named the ghost — a second bike with no label reads as a bug');
+
   cdp.close();
 } catch (e) {
   failed = e;
 } finally {
   chrome.kill('SIGKILL');
+  api.kill('SIGKILL');
   serve.close();
   await rm(profile, { recursive: true, force: true }).catch(() => {});
+  await rm(apiData, { recursive: true, force: true }).catch(() => {});
 }
 
 if (failed) {
@@ -322,6 +453,20 @@ if (failed) {
 }
 console.log('==> smoke ok');
 process.exit(0);
+
+async function waitForHealth(base) {
+  const deadline = Date.now() + 30000;
+  for (;;) {
+    try {
+      const r = await fetch(base + '/api/health');
+      if (r.ok) return;
+    } catch {
+      // not listening yet — tsx has to compile the entry point first
+    }
+    if (Date.now() > deadline) throw new Error(`the api server never answered on ${base}`);
+    await new Promise((r) => setTimeout(r, 200));
+  }
+}
 
 // --- the smallest CDP client that does the job ------------------------------
 

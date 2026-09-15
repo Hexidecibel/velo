@@ -244,3 +244,89 @@ body:has(#panel.hidden) #levelbar { right: 14px; }
   font-size: 9px;
   letter-spacing: .08em;
 }
+
+/* --- leaderboard --------------------------------------------------------- */
+/* Bottom-right, opposite the legend and clear of the HUD's top-left column.
+   It sits inboard of the tuning panel when that is open, the same way the level
+   bar does, so opening H never hides where you stand. */
+#board {
+  position: fixed;
+  right: calc(var(--panel-w) + 14px);
+  bottom: 10px;
+  width: 310px;
+  max-height: 58vh;
+  overflow-y: auto;
+  text-shadow: 0 1px 2px #000;
+}
+body:has(#panel.hidden) #board { right: 14px; }
+#board.hidden { display: none; }
+#board .bd-panel {
+  background: #17132ee0;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 6px 8px;
+}
+#board .bd-head { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+#board .bd-title {
+  color: var(--dim);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  font-size: 10px;
+  flex: 1 1 auto;
+}
+#board button {
+  background: #221d42;
+  color: var(--dim);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  font: inherit;
+  font-size: 10px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+#board button:hover { color: var(--ink); border-color: var(--edge); }
+#board .bd-cat.on { color: var(--bg); background: var(--edge); border-color: var(--edge); }
+#board .bd-list { margin: 4px 0; }
+#board .bd-row {
+  display: grid;
+  grid-template-columns: 22px 1fr auto auto;
+  gap: 6px;
+  align-items: baseline;
+  padding: 1px 0;
+}
+/* Your own row, marked without colour alone — the left rule carries it too, so
+   it still reads for anyone who cannot separate the two hues. */
+#board .bd-row.you {
+  color: var(--accent);
+  border-left: 2px solid var(--accent);
+  margin-left: -4px;
+  padding-left: 2px;
+}
+#board .bd-rank { color: var(--dim); text-align: right; }
+#board .bd-name-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#board .bd-time { font-variant-numeric: tabular-nums; }
+#board .bd-watch { opacity: 0; }
+#board .bd-row:hover .bd-watch { opacity: 1; }
+#board .bd-empty, #board .bd-hint { color: var(--dim); font-size: 10px; }
+#board .bd-you { margin: 4px 0; }
+#board .bd-gap { color: var(--dim); }
+#board .bd-gap.ok { color: var(--good); }
+#board .bd-ghost { display: flex; align-items: center; gap: 6px; margin: 6px 0 2px; }
+#board .bd-ghost select { flex: 1 1 auto; font: inherit; font-size: 11px; }
+#board .bd-name { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 6px; }
+#board .bd-name .bd-hint { flex: 1 0 100%; }
+#board .bd-name input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--free);
+  color: var(--ink);
+  border: 1px solid var(--edge);
+  border-radius: 2px;
+  font: inherit;
+  padding: 1px 4px;
+}
+#board .bd-note { color: var(--dim); font-size: 10px; margin: 4px 0; line-height: 1.35; }
+#board .bd-note.ok { color: var(--good); }
+#board .bd-note.warn { color: var(--accent); }
+#board .bd-note.bad { color: var(--bad); }
+#board .bd-foot { color: #6b6390; font-size: 9px; margin-top: 6px; line-height: 1.35; }

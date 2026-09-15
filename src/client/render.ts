@@ -79,6 +79,14 @@ export interface RenderOpts {
   debug: boolean;
   ghost: Pose | null;
   /**
+   * Which way the GHOST'S bike is facing. Its own, never the player's: facing
+   * decides which wheel is drawn as the driven one and which way the rider
+   * leans, so borrowing the player's would draw a ghost that flips whenever the
+   * player presses space. Undefined falls back to the player's facing, which is
+   * what every call site did before ghosts came from a leaderboard.
+   */
+  ghostFacing?: number;
+  /**
    * 0..1 — how far the camera is into the wide overview framing. Drives the
    * bike locator, because at 9 px/m the bike is fifteen pixels of thin line in
    * a screenful of cave and "show the bike's position clearly" is not optional.
@@ -178,7 +186,7 @@ export function render(
   ctx.stroke();
   ctx.globalAlpha = 1;
 
-  if (opts.ghost) drawBike(ctx, opts.ghost, spec, px, 0.25, state.facing);
+  if (opts.ghost) drawBike(ctx, opts.ghost, spec, px, 0.25, opts.ghostFacing ?? state.facing);
   drawBike(ctx, pose, spec, px, 1, state.facing);
 
   if (opts.overview > 0) drawLocator(ctx, pose, px, opts.overview);

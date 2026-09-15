@@ -13,9 +13,11 @@ number that was wrong, and called it *"close to original"*, which is the highest
 praise available here. That bike is now frozen and everything else is built
 against it.
 
-Since then: ten hand-authored levels forming a teaching curriculum, replays as
-exportable files, remote tuning from a terminal, level navigation, and a
-deployment.
+Since then: twenty hand-authored levels forming a teaching curriculum, replays
+as exportable files, remote tuning from a terminal, level navigation, a
+deployment, and a **leaderboard with ghosts** — times verified by re-simulating
+the input stream on the server, and the run one place ahead of you riding beside
+you while you try to catch it.
 
 ```
 bin/dev                    # dev server, hot-reloads levels as you author them
@@ -27,16 +29,17 @@ behind the cush-auth device gate.
 
 ## What this is not
 
-- **It is not a game yet.** There are no menus, no art, no audio, no juice, and
-  two levels. `test01` is ugly on purpose, so that you can see what the collision
-  is doing; `test02` exists to exercise the level format's curve primitive and is
-  reachable only by typing `?level=bowl` into the URL, because a level *menu* is
-  milestone 6.
-- **There is no server, no leaderboard, and no network code.** `getEngine()`
-  exists in `src/sim/rev.ts` because physics versioning is a one-way door and
-  costs nothing to build now, but nothing calls it over HTTP. Port 9422 is
-  penciled in for later; it is *not* claimed, HAProxy is untouched, and
-  `INFRASTRUCTURE.md` has not been edited.
+- **It is not a game yet.** There are no audio and no menus beyond a level
+  picker. `test01` is ugly on purpose, so that you can see what the collision is
+  doing; `test02` exercises the level format's curve primitive.
+- **The leaderboard is not authenticated, and does not pretend to be.**
+  Re-simulation means a *time* cannot be faked. *Whose* time it is can be —
+  nothing upstream of this app tells it who is playing. See
+  [Who you are, and what that is worth](#who-you-are-and-what-that-is-worth).
+- **The TAS category is declared, not detected.** Nothing can tell a
+  solver-generated input stream from a person's, because there is nothing to
+  tell — both are just buttons the sim accepts. The split is a convention, and
+  a deliberate one.
 - **It is not a level editor.** The level *format* is a deliverable — it is
   plain JSON you can write in a text editor — but the visual builder is deferred.
 - **It is not tuned.** The numbers in `DEFAULT_SPEC` are reasoned starting
@@ -59,7 +62,7 @@ add a script rather than running an ad-hoc command.
 | `bin/build` | `tsc -b` typecheck (a separate, mandatory step) then `vite build` into `dist/`. |
 | `bin/test` | vitest, colocated, plain node. `--watch` to re-run on change. |
 | `bin/lint` | `tsc -b` plus eslint. Both, in that order — eslint here is type-unaware. |
-| `bin/smoke` | Builds, then drives the real page in headless Chrome over CDP: asserts nothing threw, nothing went NaN, the replay verifies, the **cross-engine hash chain from Chrome's V8 matches Node's V8**, live tune applies end to end, and **holding TAB advances neither the clock nor the recording**. |
+| `bin/smoke` | Builds, then drives the real page in headless Chrome over CDP: asserts nothing threw, nothing went NaN, the replay verifies, the **cross-engine hash chain from Chrome's V8 matches Node's V8**, live tune applies end to end, and **holding TAB advances neither the clock nor the recording**. It then starts a **real velo server** on a scratch data directory, posts a real replay to it, and asserts the built page fetches that board, builds a ghost from it and steps that ghost one frame for one input frame. |
 | `bin/preview` | Serves the built `dist/`. A production-bundle sanity check, not a deployment. |
 | `bin/level-export` | Writes the built-in levels out to `levels/test01.json` and `levels/test02-bowl.json`. |
 | `bin/level-check` | Validates a hand-authored level JSON, prints its two hashes, and **warns about straight runs too coarse to ride smoothly**. |
@@ -71,10 +74,9 @@ add a script rather than running an ad-hoc command.
 | `bin/slope-sweep` | Sweeps a synthetic ramp across slope angle, entry speed, input strategy and transition sharpness, and prints what the bike does. |
 | `bin/artbench` | **Measures the art renderer's frame budget with the camera moving.** Flies the camera across a level at play speed, times the render call against the old flat renderer on the same frames, breaks the cost down layer by layer, and then drives the real game and watches real frame times. Exits 2 if a warm frame's p95 goes over 16.7 ms. Every timed pass runs at FULL detail with the adaptive system off, so "it passes" can never quietly mean "it passed by turning everything off"; what the adaptive system settles at is printed separately. `BENCH_OUT=<file>` appends each level as it finishes, so a killed sweep costs only what it had not reached. `BENCH_ART='{"props":0,...}'` overrides art parameters before measuring, which is how a before/after stays honest on one build. |
 | `bin/shots` | Screenshots several levels at the three zooms the camera reaches, with the art on, the art off, the `G` overlay up, and framed on the level's tightest ceiling. Output to `shots/` (gitignored). The A/B pair is the point: "is the collision edge still the most legible line" is a comparison, not an opinion. `SHOTS_ONLY=art-62` takes one shot per level, which is how you judge twenty levels as a SET; `SHOTS_AT=x,y,zoom` frames one exact place, which is how you find out what a prop that looked wrong in an overview actually is. |
+| `bin/board` | **Inspect, check, rebuild and prune the leaderboard store.** No arguments lists every level with its entry counts; a level id shows one board; `player <id>` shows one player's PBs; `check` is an integrity pass; `rebuild [--verify]` regenerates the boards and player files from the submission log, re-simulating every replay if asked; `prune [--apply]` removes replay blobs nothing references, and is a dry run unless you say so. |
+| `bin/submit` | **Posts a replay file to a running server.** Defaults to the **TAS** category, because anything submitted from a terminal was produced by a program and declaring that is the whole point of having the category. Takes a directory, so `bin/submit /tmp/pilot/` posts a whole `bin/level-drive --save` sweep. |
 | `bin/clean` | Removes `dist/` and `tsconfig.tsbuildinfo`; `--all` also removes `node_modules/`. |
-
-`start`, `stop`, `status`, `logs`, `install-units` and `deploy` arrive with the
-server milestone and deliberately do not exist yet.
 
 `bin/_chrome.mjs` is shared by the two scripts that drive headless Chrome, and
 it exists for a reason worth knowing: **both of them kill Chrome in a `finally`,
@@ -99,6 +101,7 @@ reap any Chrome holding one of their own profile directories before they start.
 | `[` / `]` | previous / next level |
 | G | **draw the true collision boundary**, its normals and the live contacts, over everything else |
 | V | art renderer on / off — the A/B for readability |
+| B | show/hide the **leaderboard and ghost picker** — open by default |
 | H | show/hide the tuning panel — **closed by default**, remembered once you open it |
 | `+` / `-` | zoom bias |
 | P | pause |
@@ -178,10 +181,12 @@ somebody halfway through authoring it.
   from before the picker existed still works.
 - The last level played, the panel's tuned spec, and local best times are
   remembered in `localStorage`. All three are **per-viewer conveniences, not
-  game state**: best times are unverified, local to one browser, and keyed by
-  `SIM_REV` so a physics change retires them automatically. Real times live on
-  the server behind re-simulation, which is milestone 4, and nothing here is
-  allowed to grow into that.
+  game state**: best times there are unverified, local to one browser, and keyed
+  by `SIM_REV` so a physics change retires them automatically. The times that
+  count live on the server behind re-simulation — see *The leaderboard* below —
+  and nothing in `localStorage` is allowed to grow into that. The one exception
+  is the `playerId`, which is identity rather than a convenience and is treated
+  as such.
 
 ## Replays are files now
 
@@ -215,6 +220,229 @@ taken on if this build does not ship it.
 Every attempt of a session is retained, not just the most recent, keyed by
 level. There is no UI for that yet; it is the cheap groundwork for replaying
 every failed attempt alongside the line that worked.
+
+## The leaderboard
+
+**A replay is an input stream, not a trajectory.** About a kilobyte of
+run-length-encoded button masks — `src/server/fixture.replay.json` is an
+11.7-second run of `01-first-light` in **1,499 bytes**. Nothing in it says where
+the bike went; it says which buttons were held, and the physics decides the
+rest.
+
+That one fact is the whole design. The server **re-simulates every submission
+and derives the time itself**, so the board is cheat-proof by construction: you
+cannot fabricate a state trajectory the sim would not produce, because you never
+submit a trajectory. It works because determinism was designed in from the first
+commit and the cross-engine hash chain is proven — a browser-recorded run
+re-verifies bit-identically on the box, which `bin/smoke` checks on every run.
+
+Verification of a real run costs **6-60 ms**. A ten-minute run, the longest the
+server will accept, is about half a second.
+
+```
+POST /api/runs                      { playerId, name, category, replay }
+GET  /api/leaderboard/:simHash      ?category= &rev= &player= &limit=
+GET  /api/replays/:replayId         ?level=<simHash>   — the ghost fetch
+GET  /api/players/:playerId
+GET  /api/levels                    every level with its entry counts
+GET  /api/rules                     rev, bike hash, categories, every limit
+```
+
+### Verify before persisting
+
+Nothing is written until the re-simulation has confirmed the outcome, the time
+*and* the apple count. In order, a submission must:
+
+1. be **under the caps** — 512 KB of body, 76,800 input frames (ten minutes),
+   and a bounded `hashes` array;
+2. be the **live `SIM_REV`**, or it is refused with the same wording
+   `bin/replay` uses, from `revMismatchRefusal()` so the two cannot drift;
+3. be for a **level this build ships**, matched by `simHash`. A replay file
+   carries its own level so that it stands alone as a bug report, and trusting
+   *that* here would let anybody mint a board for a one-metre ramp with the
+   flower on top;
+4. be on the **shipped bike**, by `specHash`. A time set with the tuning panel
+   open is a real run of a different sport, and the verifier would confirm it
+   happily;
+5. **finish**, with every apple collected;
+6. **re-simulate to exactly the claimed outcome.** Claim a faster time and the
+   answer is `time disagrees: claimed 1, got 5989`.
+
+Each refusal says which of those it was and what to do about it, because "my
+time did not appear" is a bug report and "your live tune was on" is not.
+
+### Caps, and the DoS the caps are for
+
+`[0, 4294967295]` — eight bytes of JSON that decode to four billion array
+entries. The body-size limit does **not** stop it, and neither does a per-run
+limit on the RLE, because the same attack works as fifty thousand individually
+legal runs. So the cap is on the **decoded total** and it is checked *before*
+each run is expanded: `decodeInputs(s, maxFrames)`. The server passes one; the
+client and `bin/replay` do not, because they read a file a human chose.
+
+Verification runs **off the request handler**, in a queue of one, driven in
+slices by `verifyReplaySteps` so the event loop gets a turn about forty times
+across the longest legal run — and so the two-second wall-clock budget is
+enforceable at all. You cannot time out a loop that never yields. The slice size
+is a scheduling knob and cannot change a verdict; `replay.test.ts` asserts that
+by verifying the same run at five different slice sizes and comparing.
+
+Not `worker_threads`, deliberately. The server runs under `tsx`, a worker would
+inherit the TypeScript loader by accident of `execArgv` rather than by design,
+and a transpile hook that silently fails in a worker turns the leaderboard off in
+a way that passes every test on this machine. This is 0.15 s of arithmetic, not
+video encoding. If verification ever grows teeth, a worker pool is the migration.
+
+### Storage — plain JSON on NVMe
+
+```
+data/replays/<levelSimHash>/<ab>/<replayId>.json   ab = first 2 hex of the id
+data/leaderboard/<levelSimHash>.json               every player's best + top N
+data/players/<playerId>.json                       that player's PBs
+data/submissions.jsonl                             append-only, the source of truth
+```
+
+A replay is an immutable ~1 KB blob written once and thereafter fetched **only
+by id** — the exact shape where blob-in-a-database is the wrong call. The
+`replayId` is a content address (sha256 of rev + level + bike + stream), so
+submitting the same stream twice writes one file and two players who genuinely
+produced the same run share it. The `<ab>` fan-out is 256 buckets, because an
+evening of a friend group grinding one level plus a `bin/level-drive` sweep is
+thousands of files and a directory with tens of thousands of entries is
+unpleasant on every filesystem.
+
+The embedded level and bike spec are **stripped before storing**. A replay file
+carries them so it stands alone; a replay on a leaderboard needs neither, and
+keeping them would be 19 KB of `10-cathedral` in a 20 KB blob — shipped down to
+a client that is currently riding that level.
+
+Every mutating write is **temp file + `fsync` + `rename(2)`**, the same pattern
+as `gpu-watch`'s `sms-token.js`: a reader sees the whole old file or the whole
+new one, never a half-written board, even if the process is killed mid-write.
+Writes to one board are serialised by an **in-process keyed mutex**, because
+read-modify-write on a JSON file races with itself the moment two people finish
+the same level at once. One Node process, so that is sufficient and total — no
+`fcntl`, which is the mechanism that does not work on this box's mergerfs pool
+and the reason for the standing no-SQLite-on-the-pool rule. (The repo is on NVMe
+ext4, so the rule does not even bite here; the preference for plain JSON is the
+house style regardless.)
+
+Because every accepted submission is appended to `submissions.jsonl`, the boards
+are **derived state** and `bin/board rebuild` is a real rebuild rather than a
+comforting name. Corrupting a board file and rebuilding produces a
+byte-identical result; `--verify` re-simulates every replay on the way past,
+which is the one command that answers *is anything on this board not real*.
+
+### Partitioning
+
+Decided on day one and not re-litigated:
+
+- Boards key on **`level.simHash`** — the hash over only the fields the sim
+  reads. Retitle a level, recolour it, move a decor polygon: the board survives.
+  Move an apple by 1e-12 and it does not, because that is a different level to
+  ride.
+- Boards **partition by `simRev`**. A time set under different physics is not a
+  time on the same level, so it is neither silently invalidated nor wrongly
+  compared — it sits on the rev-2 board, labelled, forever. Through milestone 1
+  the rev bumps freely and the live board therefore empties; the panel says so,
+  and it names how many times the older revs still hold, so nobody concludes
+  their runs were deleted.
+- Boards **partition by category**, and there are two from the start: `human`
+  and `tas`.
+- Every entry records the **bike's `specHash`**. Only one bike ships, so it
+  partitions nothing yet; recording it from day one is what makes a
+  stat-varying bike a migration rather than an archaeology project.
+
+### TAS is a category, not an exploit
+
+Deterministic verification means **any input stream the sim accepts is
+legitimate by definition**. A solver-generated optimal run verifies perfectly,
+and no test could ever tell it from a human's — because there is nothing to
+tell. That is unfixable in principle.
+
+So there is a TAS board from the start, and `bin/level-drive --save` already
+produces exactly such runs. `bin/submit` posts them and **defaults to `tas`**,
+because anything submitted from a terminal was produced by a program;
+`--category human` prints a warning saying that nothing here or on the server
+can check that claim. Retrofitting a category split after people have competed
+is a fight. Doing it now costs one string field.
+
+### Who you are, and what that is worth
+
+**No identity signal reaches this app.** HAProxy adds only `X-Forwarded-*`, and
+the cush-auth device gate — which decides whether your browser gets through the
+front door at all — sets no identity header downstream. That was checked
+directly, not assumed.
+
+So: a `playerId` is generated once on your device and kept in `localStorage`,
+you pick a display name, and both are submitted with a run.
+
+> Re-simulation means a **time** cannot be faked. **Whose** time it is can be.
+> Anyone who can reach the game can post a verified run under any playerId and
+> any name they like.
+
+Among a handful of device-gated friends that is fine and socially
+self-correcting, and saying it plainly is better than implying a guarantee that
+does not exist. The proper fix, when it matters, is **cush-auth passing an
+identity header downstream** and the client reading it instead of minting one.
+That is the migration path; it is deliberately not built.
+
+**The id is the identity and the name is never a key.** Every board entry, every
+personal best and every player file keys on the opaque `playerId`; the name is
+denormalised onto an entry for rendering and is refreshed in place when it
+changes. Three things follow: renaming is free and does not fork anybody's
+history, two people picking `hexi` is a cosmetic clash rather than a silent
+merge of their times, and a real signup later is a **claim** on an existing id —
+every row that references it transfers untouched — rather than a rewrite of
+every board. `PlayerFile` ships an unused `claimedBy` slot for that. There is
+deliberately **no email field** and will not be one until an account system
+needs it: storing personal data carries obligations that a local display name
+does not.
+
+## Ghosts
+
+The run one place ahead of you, riding beside you.
+
+A ghost is a **second, independent sim** — the same `createSim(level, spec)` you
+are riding, fed somebody else's input stream, one frame for one frame. Not a
+recorded path, not a sampled trajectory. That is affordable only because a
+replay is a kilobyte of buttons and because the sim was built cheap to
+instantiate and steppable headlessly for the solver that has not been written
+yet.
+
+**Ghost selection matters more than it sounds.** The picker offers the world
+best, your own PB, and *the entry just above you* — and the last is the default,
+because a world record is a number while the person one place ahead of you is a
+race you can win tonight. Trials figured this out; it holds here. With no time
+of your own, the entry "just above you" is the **slowest time on the board**,
+which is the right answer rather than a degenerate one: with no time everybody
+is ahead of you, and the nearest of them is the one you can actually catch. The
+server computes it, because the client only ever receives the top N.
+
+It falls back to your own PB when nobody is ahead, and to nothing after that —
+never to the world record. Silently showing somebody a time forty seconds faster
+than anything they have ridden is discouraging, not motivating.
+
+**The ghost is strictly read-only with respect to you,** and that is asserted
+rather than hoped. It owns its own `Sim`, so its own state and its own `World`;
+`createWorld` clones the spec, so it cannot even reach the object your bike is
+made of; the level is shared and never written. `ghost.test.ts` runs the same
+input stream twice — once alone, once with a ghost stepped alongside — and
+asserts every periodic state hash is identical. If a ghost could ever touch your
+state, that is what catches it.
+
+**A ghost from a different `simRev` or bike spec cannot be shown**, and says so
+instead. Playing rev-2 inputs under rev-3 physics would draw a bike taking a
+line nobody ever rode, labelled with somebody's name and time — worse than an
+empty screen, and exactly the failure the whole rev mechanism exists to prevent.
+
+It restarts with you, because the loop is die-retry-die-retry and a ghost that
+kept its position across a restart would be racing a phantom you are forty
+metres behind. It stops at its last frame rather than vanishing, because a ghost
+halted at the hard part is information. The HUD names it and reports the gap **in
+metres** — the two clocks are identical by construction, since the ghost is
+stepped one frame for one frame with you, so a time gap would always read 0.00 s.
+What differs is where you each are.
 
 ## Live tune — changing the bike from a terminal
 
@@ -1548,6 +1776,20 @@ src/client/         canvas renderer, input, tuning panel, record-and-replay
                     the freeze and the opening peek; markers.ts is the off-screen
                     indicators. The last two are pure state and geometry so they
                     test in plain node.
+                    ghost.ts is the second sim that rides beside you and the
+                    rules for choosing whose run it is; identity.ts is the
+                    device-local playerId and the honest note about what it is
+                    not; api.ts is the leaderboard wire, and every call in it
+                    degrades to "offline" rather than failing; boardui.ts is
+                    the panel.
+src/server/         Hono, the published bundle, and the leaderboard.
+                    board.ts is the board as ARITHMETIC — placement, ranks, the
+                    entry above you — with no filesystem in it, so it tests in
+                    plain node. store.ts is the only file that touches a disk;
+                    mutex.ts serialises writes per level; queue.ts runs
+                    verification off the request handler with a budget;
+                    limits.ts is every cap in one screen; runs.ts is the
+                    submission pipeline; api.ts is the routes.
 src/client/art/     the art direction. geom.ts (edge classification and hazard
                     corners), palette.ts, params.ts, rng.ts and stencils.ts are
                     DOM-free and tested in plain node; bake.ts builds the
@@ -1558,6 +1800,7 @@ levels/             exported level JSON
 ```
 
 `bin/` also holds underscore-prefixed modules that are imported rather than run:
+`_board.ts` and `_submit.ts` (the leaderboard tools),
 `_smoke.mjs` (the headless Chrome driver), `_sag.ts` (the coarse-run metric,
 shared by `bin/level-check` and `src/sim/curvelevel.test.ts`), `_pilot.ts` (the
 scripted rider), `_slope.ts`, `_air.ts` and `_dive.ts` (the measurement rigs),
@@ -1569,3 +1812,10 @@ One npm package, npm not pnpm, no workspace. Tests are vitest and colocated
 (`src/sim/rot.test.ts` beside `src/sim/rot.ts`); there is no jsdom and no
 `@testing-library`, so every test runs in plain node. Test pure functions, never
 rendering.
+
+`localStorage` appears in two client tests and there is still no jsdom: it is a
+three-method interface, so a `Map` stands in for it exactly — including the case
+that matters, which is an implementation that **throws** on access (a private
+window, blocked site data) rather than returning null. Every access in the
+client is wrapped for that reason, and `identity.test.ts` asserts the game still
+boots when storage is gone.

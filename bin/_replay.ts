@@ -24,7 +24,7 @@ import type { Level } from '../src/sim/level.ts';
 import { parseSpec, specHash, DEFAULT_SPEC } from '../src/sim/spec.ts';
 import type { BikeSpec } from '../src/sim/spec.ts';
 import { createSim } from '../src/sim/sim.ts';
-import { checkReplayCompat, decodeInputs, parseReplayFile, replaySpec, ticksToSeconds, verifyReplay } from '../src/sim/replay.ts';
+import { checkReplayCompat, decodeInputs, parseReplayFile, replaySpec, revMismatchRefusal, ticksToSeconds, verifyReplay } from '../src/sim/replay.ts';
 import type { ReplayFile } from '../src/sim/replay.ts';
 import { SIM_REV } from '../src/sim/rev.ts';
 import { MAX_ANGVEL, MAX_ARM_ANGVEL, MAX_SPEED, SIM_HZ } from '../src/sim/consts.ts';
@@ -223,11 +223,9 @@ console.log(`    claims     ${file.frames} frames, ${ticksToSeconds(file.timeTic
 
 if (file.simRev !== SIM_REV) {
   console.error('');
-  console.error(`!!! SIM_REV mismatch: the replay is rev ${file.simRev}, this build is rev ${SIM_REV}.`);
-  console.error('    The physics changed between those revs. Re-running it here would show you a');
-  console.error('    DIFFERENT run than the one that was recorded, which is worse than not running');
-  console.error('    it at all, so this is a refusal rather than a warning.');
-  console.error('    Through milestone 1 the rev bumps freely and replays do not survive it.');
+  // One shared wording, so the CLI and the server's POST /api/runs cannot drift
+  // apart about what a rev mismatch means.
+  console.error(`!!! ${revMismatchRefusal(file.simRev)}`);
   process.exit(3);
 }
 

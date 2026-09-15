@@ -131,3 +131,18 @@ export function loadFlag(name: string, dflt: boolean): boolean {
 export function saveFlag(name: string, on: boolean): void {
   write(`flag.${name}`, on ? '1' : '0');
 }
+
+/**
+ * A remembered choice from a fixed set — the leaderboard category, which ghost
+ * to race. Validated against `allowed` on the way back rather than trusted,
+ * because a value stored by an older build (or by hand, in devtools) must not
+ * be able to put the UI in a state it has no code for.
+ */
+export function loadChoice<T extends string>(name: string, allowed: readonly T[], dflt: T): T {
+  const v = read(`choice.${name}`);
+  return v !== null && (allowed as readonly string[]).includes(v) ? (v as T) : dflt;
+}
+
+export function saveChoice(name: string, value: string): void {
+  write(`choice.${name}`, value);
+}

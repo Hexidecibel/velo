@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Post a replay file to a running velo server.
+#
+#   bin/submit run.replay.json                     # TAS board, by default
+#   bin/submit /tmp/pilot/ --name 'the pilot'      # a whole directory
+#   bin/submit run.replay.json --category human    # prints a warning; see below
+#   bin/submit run.replay.json --url http://127.0.0.1:9422
+#
+# THE DEFAULT CATEGORY IS `tas` ON PURPOSE. `bin/level-drive --save` produces
+# tool-assisted runs and this is how they reach a board. Deterministic
+# verification means such a run verifies exactly as well as a person's — that is
+# unfixable in principle, which is why the TAS category exists from the start
+# rather than being retrofitted after people have competed. Anything posted from
+# a terminal was produced by a program, so `tas` is the honest default.
+#
+# The server needs to be up: bin/start, or bin/status to check.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+exec "$ROOT/node_modules/.bin/tsx" "$ROOT/bin/_submit.ts" "$@"
