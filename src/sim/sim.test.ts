@@ -4,7 +4,7 @@ import { createSim } from './sim.ts';
 import { DEFAULT_SPEC, cloneSpec } from './spec.ts';
 import type { BikeSpec } from './spec.ts';
 import { TEST_LEVEL } from './testlevel.ts';
-import { IN_FLIP, IN_LEAN_L, IN_THROTTLE, TICKS_PER_FRAME } from './consts.ts';
+import { IN_BRAKE, IN_FLIP, IN_LEAN_L, IN_LEAN_R, IN_THROTTLE, TICKS_PER_FRAME } from './consts.ts';
 
 const level = parseLevel(TEST_LEVEL);
 const drive = (f: number): number => (f % 9 < 6 ? IN_THROTTLE : 0) | (f % 31 < 5 ? IN_LEAN_L : 0) | (f % 97 === 0 ? IN_FLIP : 0);
@@ -311,5 +311,171 @@ describe('rotation authority', () => {
       b = Math.max(b, without.state.oy);
     }
     expect(a).toBeGreaterThan(b);
+  });
+});
+
+/**
+ * Flat ground with plenty of headroom. The suspension and brake-dive tests
+ * below need a surface with no features on it at all: on test01 they would be
+ * measuring which bump the wheel happened to land on.
+ */
+const FLAT = parseLevel({
+  format: 'velo-level',
+  start: { x: 0, y: 1 },
+  flower: { x: 95, y: 1 },
+  polygons: [{ kind: 'cave', points: [[-10, 0], [100, 0], [100, 20], [-10, 20]] }],
+});
+
+/** The shipping bike's driveable numbers, on a flat surface. */
+function rideable(): BikeSpec {
+  const s = tuned();
+  s.drive.maxTorque = 140;
+  return s;
+}
+
+describe('asymmetric suspension damping', () => {
+  /**
+   * Drop the bike onto flat ground and report how high it comes back UP.
+   *
+   * Measured from the bottom of the compression stroke, not from first contact.
+   * From first contact it measures nothing useful: the chassis is still falling
+   * then, so "peak height after touchdown" is dominated by how far it had left
+   * to fall, and a firmer damper reads HIGHER simply because it stopped the
+   * fall sooner. The rebound stroke starts at maximum compression and that is
+   * where the measurement has to start too.
+   */
+  function dropBounce(compression: number, rebound: number): number {
+    const s = rideable();
+    s.suspension.compressionDamping = compression;
+    s.suspension.reboundDamping = rebound;
+    const sim = createSim(FLAT, s);
+    sim.state.py += 2;
+    for (let i = 0; i < 2; i++) sim.state.wy[i] += 2;
+    let lowest = Infinity;
+    let bottomedAt = -1;
+    let peak = -Infinity;
+    for (let f = 0; f < 128 * 4; f++) {
+      sim.advance(0);
+      const py = sim.state.py;
+      if (bottomedAt < 0) {
+        if (sim.state.grounded !== 0 && py < lowest) {
+          lowest = py;
+        } else if (sim.state.grounded !== 0 && py > lowest + 1e-6) {
+          bottomedAt = f;
+          peak = py;
+        }
+      } else if (py > peak) {
+        peak = py;
+      }
+    }
+    return peak - lowest;
+  }
+
+  it('is bit-identical to one symmetric coefficient when the two are equal', () => {
+    // The migration path, asserted rather than assumed: splitting the field must
+    // not have changed the bike anybody was already riding. The branch in
+    // step.ts selects the same number from either side, so this is exact.
+    const a = rideable();
+    a.suspension.compressionDamping = 640;
+    a.suspension.reboundDamping = 640;
+    const simA = createSim(FLAT, a);
+    const simB = createSim(FLAT, a);
+    for (let f = 0; f < 400; f++) {
+      const m = f % 5 < 3 ? IN_THROTTLE : 0;
+      simA.advance(m);
+      simB.advance(m);
+    }
+    expect(simA.hash()).toBe(simB.hash());
+    expect(simA.state.py).toBe(simB.state.py);
+  });
+
+  it('gives the bike back more of a landing when rebound damping is lower', () => {
+    // The whole mechanism in one assertion: the spring stores the impact either
+    // way, and the rebound coefficient decides whether it comes back as height
+    // or as heat.
+    const firm = dropBounce(500, 1600);
+    const loose = dropBounce(500, 120);
+    expect(loose).toBeGreaterThan(firm);
+  });
+
+  it('separates the two strokes — one coefficient does not set both', () => {
+    // If the sign test in step.ts were backwards, or one coefficient were
+    // applied to both strokes, these two would come out the same.
+    const a = dropBounce(1600, 120);
+    const b = dropBounce(120, 1600);
+    expect(Math.abs(a - b)).toBeGreaterThan(0.005);
+  });
+});
+
+describe("the rider's inertial reaction on the pivot", () => {
+  /**
+   * Run up to speed on flat ground, then brake, and report the most nose-down
+   * the chassis got. `oy` IS the sine of the pitch angle — the sim stores
+   * orientation as a rotor precisely so that nothing has to call atan2 — so a
+   * falling `oy` is the nose going down for a bike facing +x.
+   */
+  function brakeDive(inertialTransfer: number): number {
+    const s = rideable();
+    s.rider.inertialTransfer = inertialTransfer;
+    const sim = createSim(FLAT, s);
+    // Run up holding the chassis level. Without the lean the bike wheelies to
+    // 40 degrees on the way to speed and the brake measurement starts from a
+    // different attitude for every coefficient, which is not a measurement.
+    for (let f = 0; f < 128 * 6; f++) {
+      let m: number = IN_THROTTLE;
+      const err = sim.state.oy + sim.state.w * 0.18;
+      if (err > 0.02) m |= IN_LEAN_R;
+      else if (err < -0.02) m |= IN_LEAN_L;
+      sim.advance(m);
+    }
+    expect(sim.state.vx).toBeGreaterThan(5);
+    expect(Math.abs(sim.state.oy)).toBeLessThan(0.2);
+    let worst = sim.state.oy;
+    for (let f = 0; f < 20; f++) {
+      sim.advance(IN_BRAKE);
+      if (sim.state.oy < worst) worst = sim.state.oy;
+    }
+    return worst;
+  }
+
+  it('is off at zero in DEFAULT_SPEC — rev 3 at 0 is the rev 2 bike', () => {
+    expect(DEFAULT_SPEC.rider.inertialTransfer).toBe(0);
+  });
+
+  it('dives the nose under braking, and more of it with a bigger coefficient', () => {
+    // The user's report: "slamming on brake should slam down the front end,
+    // right? just like gassing lifts up". It should, and before this term there
+    // was no path at all from braking onto the chassis.
+    const off = brakeDive(0);
+    const on = brakeDive(1);
+    const more = brakeDive(2);
+    expect(on).toBeLessThan(off);
+    expect(more).toBeLessThan(on);
+  });
+
+  it('turns a LANDING into rotation when the rider is leaned — not a brake hack', () => {
+    // The other half of the same term, and the one that matters for technique.
+    // Under a landing the pivot decelerates hard upward; with the rider leaned,
+    // that acceleration crosses the arm and becomes chassis torque. It is what
+    // makes "lean in as you hit" convert momentum into rotation, which a static
+    // weight term cannot do, because a static term does not know the difference
+    // between a landing and standing still.
+    //
+    // A brake-gated special case would score identically on the braking test
+    // above and produce exactly nothing here.
+    const spin = (it: number): number => {
+      const s = rideable();
+      s.rider.inertialTransfer = it;
+      const sim = createSim(FLAT, s);
+      sim.state.py += 2;
+      for (let i = 0; i < 2; i++) sim.state.wy[i] += 2;
+      let worst = 0;
+      for (let f = 0; f < 128; f++) {
+        sim.advance(IN_LEAN_R);
+        if (Math.abs(sim.state.w) > Math.abs(worst)) worst = sim.state.w;
+      }
+      return Math.abs(worst);
+    };
+    expect(spin(1)).toBeGreaterThan(spin(0) * 1.02);
   });
 });

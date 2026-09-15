@@ -60,7 +60,13 @@ try {
   });
   await cdp.send('Runtime.enable', {});
   await cdp.send('Page.enable', {});
-  await cdp.send('Page.navigate', { url });
+  // Pinned to test01 with an explicit ?level=, not left to the default. The
+  // default is "the first level in levels/ that loads", which MOVES whenever
+  // somebody adds a level — and a smoke check whose expectations depend on
+  // what got authored this week is a smoke check that cries wolf. The query
+  // parameter also outranks the stored last-played level, so this is
+  // independent of whatever a previous run left in localStorage.
+  await cdp.send('Page.navigate', { url: url + '?level=test01' });
   await cdp.waitFor('Page.loadEventFired', 15000);
 
   const boot = await evalIn(cdp, `!!(window.velo && window.velo.sim)`);
@@ -91,6 +97,11 @@ try {
       return {
         tick: s.tick, x: s.px, y: s.py, vx: s.vx,
         dead: s.dead, finished: s.finished, apples: s.applesLeft,
+        startX: window.velo.level.start.x,
+        levelName: window.velo.level.name,
+        levels: window.velo.levels.length,
+        legend: !!document.querySelector('#legend details'),
+        levelbar: document.querySelectorAll('#levelbar select option').length,
         recorded: window.velo.sim.state.tick > 0,
         finite: nums.every(Number.isFinite),
         canvas: c ? c.width + 'x' + c.height : 'missing',
@@ -104,7 +115,11 @@ try {
   if (problems.length) throw new Error('page reported errors:\n      ' + problems.join('\n      '));
   if (!report.finite) throw new Error('sim state went non-finite');
   if (report.tick < 512) throw new Error(`sim barely advanced (${report.tick} ticks in ~3 s)`);
-  if (report.x <= -2.5) throw new Error(`bike did not move under throttle (x=${report.x})`);
+  if (report.levelName !== 'test01 — the ugly one') throw new Error(`?level=test01 did not select test01 (got "${report.levelName}")`);
+  // Displacement from the level's OWN start, never an absolute coordinate.
+  if (report.x - report.startX <= 2.5) throw new Error(`bike did not move under throttle (${(report.x - report.startX).toFixed(2)} m from the start line)`);
+  if (!report.legend) throw new Error('the control legend never rendered');
+  if (report.levelbar < report.levels) throw new Error(`level selector listed ${report.levelbar} of ${report.levels} levels`);
   if (report.sliders < 20) throw new Error(`tuning panel only built ${report.sliders} sliders`);
   if (report.canvas === 'missing' || report.canvas.startsWith('0x')) throw new Error(`canvas never sized (${report.canvas})`);
 

@@ -111,3 +111,63 @@ select { width: 100%; cursor: pointer; }
 .keys { color: var(--dim); }
 .keys b { color: var(--ink); font-weight: normal; }
 code { color: #9ecbff; }
+
+/* --- level bar: navigation, always visible ------------------------------- */
+#levelbar {
+  position: fixed;
+  top: 10px;
+  right: calc(var(--panel-w) + 14px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 420px;
+  text-shadow: 0 1px 2px #000;
+}
+/* The panel is a later sibling in the DOM, so this needs :has() on an
+   ancestor rather than a sibling combinator. Browsers without :has() simply
+   leave a gap where the hidden panel was, which is cosmetic. */
+body:has(#panel.hidden) #levelbar { right: 14px; }
+#levelbar .lb-label { color: var(--dim); }
+#levelbar select { width: auto; min-width: 180px; max-width: 260px; }
+#levelbar .lb-note { color: var(--dim); font-size: 10px; }
+#levelbar .lb-note.bad { color: var(--bad); }
+
+/* --- control legend ------------------------------------------------------ */
+#legend {
+  position: fixed;
+  left: 12px;
+  bottom: 10px;
+  max-width: 320px;
+  text-shadow: 0 1px 2px #000;
+}
+#legend details {
+  background: #11151cd9;
+  border: 1px solid #222a35;
+  border-radius: 3px;
+  padding: 4px 8px;
+}
+#legend summary {
+  cursor: pointer;
+  color: var(--dim);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  font-size: 10px;
+  list-style: none;
+}
+#legend summary::-webkit-details-marker { display: none; }
+#legend summary::before { content: '\25B8 '; }
+#legend details[open] summary::before { content: '\25BE '; }
+#legend div { color: var(--dim); margin-top: 4px; }
+#legend b { color: var(--ink); font-weight: normal; }
+
+/* --- the tuned banner ---------------------------------------------------- */
+#panel .tuned {
+  margin: 8px 0;
+  padding: 5px 7px;
+  border: 1px solid #6b5a20;
+  border-radius: 3px;
+  background: #221d0d;
+  color: var(--accent);
+  font-size: 10px;
+  line-height: 1.4;
+}

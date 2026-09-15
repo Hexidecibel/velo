@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Measure chassis pitch under braking and under throttle, in degrees.
+#
+#   bin/dive                       # every preset
+#   bin/dive --sweep 0,0.5,1,1.5   # sweep rider.inertialTransfer
+#   bin/dive --speed 12            # a faster entry
+#
+# WHY: "slamming on the brake should slam the front end down, just like gassing
+# lifts it up" is a claim about a SYMMETRY, and a symmetry is something you can
+# measure. Gassing lifts the front because drive torque is reacted straight onto
+# the chassis; braking had no comparable path until the rider's inertial
+# reaction on the pivot existed. This prints both halves so the asymmetry is
+# visible as numbers rather than as a feeling.
+#
+# The grounded brake case is the one to judge — that is what the report was
+# about. The airborne row is a genuinely different mechanism (reaction torque
+# from braking a spinning wheel) and is printed separately so the two are never
+# confused for one another.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+exec "$ROOT/node_modules/.bin/tsx" "$ROOT/bin/_dive-main.ts" "$@"

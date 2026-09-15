@@ -22,7 +22,12 @@ const COL_APPLE = '#5ddb8a';
 const COL_FLOWER = '#ffd166';
 const COL_DEBUG = '#ff9f43';
 
-export interface Camera {
+/**
+ * What the renderer needs off the camera, and nothing else. camera.ts's Camera
+ * satisfies this structurally; keeping the renderer's requirement this small is
+ * what lets the camera gain parameters without the renderer caring.
+ */
+export interface View {
   x: number;
   y: number;
   /** Pixels per metre. */
@@ -77,7 +82,7 @@ export function render(
   ctx: CanvasRenderingContext2D,
   cssW: number,
   cssH: number,
-  cam: Camera,
+  cam: View,
   world: World,
   state: SimState,
   pose: Pose,

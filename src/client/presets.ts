@@ -8,14 +8,19 @@
 // the client boots on a tuned candidate instead, and the plan's numbers are one
 // click away for comparison.
 //
-// The candidate differs in six numbers, and the reasoning for each is below.
-// Everything else — suspension, grip, geometry, masses, brake — is the plan's.
+// There are two tuned specs here and the distinction is worth stating, because
+// it decides which one to trust:
 //
-// Four of them came out of the user's own hands on the sliders: drive torque,
-// chassis inertia, angular damping and lean angle. The other two are the
-// rotation-authority fix, and they are set HERE together because they only make
-// sense together — attitude torque, chassis inertia and angular damping jointly
-// decide the flip rate.
+//   m1Candidate()  REASONED, with four numbers off the user's sliders. It was
+//                  the default until something better turned up.
+//   handTuned()    FOUND. The user drove the whole dropdown and picked this
+//                  character out of the spread, then fixed the one number that
+//                  was wrong. It is the default now.
+//
+// The dropdown itself is the reason the second one exists. Nobody reasoned
+// their way to gravity 9; the user found it because there was a range of
+// characters to drive rather than one candidate and a wall of sliders. Offer a
+// spread, not a proposal, the next time a feel question comes up.
 import { DEFAULT_SPEC, cloneSpec } from '@/sim/spec.ts';
 import type { BikeSpec } from '@/sim/spec.ts';
 
@@ -104,10 +109,76 @@ function m1Candidate(): BikeSpec {
   // is a slider; 1.0 is the old behaviour exactly.
   s.rider.weightTransfer = 0.6;
 
+  // 0 -> 0.6. The rider's INERTIAL reaction on the pivot, new in SIM_REV 3 and
+  // the fix for "slamming on the brake should slam down the front end, right?
+  // just like gassing lifts up". They were right and the asymmetry was real:
+  // drive torque is reacted straight onto the chassis so gassing lifted the
+  // front, while braking had no comparable path at all and the nose just did
+  // not dive.
+  //
+  // Measured with bin/dive, full brake from 9 m/s with the rear wheel down,
+  // nose-down pitch at 0.15 s and time to reach -30 degrees:
+  //
+  //   inertialTransfer 0      -17.3 deg    0.211 s     (the old bike)
+  //   inertialTransfer 0.5    -29.3 deg    0.156 s
+  //   inertialTransfer 0.6    -32.5 deg    0.148 s     <- here
+  //   inertialTransfer 1.0    -41.5 deg    0.125 s     (physically honest)
+  //   inertialTransfer 2.0    -54.1 deg    0.109 s
+  //
+  // 0.6 rather than the honest 1.0 for two reasons. It matches
+  // `weightTransfer` above, and the two are literally the two halves of one
+  // quantity — cross(L*u, m*(g - a_pivot)) — so scaling them apart would be an
+  // odd thing to have to explain. And sustained full brake already loops the
+  // bike over the front at every setting including zero; 1.0 gets there in
+  // two-thirds the time, which is a bigger change to a feel the user has
+  // already signed off on than the report asked for. It is a slider, and 1.0
+  // is one drag away.
+  s.rider.inertialTransfer = 0.6;
+
+  return s;
+}
+
+/**
+ * THE DEFAULT, and the only spec in this file that was found rather than
+ * reasoned to. It is the "soft + floaty" experiment above with gravity raised
+ * from 8 to 9, and the provenance matters more than the numbers do: the user
+ * drove every preset in the dropdown, picked this character out of the spread,
+ * and dialled the one number that was wrong. Their words, in order:
+ *
+ *   "soft and floaty feels close to original!!!"
+ *   "maybe just a TINY bit too floaty"
+ *   "gravity on 9 is fucking sick"
+ *
+ * "Close to original" is the highest praise available on this project, since
+ * reproducing how Elasto Mania feels is the whole exercise. So this is not a
+ * proposal and not a demo of what the sliders reach — it is the game's feel,
+ * arrived at by hand, and the reasoned candidate it replaced is one click away
+ * in the dropdown for comparison.
+ *
+ * Three numbers off `m1Candidate`, and all three pull the same way:
+ *
+ *   stiffness  12000 -> 6500   Half the spring rate. Long, compliant travel:
+ *                              the bike breathes over terrain instead of
+ *                              skittering across it. This is the "soft".
+ *   damping      500 -> 320    Both coefficients, still symmetric. Less
+ *                              dissipation to match the softer spring.
+ *   gravity       10 -> 9      Hang time, and the ONLY lever on it. At 8 the
+ *                              user called it too floaty; at 9 it is the arc
+ *                              they wanted. Nothing in the suspension touches
+ *                              this, which is why the earlier hunt through the
+ *                              damping sliders could never have found it.
+ */
+function handTuned(): BikeSpec {
+  const s = m1Candidate();
+  s.suspension.stiffness = 6500;
+  s.suspension.compressionDamping = 320;
+  s.suspension.reboundDamping = 320;
+  s.gravity = 9;
   return s;
 }
 
 export interface Preset {
+
   id: string;
   label: string;
   spec: BikeSpec;
@@ -116,10 +187,16 @@ export interface Preset {
 
 export const PRESETS: Preset[] = [
   {
+    id: 'soft',
+    label: 'Soft (hand-tuned default)',
+    spec: handTuned(),
+    note: 'Found by the user on these sliders, not derived: half the spring rate, gravity 9. "Close to original."',
+  },
+  {
     id: 'm1',
-    label: 'M1 candidate (driveable)',
+    label: 'M1 candidate (stiffer, earlier)',
     spec: m1Candidate(),
-    note: 'Four numbers off the plan: drive 140, inertia 8, angular damping 0.5, lean 60 degrees.',
+    note: 'The reasoned candidate the soft default replaced. Stiffer and heavier-feeling; kept for comparison.',
   },
   {
     id: 'plan',
@@ -129,15 +206,41 @@ export const PRESETS: Preset[] = [
   },
   {
     id: 'floaty',
-    label: 'Soft + floaty',
+    label: 'Softer + lower gravity',
     spec: (() => {
-      const s = m1Candidate();
-      s.suspension.stiffness = 6500;
-      s.suspension.damping = 320;
+      const s = handTuned();
       s.gravity = 8;
       return s;
     })(),
-    note: 'Half the spring rate and low gravity. Here to show what the sliders reach, not as a proposal.',
+    note: 'The default at gravity 8 — the version the user called "a TINY bit too floaty". One slider apart.',
+  },
+  {
+    id: 'poppy',
+    label: 'Soft + poppy (asymmetric damping)',
+    spec: (() => {
+      const s = handTuned();
+      // The default with the two damping coefficients pulled apart — the only
+      // preset that uses the asymmetry at all. REBOUND ALONE comes down;
+      // compression stays exactly where the user left it.
+      //
+      // That is not the textbook recipe and the measurement is why. The obvious
+      // move is "compression up so landings stay planted, rebound down so it
+      // pops", but compression damping is what decides how much energy gets
+      // INTO the spring in the first place, so raising it costs more launch
+      // than the lower rebound buys back: bin/air measured comp 450 / rebound
+      // 180 at a LOWER mean peak than the symmetric default. Lowering rebound
+      // on its own is the move that works.
+      //
+      // Measured on bin/air's 0.2 m bump, mean peak chassis height over
+      // approach speeds 5-12 m/s: rebound 800 -> 0.178 m, 500 -> 0.209,
+      // 320 (the default) -> 0.244, 120 -> 0.281. Touchdown speed off the drop
+      // is unchanged to within 0.1 m/s across the whole range, which is the
+      // point of splitting the coefficient: the launch half moved and the
+      // landing half did not.
+      s.suspension.reboundDamping = 150;
+      return s;
+    })(),
+    note: 'The default with rebound damping halved: same landings, about a third more height off bumps. Try it if you want more air off terrain; the default is symmetric.',
   },
   {
     id: 'grippy',
@@ -145,7 +248,8 @@ export const PRESETS: Preset[] = [
     spec: (() => {
       const s = m1Candidate();
       s.suspension.stiffness = 22000;
-      s.suspension.damping = 900;
+      s.suspension.compressionDamping = 900;
+      s.suspension.reboundDamping = 900;
       s.wheel.friction = 2.2;
       s.drive.maxTorque = 180;
       return s;
@@ -154,4 +258,5 @@ export const PRESETS: Preset[] = [
   },
 ];
 
+/** What the client boots on. The dropdown is ordered with it first. */
 export const BOOT_PRESET = PRESETS[0];

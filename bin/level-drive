@@ -25,16 +25,27 @@ exec "$ROOT/node_modules/.bin/tsx" -e "
   import { probeReachability } from './bin/_pilot.ts';
   import { BOOT_PRESET } from './src/client/presets.ts';
   import type { Cap } from './bin/_pilot.ts';
-  // Route variations: straight through, or easing off over each third of the
+  // Route variations: straight through, or easing off over a window of the
   // level so that anything down a hole gets a chance to be dropped into.
+  //
+  // TWO cap speeds per window and OVERLAPPING windows, not one pass at 6 m/s.
+  // The difference between flying a pit and dropping into it is a couple of
+  // metres per second at the lip, so a single speed is a coin toss and a window
+  // that starts in the wrong place misses the run-up entirely. This is still a
+  // LOWER BOUND — 'some run reached it' proves reachable, 'no run reached it'
+  // proves only that this rider could not — but a coarser search makes that
+  // second case come up for levels that are actually fine, and a checker that
+  // cries wolf is a checker nobody reads.
   let bad = 0;
   for (const f of process.argv.slice(1)) {
     const lvl = parseLevel(JSON.parse(readFileSync(f, 'utf8')));
     const span = lvl.maxX - lvl.minX;
     const routes: Cap[][] = [[]];
-    for (let i = 0; i < 6; i++) {
-      const a = lvl.minX + (span * i) / 6;
-      routes.push([[a, a + span / 6 + 2, 6]] as Cap[]);
+    const windows = 8;
+    for (let i = 0; i < windows; i++) {
+      const a = lvl.minX + (span * i) / windows;
+      const w = (span / windows) * 1.6 + 3;
+      for (const v of [4, 6]) routes.push([[a - w * 0.25, a + w, v]] as Cap[]);
     }
     const t0 = Date.now();
     const r = probeReachability(lvl, BOOT_PRESET.spec, routes);

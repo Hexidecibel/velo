@@ -9,6 +9,10 @@
     <div id="app">
       <canvas id="view"></canvas>
       <div id="hud"></div>
+      <!-- Always visible, outside the panel: pressing H to hide the sliders
+           must not also hide how you change level or what the keys are. -->
+      <div id="levelbar"></div>
+      <div id="legend"></div>
       <aside id="panel"></aside>
     </div>
     <script type="module" src="/src/client/main.ts"></script>

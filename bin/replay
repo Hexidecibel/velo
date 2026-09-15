@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Re-simulate a replay file headlessly and report what happened.
+#
+#   bin/replay run.replay.json                     # self-contained file
+#   bin/replay run.replay.json --level levels/a.json --spec bike.json
+#   bin/replay run.replay.json --csv /tmp/run.csv  # per-frame telemetry
+#   bin/replay run.replay.json --quiet             # verification only
+#
+# WHY THIS EXISTS: "sometimes it gets weird" cannot be acted on. A replay file
+# can. The sim is deterministic and takes no wall-clock input, so re-running the
+# exported stream here reproduces the run bit-for-bit — on this machine, on a
+# server, months later — and the hash chain says so out loud.
+#
+# Export one with E in the client, or the "Export replay" button in the panel.
+#
+# Exit status: 0 verified and fully compatible, 1 verification or compatibility
+# failed, 2 bad usage or unreadable input, 3 the replay is from another SIM_REV
+# and was REFUSED rather than played back against different physics.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+exec "$ROOT/node_modules/.bin/tsx" "$ROOT/bin/_replay.ts" "$@"

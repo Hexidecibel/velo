@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Measure jump height and airtime off a fixed feature, per bike, in metres.
+#
+#   bin/air                        # every preset over every feature
+#   bin/air --preset floaty        # one preset
+#   bin/air --sweep 80,160,240,320 # sweep rebound damping on the boot preset
+#   bin/air --release 24           # let go of the throttle earlier (slower approach)
+#
+# WHY: "it should catch more air" is an adjective. This turns it into a number
+# off a known feature at a known speed, so a suspension change can be shown to
+# have done what it claimed and by how much. The rig is a synthetic level built
+# inside bin/_air.ts — an instrument, not a level, and deliberately not in
+# levels/ where the real ones live.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+exec "$ROOT/node_modules/.bin/tsx" "$ROOT/bin/_air-main.ts" "$@"

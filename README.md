@@ -54,6 +54,9 @@ add a script rather than running an ad-hoc command.
 | `bin/level-export` | Writes the built-in levels out to `levels/test01.json` and `levels/test02-bowl.json`. |
 | `bin/level-check` | Validates a hand-authored level JSON, prints its two hashes, and **warns about straight runs too coarse to ride smoothly**. |
 | `bin/level-drive` | Drives a level headlessly with a scripted rider and reports whether every apple and the flower can actually be reached. |
+| `bin/replay` | **Re-simulates an exported replay file** and reports identity, hash-chain verification and a diagnostic pass. This is what turns "sometimes it gets weird" into a reproducible artifact. |
+| `bin/air` | Measures jump height and airtime off a fixed synthetic feature, per bike, in metres. Turns "it should catch more air" into a number. |
+| `bin/dive` | Measures chassis pitch under braking and under throttle, in degrees. Turns "braking should slam the front down like gassing lifts it" into a symmetry you can check. |
 | `bin/slope-sweep` | Sweeps a synthetic ramp across slope angle, entry speed, input strategy and transition sharpness, and prints what the bike does. |
 | `bin/clean` | Removes `dist/` and `tsconfig.tsbuildinfo`; `--all` also removes `node_modules/`. |
 
@@ -64,14 +67,101 @@ server milestone and deliberately do not exist yet.
 
 | Key | |
 | --- | --- |
-| arrows / WASD | gas, brake, volt left, volt right |
-| space | flip (changes the driven wheel; free, legal mid-air) |
+| arrows / WASD | gas, brake, rotate left, rotate right |
+| space | **flip direction** — changes the driven wheel; free, legal mid-air, and the mechanic the whole double-back level design rests on |
 | R | restart |
 | T | replay the last run and check its hash chain |
+| E | **export the last run** as a self-contained `.replay.json` file |
+| L | load a replay file and watch it (or drag one onto the window) |
+| `[` / `]` | previous / next level |
 | G | draw contacts and surface normals |
 | H | hide the tuning panel |
-| `+` / `-` | zoom |
+| `+` / `-` | zoom bias |
 | P | pause |
+
+There is a collapsible control legend in the bottom-left corner of the page,
+because space-to-flip was the single most undiscoverable thing in the game and
+nothing on screen said so.
+
+## Levels, and the level picker
+
+The picker at the top of the page lists **every file in `levels/`**, by the
+`name` inside the file rather than by its filename. The list is a build-time
+glob, not a hand-maintained array: adding a level is dropping a JSON file in a
+directory, and a registry you have to remember to update defeats that. A level
+that fails to load still appears, marked `BROKEN`, with the loader's message —
+silently vanishing from the menu is the most confusing possible feedback for
+somebody halfway through authoring it.
+
+- `?level=<id>` selects a level and is kept in sync with the picker, so the
+  address bar is always a shareable link to what is on screen. `?level=bowl`
+  from before the picker existed still works.
+- The last level played, the panel's tuned spec, and local best times are
+  remembered in `localStorage`. All three are **per-viewer conveniences, not
+  game state**: best times are unverified, local to one browser, and keyed by
+  `SIM_REV` so a physics change retires them automatically. Real times live on
+  the server behind re-simulation, which is milestone 4, and nothing here is
+  allowed to grow into that.
+
+## Replays are files now
+
+Press **E** and the last run downloads as a self-contained JSON file carrying
+the input stream, the periodic state hashes, the level, the bike spec and the
+`SIM_REV` it was recorded under. Drop it back on the window, or hand it to
+`bin/replay`, and the exact run happens again — on this machine, on a server,
+months later.
+
+```
+bin/replay velo-rev3-20260915-013000-dead-12.40s-6e559edf.replay.json
+```
+
+This is the determinism work earning its keep. "Sometimes it gets weird" cannot
+be acted on; a file can. `bin/replay` prints three things in order of how much
+you should care: **identity** (rev, level, bike — any mismatch stated, never
+papered over), **verification** (the hash chain, with the first divergent frame
+named if there is one), and **diagnostics** (suspension bottoming, velocity
+clamps firing, deep penetration, contact spikes — places to look, not verdicts).
+`--csv` dumps per-frame telemetry.
+
+The failure modes are deliberately loud. A replay recorded under a different
+`SIM_REV` is **refused**, in the client and in `bin/replay`, rather than played
+back against different physics — a run that silently differs from the one
+recorded is worse than no playback at all, and treating it as a near-miss would
+make the whole versioning scheme decorative. A level or bike mismatch is named
+separately from a rev mismatch, and recovered from the file where it can be: the
+embedded bike is adopted (after its hash is checked) and the embedded level is
+taken on if this build does not ship it.
+
+Every attempt of a session is retained, not just the most recent, keyed by
+level. There is no UI for that yet; it is the cheap groundwork for replaying
+every failed attempt alongside the line that worked.
+
+## The camera
+
+Four rules, in priority order, and the first one outranks framing:
+
+1. **The collision edge must stay readable.** A camera that frames the level
+   beautifully and leaves you unable to see exactly where the ground is has
+   failed at the only job that matters, so `minZoom` is a hard floor rather than
+   a suggestion. Below roughly 34 px/m the 1.7 m bike is under 58 px long and
+   you are guessing at clearances.
+2. **Never lose the bike.** Smoothing is a lag, and a lag during a fast
+   direction change can put the bike off-screen, so a `safeBox` clamp is applied
+   *after* the smoothing: whatever the smoothing wanted, the bike stays inside
+   the middle of the frame. In ordinary riding it never fires.
+3. **No snapping.** Every input is continuous in the sim state. Nothing reads
+   `facing`, which is the one discrete thing a flip changes — look-ahead comes
+   from VELOCITY, so flipping mid-air moves the camera not at all, and a
+   direction reversal eases across instead of jumping.
+4. **Smooth, not floaty.** Frame-rate-independent exponential smoothing with a
+   half-life, so 144 Hz and 60 Hz displays agree about how fast the camera
+   moves. Zoom is speed-driven, out quickly and back in slowly, which is what
+   stops the view pumping over rolling terrain.
+
+It is not a cinematic system: every value is one exponential and one clamp, and
+all of it is on the tuning panel, because anything with feel belongs on the
+panel. The sim never sees any of it and must not — a time that depended on how
+somebody framed their screen would not be a time.
 
 ## The tuning panel is the deliverable
 
@@ -104,18 +194,182 @@ plan's geometry, and re-measured after the rotation-authority change below.
   wheel is 1800 N of thrust on a 71 kg bike — 2.5 g, far past the ~910 N the
   contact patch can actually put down — so the wheel spins and the reaction
   torque loops the chassis.
-- The client therefore boots on **M1 candidate**, which now differs in six
-  numbers. Four came from the user's own hands on the sliders — drive torque
-  450 → 140, chassis inertia 11 → 12, angular damping 0.15 → 3.0, lean angle
-  40° → 28° — and two are the rotation-authority fix below: `attitudeTorque`
-  0 → 340 and `weightTransfer` 1 → 0.6. The plan's spec is one click away in the
-  preset menu for comparison.
-- With the candidate, measured on flat ground: **12.7 m/s** top speed, reached in
-  about 8 s; full throttle from a standstill **stays upright** and pitches only
-  3°; 200 N·m of drive torque loops it at 1.4 s, so the margin is now 60 N·m
-  rather than 5.
-- **Rotation is its own control now, and that is a physics change, not a tuning
-  one.** See below.
+- The client boots on **Soft (hand-tuned default)**, and its provenance is the
+  most trustworthy thing about it: the user drove every preset in the dropdown,
+  picked this character out of the spread, and dialled the one number that was
+  wrong. Their words, in order — *"soft and floaty feels close to original!!!"*,
+  *"maybe just a TINY bit too floaty"*, *"gravity on 9 is fucking sick"*. "Close
+  to original" is the highest praise available here, since reproducing how
+  Elasto Mania feels is the whole exercise.
+- It is the earlier reasoned **M1 candidate** (drive torque 450 → 140, chassis
+  inertia 11 → 12, angular damping 0.15 → 3.0, lean 40° → 28°, `attitudeTorque`
+  0 → 340, `weightTransfer` 1 → 0.6) with three more numbers moved, all pulling
+  the same way: spring stiffness 12000 → **6500**, damping 500 → **320**, and
+  gravity 10 → **9**. Half the spring rate is the compliant, long-travel
+  character; gravity is hang time and is the only lever on it, which is why a
+  hunt through the damping sliders could never have found it.
+- **The dropdown is why this happened.** Nobody reasoned their way to gravity 9.
+  The user found it because there was a spread of characters to drive rather
+  than one candidate and a wall of sliders. Offer a spread, not a proposal, the
+  next time a feel question comes up.
+- The plan's spec, the earlier candidate, a softer variant and a stiff one are
+  all one click away for comparison.
+- **The suspension is not bottoming on ordinary landings**, which was a standing
+  suspicion about what "gets weird" might be. Measured with `bin/air` on the
+  shipping bike: a 1.2 m drop reaches 0.180 m of the 0.25 m hard clamp, and a
+  deliberately excessive 3.5 m drop at 7.7 m/s touchdown reaches 0.215 m. It
+  never touches the clamp. `bin/replay` counts clamp frames on any real run, so
+  this stays checkable rather than remembered.
+- **Rotation is its own control**, braking dives the nose, and suspension has
+  separate compression and rebound damping. All three are physics changes rather
+  than tuning ones. See below.
+
+### Suspension has two damping coefficients now
+
+`suspension.damping` became `compressionDamping` and `reboundDamping`. `rate` in
+the tick is d(len)/dt, so `rate < 0` is the wheel coming up into the bike — the
+compression stroke, a landing or a bump — and `rate > 0` is the spring pushing
+it back out. One symmetric number forces a bad trade between those halves: high
+damping keeps a landing planted and also eats the rebound energy that would
+otherwise launch the bike off a feature. Real motorcycle suspension has two
+adjusters for exactly this reason.
+
+**Set the two equal and the arithmetic is identical to the single coefficient it
+replaced** — the branch selects the same number. That is the migration path and
+there is a test asserting it hash-for-hash.
+
+Measured with `bin/air`, mean peak chassis height off a 0.2 m bump, averaged
+over approach speeds from 5 to 12 m/s, on the shipping bike:
+
+| `reboundDamping` | mean peak |
+| --- | --- |
+| 800 | 0.178 m |
+| 500 | 0.209 m |
+| 320 *(default)* | 0.244 m |
+| 120 | 0.281 m |
+
+So halving rebound is worth roughly a third more height off a bump, and
+touchdown speed off the drop test is unchanged to within 0.1 m/s across the
+whole range — the launch half moved and the landing half did not, which is the
+entire point of splitting the coefficient. Three things are worth saying plainly
+about that table:
+
+- **Per-speed values are noisy and the trend is only in the mean.** A soft
+  spring is still oscillating when the wheel leaves a 2 m feature, so whether it
+  happens to be extending at that instant is a phase question, and phase moves
+  with speed. `bin/air --matrix bump` prints the whole grid rather than one
+  number for this reason.
+- **The textbook recipe is wrong here.** "Compression up so landings stay
+  planted, rebound down so it pops" measured *worse* than the symmetric default:
+  compression damping decides how much energy gets **into** the spring, so
+  raising it costs more launch than the lower rebound buys back. Lowering
+  rebound on its own is the move that works.
+- **A ramp is not a bump.** Off the kicker — geometry, not stored energy —
+  rebound barely registers: 0.388 to 0.419 m across the entire 120-to-800 range.
+
+The shipping default stays symmetric at 320/320, because that is the bike the
+user signed off on. **Soft + poppy** in the preset menu is the same bike with
+rebound at 150, one click away.
+
+### Braking dives the nose now
+
+Reported as an asymmetry, and it was one: *"slamming on brake should slam down
+the front end, right? just like gassing lifts up"*. Gassing lifted the front
+because drive torque is reacted straight onto the chassis. Braking had no
+comparable path at all, because the tick transferred only the rider's **static**
+weight — `tau = cross(L*u, (0, -m*g))` — and a static term does not know the
+bike is decelerating.
+
+The fix is to evaluate that same torque in the pivot's **accelerating** frame.
+The rider does not pull against gravity, it pulls against gravity minus the
+pivot's acceleration, and the arm already integrates exactly that pseudo-force
+one step later in the tick. Feeding the same quantity to the chassis is two
+lines, and `rider.inertialTransfer` scales it:
+
+```
+tq += -m*g*L*ax                  * weightTransfer      static, as before
+tq +=  m*L*(ay*acx - ax*acy)     * inertialTransfer    new
+```
+
+Measured with `bin/dive` — full brake from 9 m/s with the rear wheel down, nose
+-down pitch at 0.15 s and time to reach 30° nose-down:
+
+| `inertialTransfer` | at 0.15 s | to −30° |
+| --- | --- | --- |
+| 0 *(the old bike)* | −17.3° | 0.211 s |
+| 0.5 | −29.3° | 0.156 s |
+| **0.6** *(default)* | **−32.5°** | **0.148 s** |
+| 1.0 *(physically honest)* | −41.5° | 0.125 s |
+| 2.0 | −54.1° | 0.109 s |
+
+It ships at 0.6 rather than the honest 1.0 for two reasons: it matches
+`weightTransfer`, and the two are literally the two halves of one quantity, so
+scaling them apart would be odd to have to explain; and sustained full brake
+already loops the bike over the front at every setting including zero, with 1.0
+getting there in two-thirds the time. It is a slider.
+
+**It is deliberately not gated on being grounded.** Braking a spinning wheel in
+mid-air puts reaction torque on the chassis and pitches it — a different
+mechanism, also real, also a technique worth keeping. `bin/dive` reports the
+airborne row separately so the two are never conflated. A brake-input special
+case would have scored the same on the braking measurement and produced nothing
+at all on a landing, which is the half that matters more.
+
+Because the same term also fires on **impacts**, timing a lean into a face now
+pays. Re-running the slope sweep, the technique-versus-naive gap in energy
+surviving the transition:
+
+| `inertialTransfer` | sharp corner | filleted corner |
+| --- | --- | --- |
+| 0 | +13.1% | +16.0% |
+| 0.6 | +17.5% | +18.6% |
+| 1.0 | +16.9% | +21.7% |
+| 1.5 | +25.9% | +29.5% |
+
+The *naive* number goes down as the term goes up while the *technique* number
+holds, which is the shape you want: the rider's mass is a liability if you
+ignore it and an asset if you time it. That is the user's own description of
+Elma climbing — *"by leaning in when you hit you could use your momentum"* —
+showing up in a measurement for the first time.
+
+### A suspect for "sometimes it gets weird"
+
+`bin/replay` found this on the first file it was pointed at, which is roughly
+the point of building it.
+
+**The suspension can press a wheel several centimetres into a wall and hold it
+there.** Measured on a pilot run into the end wall of test01: the front wheel
+sat **8.7 cm inside solid geometry for over 40 consecutive ticks**, on a 25 cm
+wheel. Per-tick, the sequence is:
+
+1. the contact solver sets the wheel's velocity to the Baumgarte correction
+   target, which is capped at `MAX_CORRECTION_VEL` = 2 m/s;
+2. on the *next* tick the suspension spring — 2640 N at that deflection, on a
+   3 kg wheel, so ~1.7 m/s of Δv per tick — pulls it straight back toward the
+   anchor, which is on the far side of the wall;
+3. position integration happens **before** the contact solve, so what moves the
+   wheel is the spring-modified velocity, not the corrected one.
+
+Net: the correction is applied at the end of a tick and partly undone at the
+start of the next one before the position moves. The wheel digs in rather than
+out, and stays visibly inside the wall until the chassis backs off.
+
+This is not a NaN and not a desync — the hash chain verifies perfectly — but it
+is exactly the shape of a complaint like "it got weird": a wheel inside a wall,
+and the bike feeling stuck against it.
+
+The standard fix is to collect contacts against the *predicted* positions, solve
+velocities, and only then integrate positions, so that the corrected velocity is
+the one that moves the body. That is a tick-order change and therefore a
+`SIM_REV` bump, and it is not made here: it would land on top of a feel the user
+has just signed off on, and it deserves its own decision rather than being
+smuggled in with a suspension change. Raising `MAX_CORRECTION_VEL` or adding a
+positional projection pass are the cheaper alternatives; the projection pass was
+already considered and rejected, because three chassis circles in a corner
+triple-count and pop the bike.
+
+`bin/replay` flags penetration over 5 cm, so the next report will say whether
+this is what the player was seeing.
 
 ### Rotation authority, and why the pendulum alone was wrong
 
@@ -274,6 +528,14 @@ corners on purpose and its slopes are kept correspondingly gentle, with one real
   attitude-matching lean roughly doubles the driven wheel's suspension
   compression (26 mm → 60 mm) against the same run. The mechanism exists, so the
   dynamic term is a refinement rather than the missing piece.
+
+  **That reading was right about the sweep and wrong about the technique.** The
+  measurement above holds a *sustained* lean on a face, and for that the static
+  term really is enough. The user's description was about *timing* — "lean in
+  **when you hit**" — and timing is the one thing a static term cannot express.
+  The inertial reaction shipped in rev 3 for the brake-dive report, and the
+  slope sweep re-run with it on shows the technique-versus-naive gap widening on
+  both corner types. See "Braking dives the nose now".
 
 ## Determinism
 
@@ -503,8 +765,14 @@ the rev and their leaderboards move. A level's own `sagTolerance` is level data
 rather than engine data, so that one is caught by `simHash` alone. Adding the
 arc primitive itself did **not** bump the rev: no existing level contains an
 arc, `levels/test01.json` hashed bit-identically across it, and no line of the
-sim changed. **Replacing the rider's rotation model did**: `SIM_REV` is now **2**,
-and rev 1's code is not kept. Through milestone 1 the rev bumps freely and times
+sim changed. **Replacing the rider's rotation model did**, and so did rev 3 — the
+asymmetric suspension damping split and the rider's inertial reaction on the
+pivot, shipped together because neither ever escaped on its own. `SIM_REV` is
+now **3**, and earlier revs' code is not kept. Note what counted as a physics
+change there: moving the weight-transfer line to a different point in the tick
+reordered two floating-point additions, worth ~5e-16 at frame 400 — and a
+visibly different line by frame 5000, because a bike bouncing off geometry is
+chaotic. A rev bump is not about the size of the edit. Through milestone 1 the rev bumps freely and times
 reset — freezing revs into directories is a launch-time job, not a today job. **Through milestone 1 it bumps freely and times reset**; the HUD says so.
 Tuning must stay cheap, and any scheme that makes retuning expensive during M1
 makes the game worse.
@@ -523,9 +791,13 @@ bin/                every operational task
 levels/             exported level JSON
 ```
 
-`bin/` also holds two underscore-prefixed modules that are imported rather than
-run: `_smoke.mjs` (the headless Chrome driver) and `_sag.ts` (the coarse-run
-metric, shared by `bin/level-check` and `src/sim/curvelevel.test.ts`).
+`bin/` also holds underscore-prefixed modules that are imported rather than run:
+`_smoke.mjs` (the headless Chrome driver), `_sag.ts` (the coarse-run metric,
+shared by `bin/level-check` and `src/sim/curvelevel.test.ts`), `_pilot.ts` (the
+scripted rider), `_slope.ts`, `_air.ts` and `_dive.ts` (the measurement rigs),
+and `_replay.ts`. The rigs build their own synthetic levels rather than using
+anything in `levels/`: a measuring instrument needs one feature at a known place
+with known dimensions, which is the opposite of what a level is for.
 
 One npm package, npm not pnpm, no workspace. Tests are vitest and colocated
 (`src/sim/rot.test.ts` beside `src/sim/rot.ts`); there is no jsdom and no

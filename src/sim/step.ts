@@ -1,10 +1,10 @@
 // One sim tick. The tick ORDER below is frozen: reordering it changes results
 // even when every formula is unchanged, so it moves only with SIM_REV.
 //
-//   1. rider servo      PD torque toward the volt target; -tau on the chassis,
-//                       plus the rider's weight transferred at the head
+//   1. rider servo      PD torque toward the volt target; -tau on the chassis
 //   2. drive / brake    torque on the wheel, reaction on the chassis
-//   3. suspension       isotropic spring-damper, wheel <-> chassis anchor
+//   3. suspension       isotropic spring-damper (asymmetric comp/rebound)
+//  3b. rider on pivot   static weight + INERTIAL reaction, both at the head
 //   4. integrate v      semi-implicit Euler, gravity folded in
 //   5. arm rate         gravity + pivot pseudo-force + servo
 //   6. damping          v /= (1 + c*DT)
@@ -179,31 +179,10 @@ export function stepTick(w: World, s: SimState, mask: number): void {
   else if (servoT < -servoMax) servoT = -servoMax;
   tq -= servoT;
 
-  // Weight transfer. The rider's WEIGHT acts at the head, not at the chassis
-  // origin: tau = cross(L*u, (0, -m*g)) = -m*g*L*u.x.
-  //
-  // This is not in the plan and it is the one place the implementation adds a
-  // term rather than following it. Without it the rider's mass sits exactly on
-  // the rotation centre, so moving the arm cannot move the system's centre of
-  // mass, so leaning has NO steady-state effect at all — only the servo's
-  // transient reaction torque. Measured: with gas held from a standstill, the
-  // bike looped at every drive torque above ~170 N m, and holding "lean
-  // forward" made it loop SOONER rather than saving it. One line fixes that and
-  // makes leaning back on the throttle produce a wheelie, which is the single
-  // most important thing a rider does.
-  //
-  // What is still missing is the arm's INERTIAL reaction on the pivot (the
-  // m*a term); only the static weight is transferred. That is the top
-  // candidate for M2 and it needs a SIM_REV bump.
-  //
-  // `weightTransfer` scales it, because this term must not be the bike's
-  // rotation authority. It depends on the arm's WORLD-horizontal component, so
-  // over a revolution it averages to zero — during a spin it is a wobble, not a
-  // brake — and it is strongest upright and useless inverted, which is exactly
-  // backwards from what a player needs. It stays because leaning back on the
-  // throttle producing a wheelie is the single most important thing a rider
-  // does; it is demoted to flavour.
-  tq += -sp.rider.mass * sp.gravity * sp.rider.armLength * s.ax * sp.rider.weightTransfer;
+  // Weight transfer used to be applied here. It has MOVED to step 3b, after
+  // the suspension, because it is now evaluated in the pivot's accelerating
+  // frame and therefore needs the chassis acceleration — which is known only
+  // once the suspension forces are in. Nothing else changed about it; see 3b.
 
   // Attitude control. A constant torque on the chassis while a lean key is
   // held, sign from the direction, with NO dependence on chassis orientation or
@@ -262,7 +241,18 @@ export function stepTick(w: World, s: SimState, mask: number): void {
     const avx = s.vx - s.w * ry;
     const avy = s.vy + s.w * rx;
     const rate = (avx - s.wvx[i]) * ux + (avy - s.wvy[i]) * uy;
-    const mag = sp.suspension.stiffness * len + sp.suspension.damping * rate;
+    // Asymmetric damping. `rate` is d(len)/dt with len the anchor-to-wheel
+    // distance, so rate < 0 is the COMPRESSION stroke (the wheel coming up into
+    // the bike on a landing or a bump) and rate > 0 is REBOUND (the spring
+    // pushing it back out). Picking the coefficient off the sign is the whole
+    // mechanism: compression damping stays high so landings stay planted, and
+    // rebound damping comes down so the spring returns its stored energy to the
+    // bike instead of to heat, which is what makes a feature pop you.
+    //
+    // With the two equal this is arithmetically identical to the single
+    // coefficient of rev 2 — the branch selects the same number.
+    const c = rate < 0 ? sp.suspension.compressionDamping : sp.suspension.reboundDamping;
+    const mag = sp.suspension.stiffness * len + c * rate;
     const sfx = mag * ux;
     const sfy = mag * uy;
     SWF_X[i] += sfx;
@@ -272,9 +262,46 @@ export function stepTick(w: World, s: SimState, mask: number): void {
     tq -= rx * sfy - ry * sfx;
   }
 
-  // --- 4. integrate velocities ------------------------------------------
+  // --- 3b. the rider on the pivot ---------------------------------------
+  // The chassis's own linear acceleration, needed HERE rather than in step 4
+  // because the rider's reaction depends on it. This is legitimate and not a
+  // circular dependency: fx and fy come from the suspension alone and no torque
+  // term feeds into them, so the translational acceleration is already final at
+  // this point in the tick even though the angular one is not.
   const acx = fx * w.invChassisMass;
   const acy = fy * w.invChassisMass - sp.gravity;
+
+  // The rider's mass sits L metres up an arm on the pivot, and what it pulls
+  // against is not gravity but gravity MINUS the pivot's acceleration. Splitting
+  // that into its two halves is what lets them be tuned apart:
+  //
+  //   STATIC, scaled by `weightTransfer` — tau = cross(L*u, (0, -m*g)).
+  //     Without it, the rider's mass sits exactly on the rotation centre,
+  //     moving the arm cannot move the system's centre of mass, and leaning has
+  //     no steady-state effect at all. Measured: with gas held from a standstill
+  //     the bike looped at every drive torque above ~170 N m and holding "lean
+  //     forward" made it loop SOONER. One line fixes that and makes leaning back
+  //     on the throttle produce a wheelie. It depends on the arm's WORLD-
+  //     horizontal component, so over a revolution it averages to zero — during
+  //     a spin it is a wobble, not a brake — which is why it is scaled down to
+  //     flavour and `attitudeTorque` carries the rotation authority.
+  //
+  //   INERTIAL, scaled by `inertialTransfer` — tau = cross(L*u, -m*a_pivot).
+  //     The term the old comment here called the top M2 candidate. Brake and
+  //     the pivot decelerates while 35 kg of rider keeps going: that is the
+  //     stoppie, and it was missing entirely. Gas and it mirrors. Land and the
+  //     pivot decelerates upward, so the rider's weight lands with the bike.
+  //     Unlike the static half it does NOT average to zero over a revolution,
+  //     because it tracks what the bike is doing rather than which way it is
+  //     pointing, and unlike a brake-input special case it is one honest term
+  //     that happens to produce all of those behaviours.
+  //
+  // Together they are exactly `cross(L*u, m*(g_vec - a_pivot))`, which is the
+  // same quantity the arm itself integrates in step 5 — see `ex`/`ey` there.
+  tq += -sp.rider.mass * sp.gravity * sp.rider.armLength * s.ax * sp.rider.weightTransfer;
+  tq += sp.rider.mass * sp.rider.armLength * (s.ay * acx - s.ax * acy) * sp.rider.inertialTransfer;
+
+  // --- 4. integrate velocities ------------------------------------------
   s.vx += acx * DT;
   s.vy += acy * DT;
   s.w += tq * w.invChassisInertia * DT;
@@ -287,7 +314,9 @@ export function stepTick(w: World, s: SimState, mask: number): void {
   // --- 5. arm rate ------------------------------------------------------
   // In the pivot's accelerating frame the rider sees gravity plus the pivot
   // pseudo-force. Including the pseudo-force is what makes a hard landing throw
-  // the rider forward instead of leaving him welded upright.
+  // the rider forward instead of leaving him welded upright. Step 3b now feeds
+  // the chassis half of the same quantity; the two are deliberately the same
+  // physics seen from the two ends of the arm.
   const ex = -acx;
   const ey = -sp.gravity - acy;
   s.aw += ((s.ax * ey - s.ay * ex) / sp.rider.armLength + servoT * w.invArmInertia) * DT;

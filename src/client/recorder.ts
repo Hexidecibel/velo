@@ -60,3 +60,68 @@ export interface Verified {
 export function verify(level: Level, spec: BikeSpec, replay: Replay): Verified {
   return { replay, result: verifyReplay(level, spec, replay) };
 }
+
+// --- every attempt, not just the last one ------------------------------------
+//
+// The recorder above throws a run away the moment the next one starts. Keeping
+// them instead costs about a kilobyte per attempt — the input stream is
+// run-length encoded and a minute of riding is a few hundred bytes — and it is
+// the one piece of groundwork that turns the Super Meat Boy montage (every
+// failed attempt replayed at once alongside the line that worked) from a
+// data-model change plus a rendering job into a rendering job.
+//
+// SESSION-SCOPED, deliberately. Nothing here is written to disk or to
+// localStorage: attempts are for the run of play you are having right now, and
+// persisting them would be inventing the storage layer that belongs to the
+// server milestone. There is no UI for this yet and that is fine.
+
+export type Outcome = 'finished' | 'dead' | 'abandoned';
+
+export interface Attempt {
+  /** 1-based, in the order they happened this session. */
+  n: number;
+  outcome: Outcome;
+  replay: Replay;
+}
+
+/**
+ * Cap on retained attempts. At ~1 KB each this is ~200 KB, which is nothing,
+ * and it is high enough that a genuinely long grind on one level still has its
+ * whole history. Oldest go first.
+ */
+export const MAX_ATTEMPTS = 200;
+
+export interface AttemptLog {
+  readonly all: readonly Attempt[];
+  /** Attempts on one level, oldest first. Keyed by simHash — the level's identity. */
+  forLevel(simHash: string): Attempt[];
+  add(replay: Replay): Attempt;
+  clear(): void;
+}
+
+export function createAttemptLog(): AttemptLog {
+  let attempts: Attempt[] = [];
+  let seq = 0;
+  return {
+    get all() {
+      return attempts;
+    },
+    forLevel(simHash: string): Attempt[] {
+      return attempts.filter((a) => a.replay.simHash === simHash);
+    },
+    add(replay: Replay): Attempt {
+      const a: Attempt = {
+        n: ++seq,
+        outcome: replay.finished ? 'finished' : replay.dead ? 'dead' : 'abandoned',
+        replay,
+      };
+      attempts.push(a);
+      if (attempts.length > MAX_ATTEMPTS) attempts = attempts.slice(attempts.length - MAX_ATTEMPTS);
+      return a;
+    },
+    clear(): void {
+      attempts = [];
+      seq = 0;
+    },
+  };
+}

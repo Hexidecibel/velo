@@ -1,9 +1,21 @@
 import { describe, it, expect } from 'vitest';
 import { parseLevel } from './level.ts';
 import { createSim } from './sim.ts';
-import { DEFAULT_SPEC, cloneSpec } from './spec.ts';
+import { DEFAULT_SPEC, cloneSpec, specHash } from './spec.ts';
+import type { BikeSpec } from './spec.ts';
 import { TEST_LEVEL } from './testlevel.ts';
-import { buildReplay, decodeInputs, encodeInputs, ticksToSeconds, verifyReplay } from './replay.ts';
+import {
+  buildReplay,
+  checkReplayCompat,
+  decodeInputs,
+  encodeInputs,
+  parseReplayFile,
+  replayFileName,
+  replaySpec,
+  ticksToSeconds,
+  toReplayFile,
+  verifyReplay,
+} from './replay.ts';
 import type { Replay } from './replay.ts';
 import { IN_BRAKE, IN_FLIP, IN_LEAN_L, IN_LEAN_R, IN_THROTTLE, SIM_HZ } from './consts.ts';
 import { SIM_REV } from './rev.ts';
@@ -127,5 +139,98 @@ describe('time', () => {
   it('converts ticks to seconds at the sim rate', () => {
     expect(ticksToSeconds(SIM_HZ)).toBe(1);
     expect(ticksToSeconds(0)).toBe(0);
+  });
+});
+
+describe('replay files', () => {
+  it('round-trips through JSON and re-verifies', () => {
+    const r = record(400);
+    const file = toReplayFile(r, {
+      level: TEST_LEVEL,
+      levelName: level.name,
+      spec: DEFAULT_SPEC,
+      recordedAt: '2026-09-15T00:00:00Z',
+      note: 'it got weird here',
+    });
+    // Through actual bytes, because that is the trip the feature makes.
+    const back = parseReplayFile(JSON.parse(JSON.stringify(file)));
+    expect(back.frames).toBe(r.frames);
+    expect(back.inputs).toBe(r.inputs);
+    expect(back.note).toBe('it got weird here');
+    expect(verifyReplay(level, DEFAULT_SPEC, back).ok).toBe(true);
+  });
+
+  it('recovers the recorded bike from the file', () => {
+    const tuned = cloneSpec(DEFAULT_SPEC);
+    tuned.suspension.reboundDamping = 210;
+    const r = record(200, tuned);
+    const file = parseReplayFile(JSON.parse(JSON.stringify(toReplayFile(r, { spec: tuned }))));
+    const got = replaySpec(file);
+    expect(got).not.toBeNull();
+    expect(specHash(got as BikeSpec)).toBe(r.specHash);
+    // ...and the recovered bike is close enough to be the same bike, not just
+    // a hash collision.
+    expect((got as BikeSpec).suspension.reboundDamping).toBe(210);
+  });
+
+  it('refuses a spec whose hash does not match what the file claims', () => {
+    const r = record(64);
+    const tampered = cloneSpec(DEFAULT_SPEC);
+    tampered.drive.maxTorque += 1;
+    const file = parseReplayFile(JSON.parse(JSON.stringify(toReplayFile(r, { spec: tampered }))));
+    expect(replaySpec(file)).toBeNull();
+  });
+
+  it('rejects malformed files with the field name, not a stack trace', () => {
+    const good = JSON.parse(JSON.stringify(toReplayFile(record(64), { spec: DEFAULT_SPEC })));
+    expect(() => parseReplayFile({ ...good, format: 'nope' })).toThrow(/replay.format/);
+    expect(() => parseReplayFile({ ...good, frames: good.frames + 1 })).toThrow(/frames/);
+    expect(() => parseReplayFile({ ...good, hashes: 'no' })).toThrow(/hashes/);
+    expect(() => parseReplayFile({ ...good, simRev: 'two' })).toThrow(/simRev/);
+    expect(() => parseReplayFile({ ...good, inputs: '9999' })).toThrow(/bad mask/);
+    expect(() => parseReplayFile(null)).toThrow(/expected an object/);
+  });
+
+  it('PARSES a file from another sim rev, and reports the mismatch separately', () => {
+    // The distinction matters: a rev-mismatched file is not corrupt, and saying
+    // "corrupt" would send the user hunting for the wrong problem.
+    const r = record(64);
+    const old = parseReplayFile({ ...JSON.parse(JSON.stringify(toReplayFile(r))), simRev: SIM_REV - 1 });
+    expect(old.frames).toBe(r.frames);
+    const c = checkReplayCompat(old, { level, spec: DEFAULT_SPEC });
+    expect(c.ok).toBe(false);
+    expect(c.revOk).toBe(false);
+    expect(c.problems.join(' ')).toMatch(/SIM_REV mismatch/);
+  });
+
+  it('names each mismatch — rev, level and bike — independently', () => {
+    const r = record(64);
+    const other = cloneSpec(DEFAULT_SPEC);
+    other.wheel.friction += 0.5;
+    const c = checkReplayCompat(r, { level, spec: other });
+    expect(c.revOk).toBe(true);
+    expect(c.levelOk).toBe(true);
+    expect(c.specOk).toBe(false);
+    expect(c.problems).toHaveLength(1);
+    expect(c.problems[0]).toMatch(/bike spec mismatch/);
+
+    const elsewhere = parseLevel({ ...TEST_LEVEL, apples: [{ x: 3, y: 3 }] });
+    const c2 = checkReplayCompat(r, { level: elsewhere, spec: DEFAULT_SPEC });
+    expect(c2.levelOk).toBe(false);
+    expect(c2.problems[0]).toMatch(/level mismatch/);
+  });
+
+  it('is clean when everything lines up', () => {
+    const c = checkReplayCompat(record(64), { level, spec: DEFAULT_SPEC });
+    expect(c.ok).toBe(true);
+    expect(c.problems).toEqual([]);
+  });
+
+  it('builds a filename that says what the run was', () => {
+    const r = record(128);
+    const n = replayFileName(r, '2026-09-15T01-02-03');
+    expect(n.startsWith(`velo-rev${SIM_REV}-`)).toBe(true);
+    expect(n.endsWith('.replay.json')).toBe(true);
+    expect(n).not.toMatch(/[^a-zA-Z0-9._-]/);
   });
 });

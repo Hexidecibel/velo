@@ -8,6 +8,9 @@
 // Units: metres, kilograms, seconds, radians. y is UP; gravity is -y.
 import { Hasher } from './hash.ts';
 
+/** Thrown by `parseSpec`. A bad spec is rejected, never coerced. */
+export class SpecError extends Error {}
+
 export interface Vec2 {
   x: number;
   y: number;
@@ -60,8 +63,27 @@ export interface BikeSpec {
   suspension: {
     /** N/m, zero rest length: the wheel is pulled toward its anchor. */
     stiffness: number;
-    /** N s/m, along the anchor-to-wheel axis. */
-    damping: number;
+    /**
+     * ASYMMETRIC DAMPING, N s/m along the anchor-to-wheel axis, and the split is
+     * the point. `rate` in step.ts is d(len)/dt, so `rate < 0` is the wheel
+     * moving TOWARD the chassis (the compression stroke, a landing or a bump)
+     * and `rate > 0` is the spring pushing it back out (the rebound stroke).
+     *
+     * One symmetric coefficient forces a bad trade between the two halves. High
+     * damping keeps a landing planted but also eats the rebound energy that
+     * would otherwise launch the bike off a feature; low damping gives the pop
+     * back but makes every landing a pogo. Real motorcycle suspension has two
+     * separate adjusters for exactly this reason, and so does this one:
+     * compression stays high so landings stay controlled, rebound comes down so
+     * the spring returns what it stored.
+     *
+     * Set them EQUAL and the arithmetic is bit-identical to the single
+     * coefficient it replaced — that is the migration path, and it is why rev 2
+     * feel is one slider drag away.
+     */
+    compressionDamping: number;
+    /** N s/m on the extension stroke. Lower than compression = more pop. */
+    reboundDamping: number;
     /**
      * Hard radial clamp, metres. The suspension is ISOTROPIC — it pulls the
      * wheel toward the anchor in ANY direction, not along a prismatic axis.
@@ -153,6 +175,43 @@ export interface BikeSpec {
      * authority, so gravity no longer has to.
      */
     weightTransfer: number;
+    /**
+     * The rider's INERTIAL reaction on the pivot, scaled. This is the m*a term
+     * that the tick comment used to call the top candidate for M2.
+     *
+     * `weightTransfer` above transfers only the rider's STATIC weight: the
+     * torque about the chassis origin of a mass hanging L metres up. That makes
+     * gassing lift the front, because drive torque is reacted on the chassis
+     * directly. Braking had no comparable path, so the nose did not dive —
+     * which the user noticed and reported as an asymmetry, correctly.
+     *
+     * The honest fix is to evaluate the same torque in the pivot's ACCELERATING
+     * frame rather than in an inertial one. The rider does not feel gravity, it
+     * feels gravity MINUS the pivot's acceleration, and the arm already
+     * integrates exactly that pseudo-force (see step.ts step 5). Feeding the
+     * same quantity into the chassis torque is a two-line change and it is
+     * symmetric by construction:
+     *
+     *   brake        pivot decelerates, the rider's mass keeps going forward,
+     *                and 35 kg at 1.2 g on a 0.55 m arm is ~230 N m of
+     *                nose-down moment that simply was not being applied
+     *   throttle     the mirror image: nose up, on top of the drive reaction
+     *   landing      the pivot decelerates upward hard, so the rider's weight
+     *                lands with it and a heavy landing feels heavy
+     *   impact       and, timed into a face, this is what makes "lean in as you
+     *                hit" convert momentum into climb — an inertial term
+     *                governs timing, a static one cannot
+     *
+     * Separate from `weightTransfer` on purpose: that one is set where the user
+     * left it and the static behaviour it controls is signed off, so the new
+     * term gets its own slider and its own zero. Set this to 0 and the bike is
+     * arithmetically the rev-3 bike.
+     *
+     * NOT gated on being grounded. Braking a spinning wheel in mid-air puts
+     * reaction torque on the chassis and pitches it — a different mechanism,
+     * also real, also worth keeping. Two behaviours, not one with an exception.
+     */
+    inertialTransfer: number;
   };
 
   damping: {
@@ -199,7 +258,12 @@ export const DEFAULT_SPEC: BikeSpec = deepFreeze({
 
   suspension: {
     stiffness: 12000,
-    damping: 500,
+    // Equal, deliberately: DEFAULT_SPEC is the plan's numbers verbatim and every
+    // test keys off it, so the asymmetric-damping change must leave it moving
+    // bit-identically. The tuned split lives in the M1 preset, where every other
+    // deviation from the plan already lives.
+    compressionDamping: 500,
+    reboundDamping: 500,
     maxDeflection: 0.25,
   },
 
@@ -228,6 +292,9 @@ export const DEFAULT_SPEC: BikeSpec = deepFreeze({
     // presets.ts, which is where these numbers are actually set together.
     attitudeTorque: 340,
     weightTransfer: 1,
+    // Zero in DEFAULT_SPEC, which is the plan verbatim and has no such term.
+    // The presets turn it on; see presets.ts for the measured numbers.
+    inertialTransfer: 0,
   },
 
   damping: {
@@ -294,7 +361,8 @@ export function specHash(s: BikeSpec): string {
   h.num(s.wheel.friction);
   h.num(s.wheel.restitution);
   h.num(s.suspension.stiffness);
-  h.num(s.suspension.damping);
+  h.num(s.suspension.compressionDamping);
+  h.num(s.suspension.reboundDamping);
   h.num(s.suspension.maxDeflection);
   h.num(s.drive.maxTorque);
   h.num(s.drive.maxWheelSpin);
@@ -313,6 +381,7 @@ export function specHash(s: BikeSpec): string {
   h.num(s.rider.servoMaxTorque);
   h.num(s.rider.attitudeTorque);
   h.num(s.rider.weightTransfer);
+  h.num(s.rider.inertialTransfer);
   h.num(s.damping.linear);
   h.num(s.damping.angular);
   return h.digest();
@@ -326,4 +395,98 @@ function deepFreeze<T>(o: T): T {
     Object.freeze(o);
   }
   return o;
+}
+
+/**
+ * Validate an arbitrary object — a parsed JSON file, a pasted panel dump, the
+ * `spec` embedded in a replay — into a real BikeSpec, rejecting hard rather
+ * than handing the sim an `undefined` that becomes a NaN on the first tick.
+ *
+ * The loader rule from level.ts applies here for the same reason: one NaN
+ * poisons the whole state buffer within a tick, and a bike that silently
+ * vanishes is a much worse error message than "spec.wheel.radius: expected a
+ * finite number".
+ */
+export function parseSpec(raw: unknown): BikeSpec {
+  const obj = (v: unknown, what: string): Record<string, unknown> => {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) throw new SpecError(`${what}: expected an object`);
+    return v as Record<string, unknown>;
+  };
+  const num = (v: unknown, what: string): number => {
+    if (typeof v !== 'number' || !Number.isFinite(v)) {
+      throw new SpecError(`${what}: expected a finite number, got ${JSON.stringify(v) ?? String(v)}`);
+    }
+    return v;
+  };
+  const v2 = (v: unknown, what: string): Vec2 => {
+    const o = obj(v, what);
+    return { x: num(o.x, `${what}.x`), y: num(o.y, `${what}.y`) };
+  };
+
+  const r = obj(raw, 'spec');
+  const chassis = obj(r.chassis, 'spec.chassis');
+  const wheel = obj(r.wheel, 'spec.wheel');
+  const susp = obj(r.suspension, 'spec.suspension');
+  const drive = obj(r.drive, 'spec.drive');
+  const rider = obj(r.rider, 'spec.rider');
+  const damping = obj(r.damping, 'spec.damping');
+
+  if (!Array.isArray(chassis.colliders)) throw new SpecError('spec.chassis.colliders: expected an array');
+  const colliders: Circle[] = chassis.colliders.map((c, i) => {
+    const o = obj(c, `spec.chassis.colliders[${i}]`);
+    return {
+      x: num(o.x, `spec.chassis.colliders[${i}].x`),
+      y: num(o.y, `spec.chassis.colliders[${i}].y`),
+      r: num(o.r, `spec.chassis.colliders[${i}].r`),
+    };
+  });
+  if (!Array.isArray(wheel.anchors) || wheel.anchors.length !== 2) {
+    throw new SpecError('spec.wheel.anchors: expected exactly two anchors');
+  }
+
+  return {
+    gravity: num(r.gravity, 'spec.gravity'),
+    chassis: {
+      mass: num(chassis.mass, 'spec.chassis.mass'),
+      inertia: num(chassis.inertia, 'spec.chassis.inertia'),
+      colliders,
+    },
+    wheel: {
+      mass: num(wheel.mass, 'spec.wheel.mass'),
+      radius: num(wheel.radius, 'spec.wheel.radius'),
+      inertia: num(wheel.inertia, 'spec.wheel.inertia'),
+      anchors: [v2(wheel.anchors[0], 'spec.wheel.anchors[0]'), v2(wheel.anchors[1], 'spec.wheel.anchors[1]')],
+      friction: num(wheel.friction, 'spec.wheel.friction'),
+      restitution: num(wheel.restitution, 'spec.wheel.restitution'),
+    },
+    suspension: {
+      stiffness: num(susp.stiffness, 'spec.suspension.stiffness'),
+      compressionDamping: num(susp.compressionDamping, 'spec.suspension.compressionDamping'),
+      reboundDamping: num(susp.reboundDamping, 'spec.suspension.reboundDamping'),
+      maxDeflection: num(susp.maxDeflection, 'spec.suspension.maxDeflection'),
+    },
+    drive: {
+      maxTorque: num(drive.maxTorque, 'spec.drive.maxTorque'),
+      maxWheelSpin: num(drive.maxWheelSpin, 'spec.drive.maxWheelSpin'),
+      brakeTorque: num(drive.brakeTorque, 'spec.drive.brakeTorque'),
+    },
+    rider: {
+      mass: num(rider.mass, 'spec.rider.mass'),
+      armLength: num(rider.armLength, 'spec.rider.armLength'),
+      headRadius: num(rider.headRadius, 'spec.rider.headRadius'),
+      rest: v2(rider.rest, 'spec.rider.rest'),
+      leanL: v2(rider.leanL, 'spec.rider.leanL'),
+      leanR: v2(rider.leanR, 'spec.rider.leanR'),
+      servoP: num(rider.servoP, 'spec.rider.servoP'),
+      servoD: num(rider.servoD, 'spec.rider.servoD'),
+      servoMaxTorque: num(rider.servoMaxTorque, 'spec.rider.servoMaxTorque'),
+      attitudeTorque: num(rider.attitudeTorque, 'spec.rider.attitudeTorque'),
+      weightTransfer: num(rider.weightTransfer, 'spec.rider.weightTransfer'),
+      inertialTransfer: num(rider.inertialTransfer, 'spec.rider.inertialTransfer'),
+    },
+    damping: {
+      linear: num(damping.linear, 'spec.damping.linear'),
+      angular: num(damping.angular, 'spec.damping.angular'),
+    },
+  };
 }

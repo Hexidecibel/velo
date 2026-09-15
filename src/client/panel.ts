@@ -6,6 +6,13 @@
 // by how much of the feel they own: suspension and wheel friction first (call
 // it 80%), then volt authority, then drive, then chassis and world.
 //
+// The camera lives here too. It is not physics and it is not in the BikeSpec —
+// it never touches the sim and it must not, or a replay would depend on how
+// somebody framed their screen. But it has FEEL, and the panel is the house
+// pattern for anything with feel, so the same slider machinery drives both. The
+// field/group types are generic over the object they edit; that is the whole of
+// what it took.
+//
 // The "Copy spec JSON" button is not a convenience. A slider emits doubles like
 // 0.30000000000000004, and the exact doubles that were tuned with must be the
 // exact doubles that ship — JSON.stringify emits the shortest representation
@@ -13,42 +20,48 @@
 // and nobody retypes it.
 import type { BikeSpec } from '@/sim/spec.ts';
 import { specHash } from '@/sim/spec.ts';
+import type { CameraParams } from './camera.ts';
 import { PRESETS, leanAngleOf, leanVectors } from './presets.ts';
 
-interface Field {
+interface Field<T> {
   label: string;
   min: number;
   max: number;
   step: number;
   hint?: string;
-  get(s: BikeSpec): number;
-  set(s: BikeSpec, v: number): void;
+  get(s: T): number;
+  set(s: T, v: number): void;
 }
 
-interface Group {
+interface Group<T> {
   title: string;
   why: string;
-  fields: Field[];
+  fields: Field<T>[];
 }
 
-const GROUPS: Group[] = [
+const BIKE_GROUPS: Group<BikeSpec>[] = [
   {
     title: 'Suspension & grip',
-    why: 'About 80% of the feel lives here. Start with stiffness, then damping, then friction.',
+    why: 'About 80% of the feel lives here. Start with stiffness, then the two damping values, then friction.',
     fields: [
       {
         label: 'spring stiffness', min: 1000, max: 40000, step: 50,
-        hint: 'Zero rest length: the wheel is pulled to its anchor in ANY direction.',
+        hint: 'Zero rest length: the wheel is pulled to its anchor in ANY direction. Lower = longer, softer travel.',
         get: (s) => s.suspension.stiffness, set: (s, v) => { s.suspension.stiffness = v; },
       },
       {
-        label: 'spring damping', min: 0, max: 2500, step: 5,
-        hint: 'Critical for the sprung mass is around 1300. Below it the bike pogos.',
-        get: (s) => s.suspension.damping, set: (s, v) => { s.suspension.damping = v; },
+        label: 'compression damping', min: 0, max: 2500, step: 5,
+        hint: 'The LANDING half — resists the wheel coming up into the bike. High keeps a landing planted.',
+        get: (s) => s.suspension.compressionDamping, set: (s, v) => { s.suspension.compressionDamping = v; },
+      },
+      {
+        label: 'rebound damping', min: 0, max: 2500, step: 5,
+        hint: 'The LAUNCH half — resists the spring pushing back out. LOWER returns more of what a bump stored, so features pop you. Equal to compression is exactly the old symmetric feel; far below it goes pogo.',
+        get: (s) => s.suspension.reboundDamping, set: (s, v) => { s.suspension.reboundDamping = v; },
       },
       {
         label: 'max deflection (m)', min: 0.03, max: 0.6, step: 0.005,
-        hint: 'Hard radial clamp. At these spring rates you almost never reach it.',
+        hint: 'Hard radial clamp. Hitting it dumps the impact into the wheel alone and is felt as the bike sticking; bin/replay counts how often a run reaches it.',
         get: (s) => s.suspension.maxDeflection, set: (s, v) => { s.suspension.maxDeflection = v; },
       },
       {
@@ -58,7 +71,7 @@ const GROUPS: Group[] = [
       },
       {
         label: 'wheel restitution', min: 0, max: 0.6, step: 0.005,
-        hint: 'Keep it near zero. The SPRING should do the bouncing, not the tyre.',
+        hint: 'Keep it near zero. The SPRING should do the bouncing, not the tyre — that is what rebound damping is for.',
         get: (s) => s.wheel.restitution, set: (s, v) => { s.wheel.restitution = v; },
       },
       {
@@ -91,7 +104,7 @@ const GROUPS: Group[] = [
   },
   {
     title: 'Volt authority',
-    why: 'Attitude torque is the big one — it is the primary rotation control and it works identically upright, inverted and spinning. The pendulum below it moves the rider and therefore the HEAD, which is what makes volting under a low ceiling lethal.',
+    why: 'Attitude torque is the big one — it is the primary rotation control and it works identically upright, inverted and spinning. Weight transfer and inertial transfer are the two halves of the rider\'s load on the pivot: one static, one from acceleration. The pendulum below them moves the rider and therefore the HEAD, which is what makes volting under a low ceiling lethal.',
     fields: [
       {
         label: 'attitude torque', min: 0, max: 900, step: 5,
@@ -100,8 +113,13 @@ const GROUPS: Group[] = [
       },
       {
         label: 'weight transfer', min: 0, max: 1, step: 0.01,
-        hint: 'Scales the rider-weight torque. 1 lets gravity dominate rotation and settles the bike inverted in the air; ~0.4 keeps the wheelie and not the fight.',
+        hint: 'Scales the rider-weight torque. 1 lets gravity dominate rotation and settles the bike inverted in the air; ~0.6 keeps the wheelie and not the fight.',
         get: (s) => s.rider.weightTransfer, set: (s, v) => { s.rider.weightTransfer = v; },
+      },
+      {
+        label: 'inertial transfer', min: 0, max: 3, step: 0.05,
+        hint: 'BRAKE DIVE. The rider\'s mass reacting to the pivot\'s acceleration — brake and the nose slams down, gas and it lifts, land and the weight lands with you. 0 is the old bike with no dive at all. Full brake at 9 m/s, nose-down at 0.15 s: 0 -> 17 deg, 0.6 -> 33, 1.0 -> 42.',
+        get: (s) => s.rider.inertialTransfer, set: (s, v) => { s.rider.inertialTransfer = v; },
       },
       {
         label: 'lean angle (deg)', min: 0, max: 90, step: 0.5,
@@ -163,7 +181,7 @@ const GROUPS: Group[] = [
   },
   {
     title: 'Chassis & world',
-    why: 'Chassis inertia trades volt authority against how easily the throttle loops you. It is the sharpest knob on this panel.',
+    why: 'Chassis inertia trades volt authority against how easily the throttle loops you. It is the sharpest knob on this panel. Gravity is the one that decides hang time — no suspension slider touches it.',
     fields: [
       {
         label: 'chassis mass (kg)', min: 5, max: 120, step: 0.5,
@@ -186,7 +204,79 @@ const GROUPS: Group[] = [
       },
       {
         label: 'gravity (m/s^2)', min: 0, max: 30, step: 0.1,
+        hint: 'HANG TIME lives here and nowhere else. 8 is a quarter more jump height than 10 for the same launch, and about 12% longer in the air.',
         get: (s) => s.gravity, set: (s, v) => { s.gravity = v; },
+      },
+    ],
+  },
+];
+
+const CAMERA_GROUPS: Group<CameraParams>[] = [
+  {
+    title: 'Camera',
+    why: 'Not physics — the sim never sees any of this, and it must not, or a time would depend on how somebody framed their screen. The one rule that outranks framing: the collision edge must stay readable, so min zoom is a hard floor.',
+    fields: [
+      {
+        label: 'follow half-life (s)', min: 0.01, max: 0.6, step: 0.005,
+        hint: 'Seconds to close half the gap. Lower = tighter and twitchier; higher = smoother and laggier.',
+        get: (c) => c.followHalfLife, set: (c, v) => { c.followHalfLife = v; },
+      },
+      {
+        label: 'lead time (s)', min: 0, max: 1, step: 0.01,
+        hint: 'Seconds of velocity used as look-ahead, so you see what you are riding into. From VELOCITY, never from facing — that is why a flip does not move the camera.',
+        get: (c) => c.leadTime, set: (c, v) => { c.leadTime = v; },
+      },
+      {
+        label: 'lead half-life (s)', min: 0.01, max: 1, step: 0.01,
+        hint: 'How fast the lead itself turns around. This is the knob that stops a direction reversal lurching.',
+        get: (c) => c.leadHalfLife, set: (c, v) => { c.leadHalfLife = v; },
+      },
+      {
+        label: 'max lead x (m)', min: 0, max: 10, step: 0.1,
+        get: (c) => c.maxLeadX, set: (c, v) => { c.maxLeadX = v; },
+      },
+      {
+        label: 'max lead y (m)', min: 0, max: 10, step: 0.1,
+        hint: 'Smaller than x on purpose: vertical reversals are faster and more surprising.',
+        get: (c) => c.maxLeadY, set: (c, v) => { c.maxLeadY = v; },
+      },
+      {
+        label: 'base zoom (px/m)', min: 20, max: 140, step: 1,
+        get: (c) => c.baseZoom, set: (c, v) => { c.baseZoom = v; },
+      },
+      {
+        label: 'MIN zoom (px/m)', min: 20, max: 140, step: 1,
+        hint: 'The readability floor and the highest-priority rule here. Below ~34 the 1.7 m bike is under 58 px and you are guessing at clearances.',
+        get: (c) => c.minZoom, set: (c, v) => { c.minZoom = v; },
+      },
+      {
+        label: 'max zoom (px/m)', min: 20, max: 240, step: 1,
+        get: (c) => c.maxZoom, set: (c, v) => { c.maxZoom = v; },
+      },
+      {
+        label: 'zoom-out from (m/s)', min: 0, max: 30, step: 0.5,
+        hint: 'Below this speed the zoom does not move at all.',
+        get: (c) => c.zoomFromSpeed, set: (c, v) => { c.zoomFromSpeed = v; },
+      },
+      {
+        label: 'zoom-out by (m/s)', min: 1, max: 40, step: 0.5,
+        hint: 'Speed at which the zoom has reached its floor.',
+        get: (c) => c.zoomToSpeed, set: (c, v) => { c.zoomToSpeed = v; },
+      },
+      {
+        label: 'zoom-out half-life (s)', min: 0.02, max: 2, step: 0.01,
+        hint: 'Zooming out is urgent — something is about to arrive.',
+        get: (c) => c.zoomOutHalfLife, set: (c, v) => { c.zoomOutHalfLife = v; },
+      },
+      {
+        label: 'zoom-in half-life (s)', min: 0.02, max: 3, step: 0.01,
+        hint: 'Zooming back in is not urgent. Slower here is what stops the view pumping over rolling terrain.',
+        get: (c) => c.zoomInHalfLife, set: (c, v) => { c.zoomInHalfLife = v; },
+      },
+      {
+        label: 'safe box', min: 0.05, max: 1, step: 0.01,
+        hint: 'Hard guarantee, applied after the smoothing: the bike never leaves this fraction of the half-frame. 1 disables it and lets a fast reversal outrun the camera.',
+        get: (c) => c.safeBox, set: (c, v) => { c.safeBox = v; },
       },
     ],
   },
@@ -195,15 +285,23 @@ const GROUPS: Group[] = [
 export interface PanelHooks {
   /** A spec field moved. The sim is rebuilt around the new spec in place. */
   onSpecChange(spec: BikeSpec): void;
+  /** A camera field moved. Nothing physical happens. */
+  onCameraChange(cam: CameraParams): void;
   /** A whole preset was selected; the run restarts. */
   onPreset(spec: BikeSpec, label: string): void;
+  /** Throw away the stored tune and go back to the preset as shipped. */
+  onResetSpec(): void;
   onRestart(): void;
   onReplay(): void;
+  onExport(): void;
+  onImport(): void;
 }
 
 export interface Panel {
-  /** Re-read every field from the spec (after a preset swap). */
+  /** Re-read every field from the spec (after a preset swap or a reset). */
   sync(): void;
+  /** Say, visibly, that the live spec is not the preset as shipped. */
+  setTuned(tuned: boolean): void;
   toggle(): void;
   readonly visible: boolean;
 }
@@ -215,7 +313,12 @@ function fmt(v: number): string {
   return String(parseFloat(s));
 }
 
-export function createPanel(root: HTMLElement, spec: BikeSpec, hooks: PanelHooks): Panel {
+export function createPanel(
+  root: HTMLElement,
+  spec: BikeSpec,
+  camera: CameraParams,
+  hooks: PanelHooks,
+): Panel {
   root.textContent = '';
   const syncers: (() => void)[] = [];
 
@@ -241,12 +344,24 @@ export function createPanel(root: HTMLElement, spec: BikeSpec, hooks: PanelHooks
   });
   root.append(select, presetNote);
 
+  // The tuned banner. Without it, a stale slider restored from a previous
+  // session looks exactly like a physics regression, and somebody spends an
+  // afternoon debugging their own leftover tune.
+  const tuned = el('div', '');
+  tuned.className = 'tuned';
+  tuned.hidden = true;
+  const resetBtn = button('Reset to preset');
+  resetBtn.addEventListener('click', () => hooks.onResetSpec());
+  root.append(tuned);
+
   const btns = document.createElement('div');
   btns.className = 'btns';
   const copy = button('Copy spec JSON', 'primary');
   const restart = button('Restart (R)');
   const replay = button('Replay (T)');
-  btns.append(copy, restart, replay);
+  const exportBtn = button('Export replay (E)', 'primary');
+  const importBtn = button('Load replay (L)');
+  btns.append(copy, restart, replay, exportBtn, importBtn, resetBtn);
   root.append(btns);
 
   const copied = el('div', '');
@@ -270,74 +385,82 @@ export function createPanel(root: HTMLElement, spec: BikeSpec, hooks: PanelHooks
   });
   restart.addEventListener('click', () => hooks.onRestart());
   replay.addEventListener('click', () => hooks.onReplay());
+  exportBtn.addEventListener('click', () => hooks.onExport());
+  importBtn.addEventListener('click', () => hooks.onImport());
 
-  for (const g of GROUPS) {
-    const h = document.createElement('h2');
-    h.textContent = g.title;
-    const why = document.createElement('span');
-    why.className = 'why';
-    why.textContent = g.why;
-    h.append(why);
-    root.append(h);
+  function buildGroups<T>(groups: Group<T>[], obj: T, changed: (o: T) => void): void {
+    for (const g of groups) {
+      const h = document.createElement('h2');
+      h.textContent = g.title;
+      const why = document.createElement('span');
+      why.className = 'why';
+      why.textContent = g.why;
+      h.append(why);
+      root.append(h);
 
-    for (const f of g.fields) {
-      const row = document.createElement('div');
-      row.className = 'row';
-      const label = el('label', f.label);
-      const num = document.createElement('input');
-      num.type = 'text';
-      num.className = 'num';
-      num.size = 10;
-      const range = document.createElement('input');
-      range.type = 'range';
-      range.min = String(f.min);
-      range.max = String(f.max);
-      range.step = String(f.step);
-      row.append(label, num, range);
-      if (f.hint) {
-        const hint = el('div', f.hint);
-        hint.className = 'hint';
-        row.append(hint);
-      }
-      root.append(row);
-
-      const sync = (): void => {
-        const v = f.get(spec);
-        range.value = String(v);
-        num.value = fmt(v);
-      };
-      syncers.push(sync);
-      sync();
-
-      range.addEventListener('input', () => {
-        f.set(spec, parseFloat(range.value));
-        num.value = fmt(f.get(spec));
-        hooks.onSpecChange(spec);
-        refreshHash();
-      });
-      // Typing an exact value beats hunting for it with a slider.
-      num.addEventListener('change', () => {
-        const v = parseFloat(num.value);
-        if (!Number.isFinite(v)) {
-          sync();
-          return;
+      for (const f of g.fields) {
+        const row = document.createElement('div');
+        row.className = 'row';
+        const label = el('label', f.label);
+        const num = document.createElement('input');
+        num.type = 'text';
+        num.className = 'num';
+        num.size = 10;
+        const range = document.createElement('input');
+        range.type = 'range';
+        range.min = String(f.min);
+        range.max = String(f.max);
+        range.step = String(f.step);
+        row.append(label, num, range);
+        if (f.hint) {
+          const hint = el('div', f.hint);
+          hint.className = 'hint';
+          row.append(hint);
         }
-        f.set(spec, v);
+        root.append(row);
+
+        const sync = (): void => {
+          const v = f.get(obj);
+          range.value = String(v);
+          num.value = fmt(v);
+        };
+        syncers.push(sync);
         sync();
-        hooks.onSpecChange(spec);
-        refreshHash();
-      });
+
+        range.addEventListener('input', () => {
+          f.set(obj, parseFloat(range.value));
+          num.value = fmt(f.get(obj));
+          changed(obj);
+          refreshHash();
+        });
+        // Typing an exact value beats hunting for it with a slider.
+        num.addEventListener('change', () => {
+          const v = parseFloat(num.value);
+          if (!Number.isFinite(v)) {
+            sync();
+            return;
+          }
+          f.set(obj, v);
+          sync();
+          changed(obj);
+          refreshHash();
+        });
+      }
     }
   }
+
+  buildGroups(BIKE_GROUPS, spec, (s) => hooks.onSpecChange(s));
+  buildGroups(CAMERA_GROUPS, camera, (c) => hooks.onCameraChange(c));
 
   const keys = document.createElement('div');
   keys.className = 'keys';
   keys.innerHTML =
     '<h2 style="margin-top:18px">Keys</h2>' +
     '<b>arrows / WASD</b> gas, brake, volt left, volt right<br>' +
-    '<b>space</b> flip &nbsp; <b>R</b> restart &nbsp; <b>T</b> replay last run<br>' +
-    '<b>G</b> contacts &amp; normals &nbsp; <b>H</b> hide this panel<br>' +
-    '<b>+ / -</b> zoom &nbsp; <b>P</b> pause';
+    '<b>space</b> FLIP direction &nbsp; <b>R</b> restart &nbsp; <b>T</b> replay last run<br>' +
+    '<b>E</b> export replay &nbsp; <b>L</b> load a replay file (or drop one on the window)<br>' +
+    '<b>[ / ]</b> previous / next level &nbsp; <b>G</b> contacts &amp; normals<br>' +
+    '<b>H</b> hide this panel &nbsp; <b>+ / -</b> zoom &nbsp; <b>P</b> pause';
   root.append(keys);
 
   function refreshHash(): void {
@@ -350,6 +473,12 @@ export function createPanel(root: HTMLElement, spec: BikeSpec, hooks: PanelHooks
     sync(): void {
       for (const s of syncers) s();
       refreshHash();
+    },
+    setTuned(on: boolean): void {
+      tuned.hidden = !on;
+      tuned.textContent = on
+        ? 'TUNED — these sliders are yours, not the preset. Restored across reloads; "Reset to preset" undoes it.'
+        : '';
     },
     toggle(): void {
       visible = !visible;

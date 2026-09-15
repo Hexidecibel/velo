@@ -1,0 +1,88 @@
+// The camera's two load-bearing claims, which are the ones a person cannot
+// check by looking at it: that it is frame-rate independent, and that the
+// bike can never leave the frame however hard the smoothing lags.
+//
+// Everything else about a camera is feel and belongs on the panel. These two
+// are correctness, and both are silently broken by the obvious implementation
+// (a fixed per-frame lerp with no clamp).
+import { describe, it, expect } from 'vitest';
+import { DEFAULT_CAMERA, cloneCamera, createCamera } from './camera.ts';
+
+const VIEW = { w: 1200, h: 800 };
+
+function run(steps: number, dt: number, target: { x: number; y: number; vx: number; vy: number }) {
+  const cam = createCamera(cloneCamera(DEFAULT_CAMERA));
+  cam.snap({ x: 0, y: 0, vx: 0, vy: 0 });
+  for (let i = 0; i < steps; i++) cam.update(target, dt, VIEW.w, VIEW.h);
+  return cam;
+}
+
+describe('camera', () => {
+  it('lands in the same place at 60 Hz and at 144 Hz', () => {
+    // A fixed per-frame lerp does NOT: it moves 2.4x faster on the faster
+    // display, so the game feels different depending on the monitor. The
+    // half-life formulation is the fix and this is what checks it.
+    const t = { x: 10, y: 4, vx: 0, vy: 0 };
+    const a = run(60, 1 / 60, t);
+    const b = run(144, 1 / 144, t);
+    expect(Math.abs(a.x - b.x)).toBeLessThan(0.02);
+    expect(Math.abs(a.y - b.y)).toBeLessThan(0.02);
+    expect(Math.abs(a.zoom - b.zoom)).toBeLessThan(0.5);
+  });
+
+  it('never lets the bike outside the safe box, however fast it reverses', () => {
+    // The adversarial case: teleport the target every frame, which is worse
+    // than anything a bike can do, and check the guarantee holds on every one.
+    const cam = createCamera(cloneCamera(DEFAULT_CAMERA));
+    cam.snap({ x: 0, y: 0, vx: 0, vy: 0 });
+    const box = cam.params.safeBox;
+    for (let i = 0; i < 400; i++) {
+      const t = { x: Math.sin(i) * 40, y: Math.cos(i * 0.7) * 25, vx: Math.cos(i) * 30, vy: -Math.sin(i) * 20 };
+      cam.update(t, 1 / 60, VIEW.w, VIEW.h);
+      const halfW = VIEW.w / 2 / cam.zoom;
+      const halfH = VIEW.h / 2 / cam.zoom;
+      expect(Math.abs(t.x - cam.x)).toBeLessThanOrEqual(halfW * box + 1e-9);
+      expect(Math.abs(t.y - cam.y)).toBeLessThanOrEqual(halfH * box + 1e-9);
+    }
+  });
+
+  it('never zooms out past the readability floor', () => {
+    // The rule that outranks framing. At any speed, including absurd ones.
+    const cam = createCamera(cloneCamera(DEFAULT_CAMERA));
+    cam.snap({ x: 0, y: 0, vx: 0, vy: 0 });
+    for (let i = 0; i < 600; i++) {
+      cam.update({ x: i, y: 0, vx: 60, vy: 40 }, 1 / 60, VIEW.w, VIEW.h);
+      expect(cam.zoom).toBeGreaterThanOrEqual(cam.params.minZoom - 1e-9);
+      expect(cam.zoom).toBeLessThanOrEqual(cam.params.maxZoom + 1e-9);
+    }
+  });
+
+  it('leads in the direction of travel, and eases across a reversal', () => {
+    const cam = createCamera(cloneCamera(DEFAULT_CAMERA));
+    cam.snap({ x: 0, y: 0, vx: 0, vy: 0 });
+    for (let i = 0; i < 120; i++) cam.update({ x: 0, y: 0, vx: 12, vy: 0 }, 1 / 60, VIEW.w, VIEW.h);
+    expect(cam.x).toBeGreaterThan(1);
+
+    // Reverse. One frame later the camera must have moved only a little — a
+    // lead that reads `facing` instead of velocity jumps the full lead width
+    // here, which is exactly what a flip must not do.
+    const before = cam.x;
+    cam.update({ x: 0, y: 0, vx: -12, vy: 0 }, 1 / 60, VIEW.w, VIEW.h);
+    expect(Math.abs(cam.x - before)).toBeLessThan(0.3);
+
+    for (let i = 0; i < 120; i++) cam.update({ x: 0, y: 0, vx: -12, vy: 0 }, 1 / 60, VIEW.w, VIEW.h);
+    expect(cam.x).toBeLessThan(-1);
+  });
+
+  it('snaps without leaving a stale lead behind', () => {
+    const cam = createCamera(cloneCamera(DEFAULT_CAMERA));
+    cam.snap({ x: 0, y: 0, vx: 0, vy: 0 });
+    for (let i = 0; i < 120; i++) cam.update({ x: 0, y: 0, vx: 12, vy: 0 }, 1 / 60, VIEW.w, VIEW.h);
+    cam.snap({ x: 99, y: -5, vx: 0, vy: 0 });
+    expect(cam.x).toBe(99);
+    expect(cam.y).toBe(-5);
+    // And the next frame does not lurch back toward the old lead.
+    cam.update({ x: 99, y: -5, vx: 0, vy: 0 }, 1 / 60, VIEW.w, VIEW.h);
+    expect(Math.abs(cam.x - 99)).toBeLessThan(0.01);
+  });
+});

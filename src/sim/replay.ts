@@ -14,7 +14,7 @@
 import { IN_MASK, SIM_HZ } from './consts.ts';
 import type { Level } from './level.ts';
 import type { BikeSpec } from './spec.ts';
-import { specHash } from './spec.ts';
+import { parseSpec, specHash } from './spec.ts';
 import { createSim } from './sim.ts';
 import type { SimState } from './step.ts';
 import { SIM_REV } from './rev.ts';
@@ -195,4 +195,226 @@ export function verifyReplay(level: Level, spec: BikeSpec, replay: Replay): Veri
 /** Seconds, from a tick count. Presentation only; never feeds the sim. */
 export function ticksToSeconds(ticks: number): number {
   return ticks / SIM_HZ;
+}
+
+// --- the replay FILE ---------------------------------------------------------
+//
+// A `Replay` is the minimum the verifier needs. A replay FILE is that plus
+// enough context to be a self-contained bug report, which is the whole reason
+// this exists: "sometimes it gets weird" is unactionable, and "here is the
+// file" is a deterministic re-run of the exact moment.
+//
+// The extras are strictly OPTIONAL and the verifier never reads them for
+// identity — identity is `simHash`, `specHash` and `simRev`, exactly as before.
+// They are there so a file dropped on a fresh checkout, or handed to
+// `bin/replay` with no other arguments, still has a level to run on and a bike
+// to run with.
+
+/** Bumped only if the FILE envelope changes; unrelated to SIM_REV. */
+export const REPLAY_FILE_VERSION = 1;
+
+export interface ReplayFile extends Replay {
+  fileVersion?: number;
+  /** The level this was recorded on, verbatim, so the file stands alone. */
+  level?: unknown;
+  /** Human-readable, for the message when the level cannot be matched. */
+  levelName?: string;
+  /** The bike this was recorded on. Checked against `specHash` before use. */
+  spec?: unknown;
+  /** Presentation metadata only. The sim never reads a clock; the EXPORTER does. */
+  recordedAt?: string;
+  note?: string;
+}
+
+/** Everything that must line up before a replay can be played faithfully. */
+export interface ReplayCompat {
+  ok: boolean;
+  revOk: boolean;
+  levelOk: boolean;
+  specOk: boolean;
+  /** One legible line per problem. Empty when ok. */
+  problems: string[];
+  /** The replay carries a spec whose hash matches what it claims. */
+  hasUsableSpec: boolean;
+  /** The replay carries a level. */
+  hasLevel: boolean;
+}
+
+/**
+ * Say clearly what does not match, rather than silently playing something
+ * different. This is the first real user of the versioning scheme and the
+ * failure mode is the point: a replay recorded under another SIM_REV is not a
+ * replay of anything this build can produce, and pretending otherwise would
+ * make the whole rev mechanism decorative.
+ */
+export function checkReplayCompat(
+  r: Replay,
+  ctx: { level?: Level | null; spec?: BikeSpec | null } = {},
+): ReplayCompat {
+  const problems: string[] = [];
+  const file = r as ReplayFile;
+
+  const revOk = r.simRev === SIM_REV;
+  if (!revOk) {
+    problems.push(
+      `SIM_REV mismatch: the replay was recorded under rev ${r.simRev}, this build is rev ${SIM_REV}. ` +
+        'The physics changed between those revs, so replaying it here would show you a different run. ' +
+        'Nothing can fix this but a build at the recorded rev.',
+    );
+  }
+
+  let levelOk = true;
+  if (ctx.level) {
+    levelOk = ctx.level.simHash === r.simHash;
+    if (!levelOk) {
+      problems.push(
+        `level mismatch: the replay is for simHash ${r.simHash}` +
+          (file.levelName ? ` ("${file.levelName}")` : '') +
+          `, the loaded level "${ctx.level.name}" hashes to ${ctx.level.simHash}.`,
+      );
+    }
+  }
+
+  const embedded = replaySpec(file);
+  const hasUsableSpec = embedded !== null;
+  let specOk = true;
+  if (ctx.spec) {
+    const cur = specHash(ctx.spec);
+    specOk = cur === r.specHash;
+    if (!specOk) {
+      problems.push(
+        `bike spec mismatch: the replay was recorded on spec ${r.specHash}, the current spec is ${cur}. ` +
+          (hasUsableSpec
+            ? 'The file carries its own spec — load that and the run reproduces exactly.'
+            : 'The file does not carry a spec, so the recorded bike cannot be recovered from it.'),
+      );
+    }
+  }
+
+  return {
+    ok: problems.length === 0,
+    revOk,
+    levelOk,
+    specOk,
+    problems,
+    hasUsableSpec,
+    hasLevel: file.level !== undefined && file.level !== null,
+  };
+}
+
+/**
+ * The spec a replay file carries, but ONLY if it hashes to what the file
+ * claims. A spec that does not is either corrupt or hand-edited, and adopting
+ * it would produce a run that verifies against nothing.
+ */
+export function replaySpec(file: ReplayFile): BikeSpec | null {
+  if (file.spec === undefined || file.spec === null) return null;
+  let parsed: BikeSpec;
+  try {
+    parsed = parseSpec(file.spec);
+  } catch {
+    return null;
+  }
+  return specHash(parsed) === file.specHash ? parsed : null;
+}
+
+function str(v: unknown, what: string): string {
+  if (typeof v !== 'string') throw new ReplayError(`${what}: expected a string, got ${typeof v}`);
+  return v;
+}
+
+function int(v: unknown, what: string, min: number, max: number): number {
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < min || v > max) {
+    throw new ReplayError(`${what}: expected an integer in [${min}, ${max}], got ${JSON.stringify(v)}`);
+  }
+  return v;
+}
+
+function bool(v: unknown, what: string): boolean {
+  if (typeof v !== 'boolean') throw new ReplayError(`${what}: expected a boolean`);
+  return v;
+}
+
+export class ReplayError extends Error {}
+
+/**
+ * Validate an arbitrary object into a ReplayFile. Rejects hard, with the field
+ * name, for the same reason the level loader does: this parser will one day run
+ * on a server against bytes a stranger uploaded, and it already runs today
+ * against a file a user dragged in from who-knows-where.
+ *
+ * Note what is NOT checked here: whether the run is compatible with this build.
+ * Parsing and compatibility are deliberately separate, because a rev-2 file must
+ * still PARSE under rev 3 — otherwise the version mismatch surfaces as "corrupt
+ * file" instead of as the accurate "recorded under a different physics rev".
+ */
+export function parseReplayFile(raw: unknown): ReplayFile {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new ReplayError('replay: expected an object');
+  const r = raw as Record<string, unknown>;
+  if (r.format !== 'velo-replay') {
+    throw new ReplayError(`replay.format: expected "velo-replay", got ${JSON.stringify(r.format)}`);
+  }
+
+  const hashesRaw = r.hashes;
+  if (!Array.isArray(hashesRaw)) throw new ReplayError('replay.hashes: expected an array');
+  const hashes = hashesRaw.map((h, i) => str(h, `replay.hashes[${i}]`));
+
+  const frames = int(r.frames, 'replay.frames', 0, 1e8);
+  const inputs = str(r.inputs, 'replay.inputs');
+  // Decode eagerly: a malformed stream must fail here, at load, with a message
+  // about the stream, not three screens later inside the verifier.
+  const masks = decodeInputs(inputs);
+  if (masks.length !== frames) {
+    throw new ReplayError(`replay: claims ${frames} frames but the input stream decodes to ${masks.length}`);
+  }
+
+  const out: ReplayFile = {
+    format: 'velo-replay',
+    simRev: int(r.simRev, 'replay.simRev', 0, 1e6),
+    simHash: str(r.simHash, 'replay.simHash'),
+    bike: typeof r.bike === 'string' ? r.bike : 'default',
+    specHash: str(r.specHash, 'replay.specHash'),
+    frames,
+    inputs,
+    hashEvery: int(r.hashEvery, 'replay.hashEvery', 0, 1e7),
+    hashes,
+    finished: bool(r.finished, 'replay.finished'),
+    dead: bool(r.dead, 'replay.dead'),
+    timeTicks: int(r.timeTicks, 'replay.timeTicks', 0, 1e9),
+    applesLeft: int(r.applesLeft, 'replay.applesLeft', 0, 1e6),
+  };
+  if (typeof r.fileVersion === 'number') out.fileVersion = r.fileVersion;
+  if (r.level !== undefined && r.level !== null) out.level = r.level;
+  if (typeof r.levelName === 'string') out.levelName = r.levelName;
+  if (r.spec !== undefined && r.spec !== null) out.spec = r.spec;
+  if (typeof r.recordedAt === 'string') out.recordedAt = r.recordedAt;
+  if (typeof r.note === 'string') out.note = r.note;
+  return out;
+}
+
+/**
+ * Wrap a Replay into a self-contained file. `recordedAt` is passed IN rather
+ * than read from a clock here, because this module is inside src/sim and the
+ * sim never reads wall-clock time — the runtime purity trap in purity.test.ts
+ * would fire on a `Date.now()` in this file, and it should.
+ */
+export function toReplayFile(
+  r: Replay,
+  extra: { level?: unknown; levelName?: string; spec?: BikeSpec; recordedAt?: string; note?: string } = {},
+): ReplayFile {
+  const out: ReplayFile = { ...r, fileVersion: REPLAY_FILE_VERSION };
+  if (extra.level !== undefined) out.level = extra.level;
+  if (extra.levelName !== undefined) out.levelName = extra.levelName;
+  if (extra.spec !== undefined) out.spec = extra.spec;
+  if (extra.recordedAt !== undefined) out.recordedAt = extra.recordedAt;
+  if (extra.note !== undefined) out.note = extra.note;
+  return out;
+}
+
+/** A short, sortable, filesystem-safe name for an exported replay. */
+export function replayFileName(r: Replay, stamp: string): string {
+  const safe = (s: string): string => s.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'x';
+  const outcome = r.finished ? 'fin' : r.dead ? 'dead' : 'run';
+  const secs = (r.timeTicks / SIM_HZ).toFixed(2);
+  return `velo-rev${r.simRev}-${safe(stamp)}-${outcome}-${secs}s-${r.simHash.slice(0, 8)}.replay.json`;
 }

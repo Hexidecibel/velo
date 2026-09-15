@@ -6,7 +6,7 @@ export { DT, SIM_HZ, INPUT_HZ, TICKS_PER_FRAME, IN_THROTTLE, IN_BRAKE, IN_LEAN_L
 export { ROT_IDENTITY, rotIntegrate, rotNormalize, rotX, rotY, unrotX, unrotY, sinSmall, cosSmall } from './rot.ts';
 export type { Rot } from './rot.ts';
 export { Hasher, hashNumbers } from './hash.ts';
-export { DEFAULT_SPEC, cloneSpec, specHash } from './spec.ts';
+export { DEFAULT_SPEC, cloneSpec, specHash, parseSpec, SpecError } from './spec.ts';
 export type { BikeSpec, Vec2, Circle } from './spec.ts';
 export { parseLevel, pointInSolid, LevelError } from './level.ts';
 export type { Level, RawLevel, RawPolygon, DecorPolygon, RawPoint, RawArc, RawVertex, CompiledPolygon, PolyKind } from './level.ts';
@@ -22,8 +22,8 @@ export { createState, stepTick, copyState, assignState, hashState } from './step
 export type { SimState } from './step.ts';
 export { createSim } from './sim.ts';
 export type { Sim } from './sim.ts';
-export { encodeInputs, decodeInputs, buildReplay, verifyReplay, ticksToSeconds } from './replay.ts';
-export type { Replay, VerifyResult } from './replay.ts';
+export { encodeInputs, decodeInputs, buildReplay, verifyReplay, ticksToSeconds, parseReplayFile, checkReplayCompat, replaySpec, toReplayFile, replayFileName, ReplayError, REPLAY_FILE_VERSION } from './replay.ts';
+export type { Replay, VerifyResult, ReplayFile, ReplayCompat } from './replay.ts';
 export { SIM_REV, getEngine, currentEngine } from './rev.ts';
 export type { Engine } from './rev.ts';
 export { crossCheck, crossCheckMask } from './crosscheck.ts';
