@@ -708,6 +708,41 @@ function drawFlower(
 // --- the bike ---------------------------------------------------------------
 
 /**
+ * Bike detail tier, with HYSTERESIS — and the hysteresis is the whole point.
+ *
+ * A wheel is 0.25 m, so at the base camera of 62 px/m it is 15.5 px. The first
+ * version cut fine detail at a hard `> 14`, which put the switch one and a half
+ * pixels from where the bike sits at rest. The camera zooms out with speed, so
+ * ordinary riding crossed that line several times a second and the rider's
+ * helmet and scarf strobed on and off. Reported from play, not from a test:
+ * "why does the helmet/scarf disappear and show up?"
+ *
+ * Two fixes, both needed. The thresholds moved well clear of the resting zoom,
+ * and each boundary now latches: fine detail switches ON at 12 px and OFF at 8,
+ * the overview blob tier ON at 5 and OFF at 7. Inside a band the tier cannot
+ * change, so a camera hovering on a boundary holds whatever it already had.
+ *
+ * The helmet and scarf are worth biasing toward: they are what makes the rider
+ * read as a rider rather than as three pale circles, so they should survive far
+ * longer than incidental detail.
+ *
+ * Latched at module scope on purpose. The ghost and the player draw in the same
+ * frame at the same zoom, so one latch is correct for both — and rendering is
+ * outside the deterministic sim, so carrying state here cannot affect a replay.
+ */
+export let fineLatched = true;
+export function fineTier(detailPx: number): boolean {
+  fineLatched = fineLatched ? detailPx > 8 : detailPx > 12;
+  return fineLatched;
+}
+
+export let blobLatched = false;
+export function blobTier(detailPx: number): boolean {
+  blobLatched = blobLatched ? detailPx < 7 : detailPx < 5;
+  return blobLatched;
+}
+
+/**
  * Ported from the mockup, and it fits the real spec exactly because the mockup
  * was drawn on the spec's own numbers: wheels r 0.25 on anchors at (+-0.6,
  * -0.15), head r 0.16 at 0.55 along the arm. The head is the death sphere, so
@@ -733,7 +768,7 @@ function drawBike(
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
-  if (detail < 6) {
+  if (blobTier(detail)) {
     // Overview tier. Three ink-outlined blobs and a link: at this size anything
     // finer is mush, and the only question the frame has to answer is "where am
     // I and which way up".
@@ -766,7 +801,7 @@ function drawBike(
     return;
   }
 
-  const fine = detail > 14;
+  const fine = fineTier(detail);
   const local = (): void => {
     ctx.translate(p.px, p.py);
     ctx.transform(p.ox, p.oy, -p.oy, p.ox, 0, 0);
