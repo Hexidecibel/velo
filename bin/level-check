@@ -1,34 +1,25 @@
 #!/usr/bin/env bash
-# Validate a hand-authored level JSON file and print its two hashes.
+# Validate hand-authored level JSON, print its two hashes, and warn about
+# straight runs that are too coarse to ride smoothly.
 #
-#   bin/level-check levels/test01.json
+#   bin/level-check levels/*.json
 #
-# Run this on anything you hand-edit BEFORE loading it. The loader rejects hard
-# — a zero-length edge produces a NaN normal, and one NaN poisons the whole
-# state buffer within a tick — and it is much nicer to see that as a message
-# with a vertex index than as a bike that silently vanishes.
+# Run this on anything you hand-edit BEFORE loading it. Two reasons:
+#
+#   * The loader rejects hard — a zero-length edge produces a NaN normal, and
+#     one NaN poisons the whole state buffer within a tick — and it is much
+#     nicer to see that as a message with a vertex index than as a bike that
+#     silently vanishes.
+#
+#   * It also estimates the curve each vertex implies against its neighbours and
+#     warns when the resulting sag is over the level's own sagTolerance. That is
+#     how you catch a coarse polyline at authoring time rather than at 20 m/s.
+#     It WARNS and never rejects: a deliberate hard edge is legitimate level
+#     design, and a tool that called that an error is a tool you stop reading.
+#
+# Exit status is non-zero only when a file failed to LOAD.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 ensure_deps
 cd "$ROOT"
 [[ $# -ge 1 ]] || { echo "usage: bin/level-check <file.json> [more.json ...]" >&2; exit 2; }
-exec "$ROOT/node_modules/.bin/tsx" -e "
-  import { parseLevel } from './src/sim/level.ts';
-  import { readFileSync } from 'node:fs';
-  let bad = 0;
-  for (const f of process.argv.slice(1)) {
-    try {
-      const lvl = parseLevel(JSON.parse(readFileSync(f, 'utf8')));
-      console.log('==> OK   ' + f);
-      console.log('    name        ' + lvl.name);
-      console.log('    simHash     ' + lvl.simHash + '   (leaderboards key on this)');
-      console.log('    contentHash ' + lvl.contentHash);
-      console.log('    ' + lvl.polys.length + ' collidable + ' + lvl.decor.length + ' decor, ' + lvl.apples.length + ' apples');
-      console.log('    bounds      x ' + lvl.minX + '..' + lvl.maxX + '  y ' + lvl.minY + '..' + lvl.maxY);
-    } catch (e) {
-      bad++;
-      console.error('==> BAD  ' + f);
-      console.error('    ' + (e instanceof Error ? e.message : String(e)));
-    }
-  }
-  process.exit(bad ? 1 : 0);
-" "$@"
+exec "$ROOT/node_modules/.bin/tsx" "$ROOT/bin/_level-check.ts" "$@"

@@ -3,6 +3,7 @@
 import './style.css';
 import { parseLevel } from '@/sim/level.ts';
 import { TEST_LEVEL } from '@/sim/testlevel.ts';
+import { CURVE_LEVEL } from '@/sim/curvelevel.ts';
 import { createSim } from '@/sim/sim.ts';
 import type { Sim } from '@/sim/sim.ts';
 import { cloneSpec, specHash } from '@/sim/spec.ts';
@@ -27,7 +28,10 @@ const hud = document.getElementById('hud') as HTMLElement;
 const panelRoot = document.getElementById('panel') as HTMLElement;
 const ctx = canvas.getContext('2d', { alpha: false }) as CanvasRenderingContext2D;
 
-const level = parseLevel(TEST_LEVEL);
+// Two levels, and no menu: `?level=bowl` rides the arc level, anything else
+// rides test01. A menu is milestone 6 work; this is one line and it is the only
+// way to get hands on a curved surface, which is the only way to judge one.
+const level = parseLevel(new URLSearchParams(location.search).get('level') === 'bowl' ? CURVE_LEVEL : TEST_LEVEL);
 let spec: BikeSpec = cloneSpec(BOOT_PRESET.spec);
 let presetLabel = BOOT_PRESET.label;
 

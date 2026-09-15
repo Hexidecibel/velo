@@ -20,16 +20,69 @@
 // zones, ice and teleporters. Rev 1 IGNORES them, and the loader TOLERATES
 // unknown types rather than rejecting — that is what keeps a level authored in
 // 2027 loadable by a 2026 client.
+//
+// GEOMETRY DOES NOT GET THAT TOLERANCE. An unrecognised entry in a `points`
+// list is rejected, not skipped, because every other array here is content the
+// sim may ignore while `points` is the collision surface itself — quietly
+// dropping a vertex you did not understand is how a level loads with a hole in
+// the floor.
+//
+// CURVES LIVE IN THE AUTHORING FORMAT AND NOWHERE ELSE. A `points` entry may be
+// an arc to the next point (see arc.ts for the shape and the reasoning behind
+// it); the loader tessellates it here, deterministically, at compile time. Past
+// this file there are only straight segments: `collide.ts` has exactly one
+// primitive and never learns what an arc is. That is the trade the whole
+// feature is built on — level files stay short and hand-editable, and the
+// physics stays as simple and as tested as it already is.
 import { Hasher } from './hash.ts';
-import { EPS } from './consts.ts';
+import { DEFAULT_SAG_TOLERANCE, EPS, MAX_ARC_SEGMENTS, MIN_EDGE_LEN2 } from './consts.ts';
+import { tessellateArc } from './arc.ts';
+import type { ArcStatus } from './arc.ts';
 import type { Vec2 } from './spec.ts';
 
 export type PolyKind = 'cave' | 'ground' | 'decor';
 
+/** A literal vertex. */
+export type RawPoint = [number, number];
+
+/**
+ * An arc from the PREVIOUS entry in the points list to `arcTo`.
+ *
+ *     { "arcTo": [12, 0], "bulge": -2.5 }
+ *
+ * `bulge` is the signed height in METRES of the middle of the arc off the
+ * middle of its chord, positive to the LEFT of the direction of travel. Write a
+ * floor left-to-right — which is what everyone does in a y-up side-scroller —
+ * and the rule is simply "positive humps up, negative dishes down". Zero is a
+ * straight line. There is no impossible value and no flag to get backwards;
+ * arc.ts records why that was chosen over a radius plus large-arc/sweep.
+ *
+ * An arc as the FIRST entry curves the closing edge, because the entry before
+ * entry 0 is the last one. Nothing special is needed to say that — the list is
+ * a ring.
+ */
+export interface RawArc {
+  arcTo: RawPoint;
+  bulge: number;
+  /** Per-arc override of the level's sag tolerance, metres. */
+  sagTolerance?: number;
+}
+
+export type RawVertex = RawPoint | RawArc;
+
 export interface RawPolygon {
   kind: PolyKind;
-  /** [x, y] pairs. Closing vertex implied; do not repeat the first point. */
-  points: [number, number][];
+  /**
+   * Vertices in ring order — an [x, y] pair, or an arc to the next point.
+   * Closing vertex implied; do not repeat the first point.
+   */
+  points: RawVertex[];
+}
+
+/** Decor after tessellation: literal points, because nothing re-reads the arcs. */
+export interface DecorPolygon {
+  kind: 'decor';
+  points: RawPoint[];
 }
 
 export interface RawLevel {
@@ -41,6 +94,14 @@ export interface RawLevel {
   flower: Vec2;
   apples?: Vec2[];
   polygons: RawPolygon[];
+  /**
+   * Metres of sag any tessellated chord may have against the true arc.
+   * Defaults to DEFAULT_SAG_TOLERANCE. PART OF THE PHYSICS CONTRACT: it decides
+   * the collision geometry every curve compiles to, so changing it changes what
+   * the bike hits, changes simHash, and invalidates every time on every level
+   * that contains an arc.
+   */
+  sagTolerance?: number;
   /** Reserved. Ignored by rev 1, preserved for contentHash. */
   zones?: unknown[];
   entities?: unknown[];
@@ -82,7 +143,13 @@ export interface Level {
   apples: Vec2[];
   /** Collidable polygons, in file order. Decor is not here. */
   polys: CompiledPolygon[];
-  decor: RawPolygon[];
+  decor: DecorPolygon[];
+  /** The tolerance the arcs in this level were actually tessellated at. */
+  sagTolerance: number;
+  /** How many arc entries the file contained, across every polygon. */
+  arcCount: number;
+  /** How many vertices those arcs generated. Zero for an arc-free level. */
+  arcSegments: number;
   minX: number;
   minY: number;
   maxX: number;
@@ -92,6 +159,13 @@ export interface Level {
    * apples in order, flower. Leaderboards key on this, so retitling or
    * recolouring a level preserves its leaderboard while moving an apple by
    * 1e-12 does not. Hashing the raw file bytes is the easy mistake here.
+   *
+   * It covers the TESSELLATED vertices, never the arc parameters that produced
+   * them, because the collision geometry is what determines a time and the
+   * collision geometry is straight segments. The consequence is deliberate and
+   * has to be said out loud: raising or lowering `sagTolerance` moves the
+   * vertices, moves this hash, and invalidates every recorded time on the
+   * level. A tolerance is a physics constant wearing an authoring hat.
    */
   simHash: string;
   /** Covers the whole file, including name, decor and the reserved arrays. */
@@ -140,6 +214,12 @@ export function parseLevel(raw: unknown): Level {
   }
   if (!Array.isArray(r.polygons) || r.polygons.length === 0) bad('level.polygons: expected a non-empty array');
 
+  let sagTolerance = DEFAULT_SAG_TOLERANCE;
+  if (r.sagTolerance !== undefined) {
+    sagTolerance = finite(r.sagTolerance, 'level.sagTolerance');
+    if (sagTolerance <= 0) bad(`level.sagTolerance: must be > 0, got ${sagTolerance}`);
+  }
+
   const start = vec(r.start, 'level.start');
   const flower = vec(r.flower, 'level.flower');
   const apples: Vec2[] = [];
@@ -149,7 +229,9 @@ export function parseLevel(raw: unknown): Level {
   }
 
   const polys: CompiledPolygon[] = [];
-  const decor: RawPolygon[] = [];
+  const decor: DecorPolygon[] = [];
+  let arcCount = 0;
+  let arcSegments = 0;
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -162,18 +244,23 @@ export function parseLevel(raw: unknown): Level {
     if (kind !== 'cave' && kind !== 'ground' && kind !== 'decor') {
       bad(`${where}.kind: expected "cave" | "ground" | "decor", got ${JSON.stringify(kind)}`);
     }
-    if (!Array.isArray(p.points) || p.points.length < 3) bad(`${where}.points: need at least 3 vertices`);
+    if (!Array.isArray(p.points) || p.points.length < 2) bad(`${where}.points: need at least 3 vertices`);
 
-    const pts: [number, number][] = p.points.map((pt, vi) => {
-      if (!Array.isArray(pt) || pt.length < 2) bad(`${where}.points[${vi}]: expected [x, y]`);
-      return [finite(pt[0], `${where}.points[${vi}][0]`), finite(pt[1], `${where}.points[${vi}][1]`)];
-    });
+    // Arcs are resolved to straight segments HERE, and never again after.
+    // Everything below this line — the zero-length check, the area check, the
+    // winding normalisation, both hashes, the whole sim — sees a plain list of
+    // points and cannot tell which of them an author typed.
+    const ring = readRing(p.points, where, sagTolerance);
+    arcCount += ring.arcs;
+    arcSegments += ring.generated;
+    const pts = ring.pts;
+    if (pts.length < 3) bad(`${where}.points: need at least 3 vertices`);
 
     for (let i = 0; i < pts.length; i++) {
       const j = i + 1 === pts.length ? 0 : i + 1;
       const dx = pts[j][0] - pts[i][0];
       const dy = pts[j][1] - pts[i][1];
-      if (dx * dx + dy * dy < 1e-14) {
+      if (dx * dx + dy * dy < MIN_EDGE_LEN2) {
         bad(`${where}.points[${i}]..[${j}]: zero-length edge (duplicate consecutive vertices)`);
       }
     }
@@ -221,6 +308,9 @@ export function parseLevel(raw: unknown): Level {
     apples,
     polys,
     decor,
+    sagTolerance,
+    arcCount,
+    arcSegments,
     minX,
     minY,
     maxX,
@@ -231,6 +321,99 @@ export function parseLevel(raw: unknown): Level {
   level.simHash = computeSimHash(level);
   level.contentHash = computeContentHash(r);
   return level;
+}
+
+interface Ring {
+  pts: RawPoint[];
+  /** How many entries were arcs. */
+  arcs: number;
+  /** How many vertices those arcs generated. */
+  generated: number;
+}
+
+/**
+ * Validate a `points` list and resolve every arc in it into literal vertices.
+ *
+ * The list is a RING, so the edge into entry i comes from entry i-1 with
+ * wrap-around, and an arc at entry 0 therefore curves the closing edge. Points
+ * are emitted vertex-then-arc-interior, which keeps entry 0 as vertex 0 of the
+ * compiled polygon and makes a hash dump readable next to the file.
+ *
+ * Two entries is legal when they are arcs: two semicircles between the same
+ * pair of points is a circle, and it is three lines of JSON. The "at least 3
+ * vertices" rule is enforced on the RESULT, which is where it actually matters.
+ */
+function readRing(entries: RawVertex[], where: string, levelTol: number): Ring {
+  const n = entries.length;
+  const xs = new Array<number>(n);
+  const ys = new Array<number>(n);
+  const bulges = new Array<number | null>(n);
+  const tols = new Array<number>(n);
+  let arcs = 0;
+
+  for (let i = 0; i < n; i++) {
+    const at = `${where}.points[${i}]`;
+    const e = entries[i];
+    if (Array.isArray(e)) {
+      if (e.length < 2) bad(`${at}: expected [x, y]`);
+      xs[i] = finite(e[0], `${at}[0]`);
+      ys[i] = finite(e[1], `${at}[1]`);
+      bulges[i] = null;
+      tols[i] = levelTol;
+      continue;
+    }
+    if (!e || typeof e !== 'object') {
+      bad(`${at}: expected [x, y] or { "arcTo": [x, y], "bulge": metres }`);
+    }
+    const o = e as unknown as Record<string, unknown>;
+    if (!Array.isArray(o.arcTo)) {
+      // Deliberately NOT tolerated the way an unknown zone is. A points list is
+      // the collision surface; skipping an entry here puts a hole in the floor.
+      bad(`${at}: expected [x, y] or { "arcTo": [x, y], "bulge": metres }`);
+    }
+    const to = o.arcTo as unknown[];
+    if (to.length < 2) bad(`${at}.arcTo: expected [x, y]`);
+    xs[i] = finite(to[0], `${at}.arcTo[0]`);
+    ys[i] = finite(to[1], `${at}.arcTo[1]`);
+    if (o.bulge === undefined) {
+      bad(`${at}.bulge: required — the signed metres the arc bulges off its chord (0 is a straight line)`);
+    }
+    bulges[i] = finite(o.bulge, `${at}.bulge`);
+    arcs++;
+    let tol = levelTol;
+    if (o.sagTolerance !== undefined) {
+      tol = finite(o.sagTolerance, `${at}.sagTolerance`);
+      if (tol <= 0) bad(`${at}.sagTolerance: must be > 0, got ${tol}`);
+    }
+    tols[i] = tol;
+  }
+
+  const pts: RawPoint[] = [];
+  const flat: number[] = [];
+  let generated = 0;
+  for (let i = 0; i < n; i++) {
+    pts.push([xs[i], ys[i]]);
+    const j = i + 1 === n ? 0 : i + 1;
+    const bulge = bulges[j];
+    if (bulge === null) continue;
+    flat.length = 0;
+    const status = tessellateArc(xs[i], ys[i], xs[j], ys[j], bulge, tols[j], flat);
+    if (status !== 'ok') bad(`${where}.points[${j}]: ${arcFailure(status)}`);
+    for (let k = 0; k < flat.length; k += 2) pts.push([flat[k], flat[k + 1]]);
+    generated += flat.length / 2;
+  }
+  return { pts, arcs, generated };
+}
+
+function arcFailure(status: ArcStatus): string {
+  switch (status) {
+    case 'zero-chord':
+      return 'arc between coincident points — every circle passes through them, so none is meant';
+    case 'too-many-segments':
+      return `arc needs more than ${MAX_ARC_SEGMENTS} segments at this sagTolerance; raise the tolerance or split the arc`;
+    default:
+      return 'arc tessellates to segments shorter than a zero-length edge';
+  }
 }
 
 function compilePolygon(kind: 'cave' | 'ground', pts: [number, number][]): CompiledPolygon {

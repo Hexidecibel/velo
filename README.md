@@ -12,13 +12,16 @@ good, nothing downstream rescues it.
 
 ```
 bin/dev     # then open http://127.0.0.1:5173/ and drive
+            # ...or http://127.0.0.1:5173/?level=bowl for the arc level
 ```
 
 ## What this is not
 
 - **It is not a game yet.** There are no menus, no art, no audio, no juice, and
-  exactly one level, which is ugly on purpose so that you can see what the
-  collision is doing.
+  two levels. `test01` is ugly on purpose, so that you can see what the collision
+  is doing; `test02` exists to exercise the level format's curve primitive and is
+  reachable only by typing `?level=bowl` into the URL, because a level *menu* is
+  milestone 6.
 - **There is no server, no leaderboard, and no network code.** `getEngine()`
   exists in `src/sim/rev.ts` because physics versioning is a one-way door and
   costs nothing to build now, but nothing calls it over HTTP. Port 9422 is
@@ -48,8 +51,8 @@ add a script rather than running an ad-hoc command.
 | `bin/lint` | `tsc -b` plus eslint. Both, in that order — eslint here is type-unaware. |
 | `bin/smoke` | Builds, then drives the real page in headless Chrome over CDP: asserts nothing threw, nothing went NaN, the replay verifies, and the **cross-engine hash chain from Chrome's V8 matches Node's V8**. |
 | `bin/preview` | Serves the built `dist/`. A production-bundle sanity check, not a deployment. |
-| `bin/level-export` | Writes the built-in test level out to `levels/test01.json`. |
-| `bin/level-check` | Validates a hand-authored level JSON and prints its two hashes. |
+| `bin/level-export` | Writes the built-in levels out to `levels/test01.json` and `levels/test02-bowl.json`. |
+| `bin/level-check` | Validates a hand-authored level JSON, prints its two hashes, and **warns about straight runs too coarse to ride smoothly**. |
 | `bin/clean` | Removes `dist/` and `tsconfig.tsbuildinfo`; `--all` also removes `node_modules/`. |
 
 `start`, `stop`, `status`, `logs`, `install-units` and `deploy` arrive with the
@@ -199,8 +202,8 @@ Both rates are baked into every replay ever recorded.
 ## Level format
 
 JSON, hand-writable, **y-up** (gravity is `-y`; the renderer flips). See
-`levels/test01.json`, or `src/sim/testlevel.ts` which is the same data as a
-TypeScript literal.
+`levels/test01.json` and `levels/test02-bowl.json`, or `src/sim/testlevel.ts`
+and `src/sim/curvelevel.ts`, which are the same data as TypeScript literals.
 
 ```json
 {
@@ -208,6 +211,7 @@ TypeScript literal.
   "start":  { "x": -5, "y": 0.42 },
   "flower": { "x": 59, "y": 4.6 },
   "apples": [{ "x": 9, "y": 2.2 }],
+  "sagTolerance": 0.002,
   "polygons": [
     { "kind": "cave",   "points": [[-8, 0], [60, 0], [60, 14], [-8, 14]] },
     { "kind": "ground", "points": [[18.5, -4], [19.5, -1.8], [20.5, -4]] },
@@ -236,11 +240,113 @@ TypeScript literal.
   Leaderboards key on `simHash`, so retitling or recolouring a level preserves
   its board while moving an apple by 1e-12 does not.
 
+### Curves
+
+A `points` entry may be an **arc to the next point** instead of a literal
+vertex:
+
+```json
+{ "kind": "cave", "points": [
+  [-12, 0],
+  [-4, 0],
+  { "arcTo": [2.339, -1.405], "bulge":  0.356 },
+  { "arcTo": [9.946, -1.405], "bulge": -0.843 },
+  { "arcTo": [16.286, 0],     "bulge":  0.356 }
+]}
+```
+
+`bulge` is the **signed height in metres** of the middle of the arc off the
+middle of its chord, positive to the **left of the direction of travel**. Write
+a floor left-to-right — which is what everyone does in a y-up side-scroller —
+and the rule is "positive humps up, negative dishes down". Zero is a straight
+line, an arc as the *first* entry curves the closing edge (the list is a ring),
+and two arcs between two points is a circle in two lines.
+
+**The curve lives in the authoring format and nowhere else.** `parseLevel`
+tessellates every arc into straight segments at load, and `src/sim/collide.ts`
+still has exactly one collision primitive and has never heard of an arc. That
+trade is the whole feature: level files stay short and hand-editable, and the
+physics stays as simple and as tested as it already was.
+
+- **Why a signed sagitta in metres and not a radius.** A radius has an
+  impossible range — anything below half the chord names no arc at all, and
+  nudging one endpoint turns a level that loaded yesterday into a rejection
+  today. It also needs two extra booleans, and nobody writes
+  `largeArc: false, sweep: true` correctly from memory. The CAD/DXF bulge factor
+  (`tan(θ/4)`) has the right *shape* — one signed number, no impossible value,
+  0 is a straight line — but the number means nothing to a human. So: keep the
+  shape, change the units. `bulge` is exactly `halfChord · tan(θ/4)`, so every
+  formula is the CAD one after a single division, and "this bowl dips 2.5 m
+  below its chord" is something you can picture and measure. The reasoning is
+  recorded in `src/sim/arc.ts` because it is a one-way door.
+- **Density comes from a sag tolerance, not a segment count.** `sagTolerance`
+  (metres, default **0.002**) is the most any generated chord may dip below the
+  true arc. Segment count follows from it *and the radius*, so a tight curve is
+  automatically tessellated finer than a gentle one — which is the behaviour you
+  want and the exact opposite of what a fixed count gives. Set it per level, or
+  per arc (`{ "arcTo": …, "bulge": …, "sagTolerance": 0.05 }` — which is what
+  decor should use, since decor never collides).
+- **No trigonometry.** `purity.test.ts` bans `Math.sin`/`cos`/`atan2` under
+  `src/sim`, so the arc is walked with a half-angle rotor built from `+ - * /`
+  and `sqrt` alone: the quarter-arc rotor comes straight out of the tangent
+  (`cos = 1/√(1+t²)`), halving is `c' = √((1+c)/2), s' = s/(2c')`, and doubling
+  is `(c²−s², 2cs)`. Segment counts are therefore powers of two — up to 2×
+  more segments than strictly minimal, which is a price worth paying for
+  geometry that is bit-identical on every engine.
+- **`simHash` covers the tessellated output, never the arc parameters**, because
+  the collision geometry is what determines a time. The consequence is
+  deliberate and has to be said out loud: **changing `sagTolerance` moves the
+  vertices, moves `simHash`, and invalidates every recorded time on that level.**
+  A tolerance is a physics constant wearing an authoring hat. `DEFAULT_SAG_TOLERANCE`
+  is worse still — it is inherited by every level that omits the field, so
+  changing *it* silently re-identifies all of them, and it moves with `SIM_REV`
+  exactly like `DT`. A level with no arcs is unaffected by either, which is why
+  `levels/test01.json` hashes bit-identically before and after this feature and
+  a test asserts the literal.
+- **Arcs are held to the same standard as everything else.** Coincident
+  endpoints, a missing or non-finite `bulge`, a non-positive tolerance, a
+  tolerance too tight to tessellate inside the segment cap, and an unrecognised
+  entry are all load-time rejections. Unlike `zones` and `entities`, a `points`
+  list gets **no** forward tolerance: it is the collision surface, and quietly
+  skipping an entry you did not understand is how a level loads with a hole in
+  the floor. Tessellation can never emit a duplicate consecutive vertex, at an
+  arc's interior or at either join.
+
+### `bin/level-check` warns about coarse hand-authored runs
+
+A wheel rolling a chord of length `L` across a curve of radius `R` drops
+`L²/(8R)` below the true surface mid-chord. Against the 0.25 m wheel: 0.25 m
+segments sag 0.8–3.9 mm and are imperceptible; 0.5 m segments sag 1–15.6 mm and
+get buzzy; 1 m segments on a tight 2 m curve sag 62 mm, which is a real jolt at
+speed. So `bin/level-check` estimates the curve each vertex implies against its
+two neighbours and reports the sag:
+
+```
+    sag         17 vertices imply more than 2.0 mm of sag (worst 199.9 mm)
+      warn      polygon 0 at (35, 0): turns 38.7 deg, so a 2.56 m chord across the implied 4.2 m curve sags 199.9 mm
+```
+
+It **warns and never rejects**: a deliberate hard edge is legitimate level
+design — test01 is made of them on purpose — and a tool that called that an
+error is a tool you stop reading. Two gates keep it honest: a turn sharper than
+45° is read as a corner rather than a coarsely sampled curve, and a vertex must
+sit in a *run* of same-direction turns, because one isolated kink is a corner
+and there is no true curve for it to sag away from. The metric lives in
+`bin/_sag.ts` and `src/sim/curvelevel.test.ts` asserts against the same function,
+so the tool and the test cannot disagree about what "too coarse" means.
+
 ## Versioning
 
 One hand-bumped integer, `SIM_REV` in `src/sim/rev.ts`, pins everything that can
 affect a result — both the code and the constants, since either invalidates a
-time. **Through milestone 1 it bumps freely and times reset**; the HUD says so.
+time. `DEFAULT_SAG_TOLERANCE` is one of those constants: it is inherited by
+every level that omits `sagTolerance`, so changing it silently re-tessellates
+all of them, changes their collision geometry *and* their `simHash`, and both
+the rev and their leaderboards move. A level's own `sagTolerance` is level data
+rather than engine data, so that one is caught by `simHash` alone. Adding the
+arc primitive itself did **not** bump the rev: no existing level contains an
+arc, `levels/test01.json` hashes bit-identically, and no line of the sim
+changed. **Through milestone 1 it bumps freely and times reset**; the HUD says so.
 Tuning must stay cheap, and any scheme that makes retuning expensive during M1
 makes the game worse.
 
@@ -257,6 +363,10 @@ src/client/         canvas renderer, input, tuning panel, record-and-replay
 bin/                every operational task
 levels/             exported level JSON
 ```
+
+`bin/` also holds two underscore-prefixed modules that are imported rather than
+run: `_smoke.mjs` (the headless Chrome driver) and `_sag.ts` (the coarse-run
+metric, shared by `bin/level-check` and `src/sim/curvelevel.test.ts`).
 
 One npm package, npm not pnpm, no workspace. Tests are vitest and colocated
 (`src/sim/rot.test.ts` beside `src/sim/rot.ts`); there is no jsdom and no

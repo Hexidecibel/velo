@@ -46,6 +46,41 @@ export const HASH_EPS = 1e-9;
 /** Below this a direction is treated as degenerate rather than normalised. */
 export const EPS = 1e-12;
 
+/**
+ * Squared length below which a polygon edge counts as zero-length. A
+ * zero-length edge yields a NaN normal and one NaN poisons the entire state
+ * buffer within a tick, so this is a load-time rejection, not a clamp. Shared
+ * between the loader's own check and arc tessellation so that a generated
+ * vertex is held to exactly the same standard as a hand-written one.
+ */
+export const MIN_EDGE_LEN2 = 1e-14;
+
+/**
+ * Default tessellation sag tolerance, metres: the most any generated chord may
+ * dip below the true arc it replaces.
+ *
+ * 2 mm is chosen against the 0.25 m wheel. A wheel rolling a chord of length L
+ * across a curve of radius R drops L^2/(8R) below the true surface mid-chord;
+ * at 0.25 m segments that is 0.8-3.9 mm and imperceptible, at 1 m segments on a
+ * tight 2 m curve it is 62 mm and a real jolt. 2 mm sits an order of magnitude
+ * under the wheel radius at every radius a level will actually contain.
+ *
+ * THIS IS PART OF THE PHYSICS CONTRACT. It sets the collision geometry every
+ * curve compiles to, so changing it changes what the bike hits and invalidates
+ * every recorded time on every level containing an arc. It moves with SIM_REV,
+ * exactly like DT.
+ */
+export const DEFAULT_SAG_TOLERANCE = 0.002;
+
+/**
+ * Hard cap on the segments one arc may tessellate to. Exceeding it is a
+ * load-time REJECTION rather than a silent under-tessellation, because silently
+ * ignoring the tolerance is precisely the failure this whole mechanism exists
+ * to prevent. In practice it is unreachable: the default tolerance on a 100 m
+ * radius full circle needs about 500 segments.
+ */
+export const MAX_ARC_SEGMENTS = 4096;
+
 // --- solver ---
 export const SOLVER_ITERS = 8;
 /** Penetration tolerated before positional projection kicks in (metres). */
