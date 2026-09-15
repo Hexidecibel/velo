@@ -454,8 +454,12 @@ physics stays as simple and as tested as it already was.
   is worse still — it is inherited by every level that omits the field, so
   changing *it* silently re-identifies all of them, and it moves with `SIM_REV`
   exactly like `DT`. A level with no arcs is unaffected by either, which is why
-  `levels/test01.json` hashes bit-identically before and after this feature and
-  a test asserts the literal.
+  `levels/test01.json` hashed bit-identically across this whole feature and a
+  test asserts the literal. That literal has since moved exactly once, and for
+  the right reason: test01's geometry was edited to make unreachable apples
+  reachable, and apple positions are precisely what `simHash` covers. A real
+  geometry change must re-identify the level; it must not be able to hide behind
+  a stale assertion.
 - **Arcs are held to the same standard as everything else.** Coincident
   endpoints, a missing or non-finite `bulge`, a non-positive tolerance, a
   tolerance too tight to tessellate inside the segment cap, and an unrecognised
@@ -498,8 +502,8 @@ all of them, changes their collision geometry *and* their `simHash`, and both
 the rev and their leaderboards move. A level's own `sagTolerance` is level data
 rather than engine data, so that one is caught by `simHash` alone. Adding the
 arc primitive itself did **not** bump the rev: no existing level contains an
-arc, `levels/test01.json` hashes bit-identically, and no line of the sim
-changed. **Replacing the rider's rotation model did**: `SIM_REV` is now **2**,
+arc, `levels/test01.json` hashed bit-identically across it, and no line of the
+sim changed. **Replacing the rider's rotation model did**: `SIM_REV` is now **2**,
 and rev 1's code is not kept. Through milestone 1 the rev bumps freely and times
 reset — freezing revs into directories is a launch-time job, not a today job. **Through milestone 1 it bumps freely and times reset**; the HUD says so.
 Tuning must stay cheap, and any scheme that makes retuning expensive during M1
