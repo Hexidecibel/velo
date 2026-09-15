@@ -2,6 +2,11 @@
 # Headless sanity check: boot the built client in Chrome, drive the bike with a
 # scripted input stream, and assert that the page neither threw nor NaN'd.
 #
+# It then runs the fixed cross-engine harness in BOTH Chrome's V8 and Node's V8
+# and asserts the state-hash chains are identical. That comparison is the only
+# real proof that a server can one day re-simulate a browser's replay, which is
+# the entire basis of a cheat-proof leaderboard.
+#
 # This is NOT a feel test — feel can only be judged by a human with hands on the
 # keys. It exists to catch the boring failure where the bundle is broken, the
 # canvas never paints, or the sim explodes into NaN within a second of the start

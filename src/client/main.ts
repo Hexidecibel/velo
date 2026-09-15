@@ -20,6 +20,7 @@ import type { Camera, Pose } from './render.ts';
 import { createPanel } from './panel.ts';
 import { BOOT_PRESET } from './presets.ts';
 import { createRecorder, verify } from './recorder.ts';
+import { crossCheck } from '@/sim/crosscheck.ts';
 
 const canvas = document.getElementById('view') as HTMLCanvasElement;
 const hud = document.getElementById('hud') as HTMLElement;
@@ -284,4 +285,8 @@ interface VeloWindow extends Window {
   },
   restart,
   startPlayback,
+  // Run the fixed cross-engine harness in THIS engine. bin/smoke runs the same
+  // thing under node and compares the hash chains; that comparison is the only
+  // real proof that a server can re-simulate a browser's replay.
+  crossCheck: (frames?: number) => crossCheck(level, spec, frames),
 };

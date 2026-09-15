@@ -27,7 +27,11 @@ html, body {
 }
 
 #app { display: flex; height: 100%; }
-#view { flex: 1 1 auto; display: block; background: var(--free); cursor: crosshair; }
+/* flex-basis 0, not auto. The canvas's `width` ATTRIBUTE is set from its own
+   client width times devicePixelRatio, and with `auto` that becomes its
+   intrinsic width — so each resize makes the element wider, which makes the
+   attribute bigger, which pushes the panel off the right of the window. */
+#view { flex: 1 1 0; min-width: 0; display: block; background: var(--free); cursor: crosshair; }
 
 #hud {
   position: fixed;

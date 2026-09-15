@@ -7,6 +7,7 @@
 //
 // It exists because a node-only unit test cannot see a broken bundle, a canvas
 // that never paints, or a sim that explodes one second after the start line.
+import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { readFile, mkdtemp, rm } from 'node:fs/promises';
@@ -34,7 +35,10 @@ const url = `http://127.0.0.1:${serve.address().port}/`;
 console.log(`    serving dist/ at ${url}`);
 
 const profile = await mkdtemp(join(tmpdir(), 'velo-smoke-'));
-const cdpPort = 9500 + Math.floor(Math.random() * 400);
+// Ask the OS for a free port rather than guessing one. A random guess collided
+// often enough to make this script look flaky, which is the worst thing a
+// smoke test can be — you stop believing its failures.
+const cdpPort = await freePort();
 const chrome = spawn(
   process.env.CHROME || 'google-chrome',
   [
@@ -120,6 +124,37 @@ try {
   if (replay === 'DESYNC') throw new Error('replay desynced against the live run');
   if (replay === 'NO-REPLAY') throw new Error('the run banked no replay — record-and-replay is not wired up');
 
+  // The cross-engine check. This is the one that actually proves a server can
+  // re-simulate a browser's replay: the same fixed input stream, run in
+  // Chrome's V8 and in Node's V8, must produce an identical hash chain. When a
+  // second engine (SpiderMonkey via Playwright) is wired up, it plugs in here.
+  const inChrome = await evalIn(cdp, `JSON.stringify(window.velo.crossCheck(2000))`);
+  const inNode = execFileSync(
+    join(ROOT, 'node_modules/.bin/tsx'),
+    ['-e', `
+      import { parseLevel } from './src/sim/level.ts';
+      import { TEST_LEVEL } from './src/sim/testlevel.ts';
+      import { crossCheck } from './src/sim/crosscheck.ts';
+      import { cloneSpec } from './src/sim/spec.ts';
+      import { PRESETS } from './src/client/presets.ts';
+      const spec = cloneSpec(PRESETS[0].spec);
+      process.stdout.write(JSON.stringify(crossCheck(parseLevel(TEST_LEVEL), spec, 2000)));
+    `],
+    { cwd: ROOT, encoding: 'utf8' },
+  ).trim();
+
+  const a = JSON.parse(inChrome);
+  const b = JSON.parse(inNode);
+  if (a.final !== b.final) {
+    const at = a.hashes.findIndex((h, i) => h !== b.hashes[i]);
+    throw new Error(
+      `CROSS-ENGINE DESYNC: chrome and node disagree` +
+      (at >= 0 ? ` from frame ${(at + 1) * a.hashEvery} (chrome ${a.hashes[at]}, node ${b.hashes[at]})` : '') +
+      `\n      chrome final ${a.final}\n      node   final ${b.final}`,
+    );
+  }
+  console.log(`    cross-engine: chrome === node over ${a.frames} frames / ${a.ticks} ticks / ${a.runs + 1} runs, final ${a.final}`);
+
   cdp.close();
 } catch (e) {
   failed = e;
@@ -137,6 +172,14 @@ console.log('==> smoke ok');
 process.exit(0);
 
 // --- the smallest CDP client that does the job ------------------------------
+
+async function freePort() {
+  const probe = createServer();
+  await new Promise((r) => probe.listen(0, '127.0.0.1', r));
+  const p = probe.address().port;
+  await new Promise((r) => probe.close(r));
+  return p;
+}
 
 async function waitForTarget(port) {
   const deadline = Date.now() + 20000;

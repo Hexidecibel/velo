@@ -46,7 +46,7 @@ add a script rather than running an ad-hoc command.
 | `bin/build` | `tsc -b` typecheck (a separate, mandatory step) then `vite build` into `dist/`. |
 | `bin/test` | vitest, colocated, plain node. `--watch` to re-run on change. |
 | `bin/lint` | `tsc -b` plus eslint. Both, in that order — eslint here is type-unaware. |
-| `bin/smoke` | Builds, then drives the real page in headless Chrome over CDP and asserts nothing threw, nothing went NaN, and the replay verifies. |
+| `bin/smoke` | Builds, then drives the real page in headless Chrome over CDP: asserts nothing threw, nothing went NaN, the replay verifies, and the **cross-engine hash chain from Chrome's V8 matches Node's V8**. |
 | `bin/preview` | Serves the built `dist/`. A production-bundle sanity check, not a deployment. |
 | `bin/level-export` | Writes the built-in test level out to `levels/test01.json`. |
 | `bin/level-check` | Validates a hand-authored level JSON and prints its two hashes. |
@@ -146,6 +146,20 @@ skipping them is how a `Math.pow` ends up three months deep.
 
 The renderer is explicitly exempt and uses `atan2`, `sin` and `cos` freely —
 nothing downstream of rendering is ever verified.
+
+`bin/smoke` closes the loop: `src/sim/crosscheck.ts` runs a fixed 2000-frame
+input stream and returns its state-hash chain, and the smoke check runs it in
+Chrome's V8 *and* in Node's V8 and asserts the chains are identical. That is the
+one check that actually proves a server can re-simulate a browser's replay. A
+second engine (SpiderMonkey via Playwright) plugs into the same place.
+
+**There are no golden replay fixtures yet, on purpose.** The plan's
+`bin/goldens-regen` forcing function — refuse to regenerate unless `SIM_REV` has
+been bumped — is right, and it is also exactly the wrong thing to have during a
+milestone whose entire job is changing the physics dozens of times a day. What
+`replay.test.ts` asserts instead is *self*-consistency: a recorded input stream
+re-simulates to the same hash chain it produced, and a tampered one is caught at
+the frame it diverges. Goldens land when the spec stops moving.
 
 ## Rates, and why they are one-way doors
 

@@ -24,4 +24,6 @@ export { encodeInputs, decodeInputs, buildReplay, verifyReplay, ticksToSeconds }
 export type { Replay, VerifyResult } from './replay.ts';
 export { SIM_REV, getEngine, currentEngine } from './rev.ts';
 export type { Engine } from './rev.ts';
+export { crossCheck, crossCheckMask } from './crosscheck.ts';
+export type { CrossCheck } from './crosscheck.ts';
 export { TEST_LEVEL } from './testlevel.ts';
