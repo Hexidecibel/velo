@@ -1,18 +1,42 @@
 #!/usr/bin/env bash
-# Run the Vite dev server and open the game.
+# Run the Vite dev server and tell you the URL that actually works.
 #
-#   bin/dev              127.0.0.1:5173
-#   bin/dev --port 5200  another port
+#   bin/dev                 first free port from 5173 upward
+#   bin/dev --port 5200     pin one
+#
+# It resolves the port ITSELF rather than letting Vite fall back silently,
+# because 5173 is the default for every Vite project on this box and at least
+# one other is usually already sitting on it. Vite's fallback is fine; what is
+# not fine is a script that prints a URL belonging to somebody else's app.
 #
 # This is the milestone-1 entry point and, for now, the only way to play. The
-# whole point of M1 is the tuning panel on the right of the canvas: drive, drag
+# whole point of M1 is the tuning panel to the right of the canvas: drive, drag
 # sliders, and when it feels right press "Copy spec JSON" and paste the result
-# into src/sim/spec.ts. Sliders emit doubles like 0.30000000000000004 and the
-# exact doubles you tuned with must be the exact doubles that ship, so nobody
-# retypes a spec by hand.
+# over DEFAULT_SPEC in src/sim/spec.ts. Sliders emit doubles like
+# 0.30000000000000004 and the exact doubles you tuned with must be the exact
+# doubles that ship, so nobody retypes a spec by hand.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 ensure_deps
 cd "$ROOT"
+
+if [[ "$*" == *--port* ]]; then
+  exec "$NPM" run dev -- "$@"
+fi
+
+PORT_TO_USE="$("$NODE" -e '
+  const net = require("net");
+  const tryPort = (p) => new Promise((res) => {
+    const s = net.createServer();
+    s.once("error", () => res(false));
+    s.once("listening", () => s.close(() => res(true)));
+    s.listen(p, "127.0.0.1");
+  });
+  (async () => {
+    for (let p = 5173; p < 5273; p++) if (await tryPort(p)) { process.stdout.write(String(p)); return; }
+    process.stdout.write("5173");
+  })();
+')"
+
 echo "==> vite dev server"
-echo "    open http://127.0.0.1:${PORT:-5173}/"
-exec "$NPM" run dev -- "$@"
+echo "    open http://127.0.0.1:${PORT_TO_USE}/"
+exec "$NPM" run dev -- --port "$PORT_TO_USE" --strictPort "$@"
