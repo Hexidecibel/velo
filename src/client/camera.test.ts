@@ -74,6 +74,61 @@ describe('camera', () => {
     expect(cam.x).toBeLessThan(-1);
   });
 
+  it('blends to the overview framing, and only the overview may break the zoom floor', () => {
+    // The floor is the rule that outranks framing WHILE DRIVING. Overview is
+    // the one thing allowed past it, and only because the sim is frozen.
+    const cam = createCamera(cloneCamera(DEFAULT_CAMERA));
+    cam.snap({ x: 0, y: 0, vx: 0, vy: 0 });
+    const t = { x: 0, y: 0, vx: 0, vy: 0 };
+    const frame = { x: 88, y: -40, zoom: 9 };
+
+    cam.update(t, 1 / 60, VIEW.w, VIEW.h, { ...frame, blend: 1 });
+    expect(cam.x).toBeCloseTo(frame.x, 6);
+    expect(cam.y).toBeCloseTo(frame.y, 6);
+    expect(cam.zoom).toBeCloseTo(frame.zoom, 6);
+    expect(cam.zoom).toBeLessThan(cam.params.minZoom);
+
+    // Half-way is half-way in POSITION and the geometric mean in ZOOM: a
+    // linear zoom blend spends most of its travel in the high numbers and then
+    // lurches, which is the thing "smooth both ways" is asking to avoid. The
+    // play framing to compare against comes from an identically driven camera
+    // that was never handed an overview.
+    const a = createCamera(cloneCamera(DEFAULT_CAMERA));
+    const b = createCamera(cloneCamera(DEFAULT_CAMERA));
+    a.snap({ x: 0, y: 0, vx: 0, vy: 0 });
+    b.snap({ x: 0, y: 0, vx: 0, vy: 0 });
+    for (let i = 0; i < 30; i++) {
+      a.update(t, 1 / 60, VIEW.w, VIEW.h, { ...frame, blend: 0.5 });
+      b.update(t, 1 / 60, VIEW.w, VIEW.h);
+    }
+    expect(a.zoom).toBeCloseTo(Math.sqrt(b.zoom * frame.zoom), 6);
+    expect(a.x).toBeCloseTo(b.x + (frame.x - b.x) * 0.5, 6);
+    expect(a.y).toBeCloseTo(b.y + (frame.y - b.y) * 0.5, 6);
+  });
+
+  it('does not let the overview disturb the play framing underneath it', () => {
+    // The follow keeps smoothing while the wide view is up, so releasing the
+    // key returns to where following had got to — not to a stale position and
+    // not with a lurch. Equivalently: a frame spent in overview must leave the
+    // published view identical to one that never entered it.
+    const held = createCamera(cloneCamera(DEFAULT_CAMERA));
+    const plain = createCamera(cloneCamera(DEFAULT_CAMERA));
+    held.snap({ x: 0, y: 0, vx: 0, vy: 0 });
+    plain.snap({ x: 0, y: 0, vx: 0, vy: 0 });
+    const t = { x: 25, y: 9, vx: 4, vy: 1 };
+    const frame = { x: -300, y: 400, zoom: 6 };
+    for (let i = 0; i < 90; i++) {
+      held.update(t, 1 / 60, VIEW.w, VIEW.h, { ...frame, blend: 1 });
+      plain.update(t, 1 / 60, VIEW.w, VIEW.h);
+    }
+    // Now let go: blend 0 on the very next frame.
+    held.update(t, 1 / 60, VIEW.w, VIEW.h, { ...frame, blend: 0 });
+    plain.update(t, 1 / 60, VIEW.w, VIEW.h);
+    expect(held.x).toBeCloseTo(plain.x, 9);
+    expect(held.y).toBeCloseTo(plain.y, 9);
+    expect(held.zoom).toBeCloseTo(plain.zoom, 9);
+  });
+
   it('snaps without leaving a stale lead behind', () => {
     const cam = createCamera(cloneCamera(DEFAULT_CAMERA));
     cam.snap({ x: 0, y: 0, vx: 0, vy: 0 });

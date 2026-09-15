@@ -18,20 +18,46 @@ const BINDINGS: Record<string, number> = {
   ShiftLeft: IN_FLIP,
 };
 
+/**
+ * Keys whose BROWSER default must not fire even though they are not sim input.
+ * Tab is hold-to-overview, and without this it walks focus through the tuning
+ * panel's sliders the moment you hold it — and then the keyup lands on a
+ * different element and the overview sticks on.
+ */
+const PREVENT_DEFAULT_COMMANDS = new Set(['Tab']);
+
 export interface Input {
   mask(): number;
   /** Commands that are not part of the sim's input stream. */
   onCommand(fn: (code: string) => void): void;
+  /**
+   * Command key RELEASES, for hold-to-<something> bindings.
+   *
+   * Also fired for every command key still held when the window loses focus,
+   * for the same reason `blur` clears the sim mask: alt-tabbing away mid-hold
+   * must not leave the hold latched on forever with no key to release.
+   */
+  onCommandUp(fn: (code: string) => void): void;
   detach(): void;
 }
 
 export function createInput(target: HTMLElement | Window = window): Input {
   let held = 0;
   const commands: ((code: string) => void)[] = [];
+  const releases: ((code: string) => void)[] = [];
+  // Command keys currently down, so a release can be reported for exactly the
+  // presses that were reported — never for one that was swallowed by a text
+  // field, and never twice.
+  const downCommands = new Set<string>();
+
+  const release = (code: string): void => {
+    if (!downCommands.delete(code)) return;
+    for (const fn of releases) fn(code);
+  };
 
   const down = (e: KeyboardEvent): void => {
     if (e.repeat) {
-      if (BINDINGS[e.code] !== undefined) e.preventDefault();
+      if (BINDINGS[e.code] !== undefined || PREVENT_DEFAULT_COMMANDS.has(e.code)) e.preventDefault();
       return;
     }
     const bit = BINDINGS[e.code];
@@ -40,9 +66,13 @@ export function createInput(target: HTMLElement | Window = window): Input {
       e.preventDefault();
       return;
     }
-    // Typing in the tuning panel must not restart the run.
+    // Typing in the tuning panel must not restart the run — and Tab in a text
+    // field must still move to the next field, which is why this check comes
+    // before the preventDefault below.
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return;
+    if (PREVENT_DEFAULT_COMMANDS.has(e.code)) e.preventDefault();
+    downCommands.add(e.code);
     for (const fn of commands) fn(e.code);
   };
   const up = (e: KeyboardEvent): void => {
@@ -50,11 +80,15 @@ export function createInput(target: HTMLElement | Window = window): Input {
     if (bit !== undefined) {
       held &= ~bit;
       e.preventDefault();
+      return;
     }
+    if (PREVENT_DEFAULT_COMMANDS.has(e.code)) e.preventDefault();
+    release(e.code);
   };
-  // Alt-tabbing away with the throttle down must not leave it down.
+  // Alt-tabbing away with the throttle down must not leave it down. Nor a hold.
   const blur = (): void => {
     held = 0;
+    for (const code of [...downCommands]) release(code);
   };
 
   const el = target as Window;
@@ -65,6 +99,7 @@ export function createInput(target: HTMLElement | Window = window): Input {
   return {
     mask: () => held,
     onCommand: (fn) => commands.push(fn),
+    onCommandUp: (fn) => releases.push(fn),
     detach: () => {
       el.removeEventListener('keydown', down as EventListener);
       el.removeEventListener('keyup', up as EventListener);

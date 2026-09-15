@@ -49,7 +49,7 @@ add a script rather than running an ad-hoc command.
 | `bin/build` | `tsc -b` typecheck (a separate, mandatory step) then `vite build` into `dist/`. |
 | `bin/test` | vitest, colocated, plain node. `--watch` to re-run on change. |
 | `bin/lint` | `tsc -b` plus eslint. Both, in that order — eslint here is type-unaware. |
-| `bin/smoke` | Builds, then drives the real page in headless Chrome over CDP: asserts nothing threw, nothing went NaN, the replay verifies, and the **cross-engine hash chain from Chrome's V8 matches Node's V8**. |
+| `bin/smoke` | Builds, then drives the real page in headless Chrome over CDP: asserts nothing threw, nothing went NaN, the replay verifies, the **cross-engine hash chain from Chrome's V8 matches Node's V8**, live tune applies end to end, and **holding TAB advances neither the clock nor the recording**. |
 | `bin/preview` | Serves the built `dist/`. A production-bundle sanity check, not a deployment. |
 | `bin/level-export` | Writes the built-in levels out to `levels/test01.json` and `levels/test02-bowl.json`. |
 | `bin/level-check` | Validates a hand-authored level JSON, prints its two hashes, and **warns about straight runs too coarse to ride smoothly**. |
@@ -70,19 +70,76 @@ server milestone and deliberately do not exist yet.
 | --- | --- |
 | arrows / WASD | gas, brake, rotate left, rotate right |
 | space | **flip direction** — changes the driven wheel; free, legal mid-air, and the mechanic the whole double-back level design rests on |
+| TAB (hold) | **see the whole level.** The sim and the clock freeze while it is down. |
 | R | restart |
 | T | replay the last run and check its hash chain |
 | E | **export the last run** as a self-contained `.replay.json` file |
 | L | load a replay file and watch it (or drag one onto the window) |
 | `[` / `]` | previous / next level |
 | G | draw contacts and surface normals |
-| H | hide the tuning panel |
+| H | show/hide the tuning panel — **closed by default**, remembered once you open it |
 | `+` / `-` | zoom bias |
 | P | pause |
 
 There is a collapsible control legend in the bottom-left corner of the page,
 because space-to-flip was the single most undiscoverable thing in the game and
 nothing on screen said so.
+
+## Finding your way around a big level
+
+The levels grew: `10-cathedral` is 176 x 49 m, `07-the-chimney` is 52 x 48 m,
+`04-switchback` is 124 x 34 m. The camera holds a hard readability floor at
+38 px/m so the collision edge stays legible, which is right while driving and
+means you cannot see where you are in a level that size, or where the last apple
+went.
+
+**There is deliberately no minimap.** A minimap costs permanent HUD real estate,
+shows an abstraction of the level instead of the level, needs its own visual
+language maintained alongside the real renderer forever, and is worse than
+zooming out at everything except being always-on. Modern 2D games dropped it for
+those reasons. Three things replace it:
+
+**Hold TAB and the camera eases out to frame the whole level** — the real
+camera, the real renderer, the real geometry, just further away. A level too
+large to fit above the overview's own zoom floor frames a generous radius around
+the bike instead, clamped so the view never scrolls off the level. Release and
+it eases back. Both directions are smoothed with a half-life, and the zoom
+blends *geometrically* rather than linearly, because a linear blend from 62 px/m
+to 7 spends most of its travel in the high numbers and then lurches.
+
+**The sim and the clock freeze while it is held**, and that is three decisions
+at once:
+
+- The readability floor exists because you are driving. The overview
+  deliberately goes under it, which is only acceptable because nobody is.
+- **It cannot affect a recorded replay.** No sim tick advances, so
+  `sim.advance()` is never called, the recorder gains no input frame, and
+  `state.tick` — the clock — does not move. A run held in overview for a minute
+  produces a byte-identical replay file to the same run never held at all.
+  `src/client/overview.test.ts` asserts exactly that against the real sim and
+  the real recorder, and `bin/smoke` asserts it again in Chrome through the real
+  key path, because the freeze gate itself lives in the frame loop where no unit
+  test can reach it.
+- It makes the feature a viewing aid rather than a competitive question.
+
+**Loading a level shows that same wide framing briefly before settling** to play
+zoom. Route planning *is* the game — apples are collectable in any order, and
+the interesting levels have genuinely different orders with different times — so
+a player who never sees the whole level cannot plan a route. It is short, **any
+input skips it**, and it fires on a level load and never on `R`: the die-retry
+loop must stay instant.
+
+**Small chevrons at the edge of the window point at uncollected apples**, with
+the distance in metres, and at the flower once the apples are gone. This is the
+cheap half of the problem and it needs no map at all: "where is the last one" is
+a question about one object, and an arrow plus a distance answers it completely.
+They are low-alpha and small on purpose — the standing readability rule is that
+the player and the collision edge are the highest-contrast things on screen, and
+these must not compete.
+
+Everything above is on the tuning panel under **Overview (TAB)**: padding, the
+overview zoom floor, both easing half-lives, the opening peek's duration (0
+disables it), and the markers' inset and alpha (0 turns them off).
 
 ## Levels, and the level picker
 
@@ -257,7 +314,37 @@ all of it is on the tuning panel, because anything with feel belongs on the
 panel. The sim never sees any of it and must not — a time that depended on how
 somebody framed their screen would not be a time.
 
+Hold-to-overview is the **one** thing allowed past rule 1, and only because it
+freezes the sim first — see *Finding your way around a big level*. It is a pure
+view effect: the play framing keeps smoothing underneath the whole time and
+never learns that it happened, so releasing TAB returns to where following had
+got to rather than recovering from anything.
+
 ## The tuning panel is the deliverable
+
+**It is closed by default, and `H` opens it.** Someone opening the link should
+get the game, not a wall of sliders; the panel is a development instrument. Once
+you open it the choice is remembered in `localStorage`, because the person who
+tunes does it constantly and must not have to re-open it on every hot reload.
+
+That is **presentation, not access control.** Anyone who knows the key can open
+it, and that is fine: this app deliberately has no idea who is on the other end
+of the connection. It binds loopback, HAProxy fronts it, the cush-auth device
+gate decides who gets in, and no identity header reaches the process — so a real
+admin/non-admin distinction is not something this app can make today, and
+faking one with a hidden panel would imply a guarantee that does not exist. If
+one is ever wanted — most likely when leaderboards need per-user identity — the
+right fix is cush-auth passing an identity header downstream, built for that
+purpose.
+
+It matters less than it used to anyway: **live tune** below changes the bike from
+a terminal, so the sliders are not the only route to the numbers.
+
+The two things the panel would otherwise be the only place to see — a stale
+hand-tune and a field held by `bin/spec` — are reported on the HUD whenever the
+panel is closed. A bike that is not the preset as shipped, with nothing on
+screen saying so, is how somebody spends an afternoon debugging their own
+leftover slider.
 
 Not the renderer, and not a debug tool. "Ride it until it feels good" means
 changing the `BikeSpec` dozens of times in a sitting, and doing that by editing
@@ -884,6 +971,10 @@ leaderboard *forks* by rev rather than resetting.
 index.html          Vite entry at the repo root
 src/sim/            the deterministic core — imports NOTHING
 src/client/         canvas renderer, input, tuning panel, record-and-replay
+                    camera.ts is the play framing; overview.ts is the wide view,
+                    the freeze and the opening peek; markers.ts is the off-screen
+                    indicators. The last two are pure state and geometry so they
+                    test in plain node.
 bin/                every operational task
 levels/             exported level JSON
 ```

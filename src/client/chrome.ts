@@ -80,8 +80,9 @@ export function createLegend(root: HTMLElement): void {
     '<b>&#8593; / W</b> gas &nbsp; <b>&#8595; / S</b> brake<br>' +
     '<b>&#8592; &#8594; / A D</b> rotate the bike<br>' +
     '<b>SPACE</b> flip direction — this is how you double back<br>' +
+    '<b>TAB</b> hold to see the whole level (time stops)<br>' +
     '<b>R</b> restart &nbsp; <b>T</b> replay &nbsp; <b>E</b> export replay<br>' +
-    '<b>[ / ]</b> level &nbsp; <b>H</b> panel &nbsp; <b>+ / -</b> zoom';
+    '<b>[ / ]</b> level &nbsp; <b>+ / -</b> zoom &nbsp; <b>H</b> tuning sliders';
   d.append(body);
   d.addEventListener('toggle', () => saveFlag('legend', d.open));
   root.append(d);

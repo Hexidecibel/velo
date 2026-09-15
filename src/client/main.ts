@@ -17,6 +17,7 @@ import { createLoop } from './loop.ts';
 import { interpolate, render } from './render.ts';
 import type { Pose } from './render.ts';
 import { createCamera, cloneCamera, DEFAULT_CAMERA } from './camera.ts';
+import { cloneOverview, createOverview, DEFAULT_OVERVIEW, overviewFrame } from './overview.ts';
 import { createPanel } from './panel.ts';
 import { BOOT_PRESET, PRESETS } from './presets.ts';
 import { createAttemptLog, createRecorder, verify } from './recorder.ts';
@@ -115,6 +116,11 @@ let playback: { masks: number[]; at: number } | null = null;
 
 const cam = createCamera(cloneCamera(DEFAULT_CAMERA));
 cam.snap({ x: level.start.x, y: level.start.y, vx: 0, vy: 0 });
+// Hold-to-overview, and the start-of-level peek. It owns the freeze: while
+// `overview.frozen` is true, `step()` returns before touching the sim, so no
+// tick advances, no input frame is recorded and the clock does not move.
+const overview = createOverview(cloneOverview(DEFAULT_OVERVIEW));
+overview.startIntro();
 let debug = false;
 let hudCache = '';
 let fps = 0;
@@ -145,6 +151,11 @@ function setLevel(next: LevelEntry, note = ''): void {
   lastReplay = null;
   replayNote = note;
   restart(false);
+  // The opening peek happens on a LEVEL LOAD and not on a restart. Seeing the
+  // whole level is route planning, which you do once; R is the die-retry loop,
+  // which you do forty times, and putting anything at all in front of it is how
+  // a retry loop stops being instant.
+  overview.startIntro();
   saveLastLevel(entry.id);
   // Keep the address bar a shareable link to what is actually on screen.
   const url = new URL(location.href);
@@ -404,6 +415,22 @@ let wasOver = false;
 function step(): void {
   prevState = copyState(sim.state);
 
+  // THE FREEZE. Everything below this line is the only code that can move the
+  // sim, so returning here is a total guarantee rather than a best effort:
+  // `sim.advance` is not called, so no tick runs and `state.tick` — the clock —
+  // does not move; `recorder.capture` is not called, so the input stream gains
+  // no frame. An overview held for a minute produces a bit-identical replay to
+  // the same run never held at all. overview.test.ts asserts that rather than
+  // trusting this comment.
+  //
+  // `prevState` is copied ABOVE the return on purpose: the renderer interpolates
+  // between prevState and state by a varying alpha every frame, so leaving them
+  // different would make the frozen bike shimmer between two poses.
+  // Any input at all cancels the opening peek. A deliberate TAB hold is not
+  // cancelled by driving — that is what `hold` outranking `intro` is for.
+  if (overview.mode === 'intro' && input.mask() !== 0) overview.skipIntro();
+  if (overview.frozen) return;
+
   if (playback) {
     if (playback.at >= playback.masks.length) {
       playback = null;
@@ -436,11 +463,28 @@ function step(): void {
 function draw(alpha: number, dtMs: number): void {
   fps += (1000 / Math.max(dtMs, 1) - fps) * 0.08;
   const { cssW, cssH } = resize();
+  const dtSec = dtMs / 1000;
   const pose = interpolate(prevState, sim.state, alpha);
-  cam.update({ x: pose.px, y: pose.py, vx: sim.state.vx, vy: sim.state.vy }, dtMs / 1000, cssW, cssH);
+
+  overview.tick(dtSec);
+  const ov = overview.blend > 0
+    ? { ...overviewFrame(level, { x: pose.px, y: pose.py }, cssW, cssH, overview.params), blend: overview.blend }
+    : null;
+  cam.update({ x: pose.px, y: pose.py, vx: sim.state.vx, vy: sim.state.vy }, dtSec, cssW, cssH, ov);
 
   const ghost: Pose | null = null;
-  render(ctx, cssW, cssH, cam, sim.world, sim.state, pose, spec, { debug, ghost });
+  render(ctx, cssW, cssH, cam, sim.world, sim.state, pose, spec, {
+    debug,
+    ghost,
+    overview: overview.blend,
+    // Indicators are for driving, not for the overview — while the whole level
+    // is on screen there is nothing off it to point at, and eight arrows
+    // sliding to the edges during the zoom is exactly the noise the readability
+    // rule exists to prevent. They fade out as the overview fades in.
+    markers: overview.params.markerAlpha > 0
+      ? { inset: overview.params.markerInset, alpha: overview.params.markerAlpha * (1 - overview.blend) }
+      : null,
+  });
   updateHud();
 }
 
@@ -469,13 +513,15 @@ function updateHud(): void {
     (m & IN_LEAN_L ? '&lt;L&nbsp; ' : '&middot;&nbsp;&nbsp; ') +
     (m & IN_LEAN_R ? 'R&gt;&nbsp; ' : '&middot;&nbsp;&nbsp; ') +
     (m & IN_FLIP ? 'FLIP' : '&middot;');
-  const status = s.finished
-    ? `<span class="ok">FINISHED ${ticksToSeconds(s.endTick).toFixed(3)}s</span>`
-    : s.dead
-      ? `<span class="bad">DEAD at ${ticksToSeconds(s.endTick).toFixed(3)}s — R to restart</span>`
-      : playback
-        ? `<span class="warn">REPLAY ${playback.at}/${playback.masks.length}</span>`
-        : `${ticksToSeconds(s.tick).toFixed(2)}s`;
+  const status = overview.frozen
+    ? `<span class="warn">OVERVIEW — sim and clock frozen at ${ticksToSeconds(s.tick).toFixed(2)}s${overview.mode === 'held' ? ', release TAB' : ', any key to start'}</span>`
+    : s.finished
+      ? `<span class="ok">FINISHED ${ticksToSeconds(s.endTick).toFixed(3)}s</span>`
+      : s.dead
+        ? `<span class="bad">DEAD at ${ticksToSeconds(s.endTick).toFixed(3)}s — R to restart</span>`
+        : playback
+          ? `<span class="warn">REPLAY ${playback.at}/${playback.masks.length}</span>`
+          : `${ticksToSeconds(s.tick).toFixed(2)}s`;
   const best = bests[level.simHash];
 
   const lines = [
@@ -494,6 +540,13 @@ function updateHud(): void {
       : liveTune.enabled
         ? `<span class="k">live tune</span> on${liveTune.heldPaths.size ? `, holding ${liveTune.heldPaths.size} field(s)` : ', no override'}`
         : '<span class="k">live tune</span> off',
+    // The panel is closed by default now, so the two things it would otherwise
+    // be shouting about have to be visible without it. A stale hand-tune or a
+    // remote override that nobody can SEE is how somebody spends an afternoon
+    // debugging a feel problem that is their own leftover slider.
+    !panel.visible && (specIsTuned || liveTune.heldPaths.size > 0)
+      ? `<span class="warn">bike is not the preset as shipped${specIsTuned ? ' (tuned)' : ''}${liveTune.heldPaths.size ? ` (${liveTune.heldPaths.size} field(s) held by bin/spec)` : ''} — H opens the panel</span>`
+      : '',
     `<span class="k">recorded</span> ${recorder.frames} frames${lastReplay ? `  <span class="k">banked</span> ${lastReplay.frames}` : ''}  <span class="k">attempts</span> ${attempts.forLevel(level.simHash).length}`,
     replayNote ? `<span class="${replayNote.startsWith('REPLAY DESYNC') || replayNote.startsWith('CANNOT PLAY') ? 'bad' : 'warn'}">${replayNote}</span>` : '',
     '',
@@ -529,11 +582,16 @@ createLegend(legendRoot);
 // somebody playing. Either way the toggle is remembered once touched.
 const liveTuneDefault = loadFlag('livetune', import.meta.env.DEV);
 
-const panel = createPanel(panelRoot, localSpec, () => spec, cam.params, liveTuneDefault, {
+const panel = createPanel(panelRoot, localSpec, () => spec, cam.params, overview.params, liveTuneDefault, {
   onSpecChange: () => onPanelEdit(),
   onCameraChange: () => {
     // Nothing to rebuild: the camera reads its params every frame. It is here
     // so that adding a camera parameter that DOES need work has a place to go.
+  },
+  onOverviewChange: () => {
+    // Likewise read every frame. Changing `introHold` does not retroactively
+    // lengthen an intro already running, which is the behaviour you want while
+    // dragging the slider to find a number.
   },
   onLiveTune: (on) => {
     saveFlag('livetune', on);
@@ -589,7 +647,14 @@ onReplayDropped(
 const loop = createLoop({ step, draw });
 
 input.onCommand((code) => {
+  // Any key at all ends the opening peek.
+  if (code !== 'Tab') overview.skipIntro();
   switch (code) {
+    case 'Tab':
+      // HOLD to see the whole level. The sim is frozen while it is down, so
+      // this cannot advance the clock or add a frame to the recording.
+      overview.hold(true);
+      break;
     case 'KeyR':
       restart(false);
       break;
@@ -632,6 +697,14 @@ input.onCommand((code) => {
   }
 });
 
+input.onCommandUp((code) => {
+  if (code === 'Tab') overview.hold(false);
+});
+
+// Clicking anywhere also ends the opening peek — "skippable by any input" has
+// to mean any input, or the one person who reaches for the mouse sits through it.
+window.addEventListener('pointerdown', () => overview.skipIntro());
+
 loop.start();
 
 // A handle for the headless smoke check in bin/smoke, and for poking at the sim
@@ -654,6 +727,14 @@ interface VeloWindow extends Window {
   },
   specHash: () => specHash(spec),
   liveTune,
+  get cam() {
+    return cam;
+  },
+  overview,
+  /** Frames in the CURRENT recording. bin/smoke uses it to prove the freeze. */
+  get recordedFrames() {
+    return recorder.frames;
+  },
   get attempts() {
     return attempts.all;
   },

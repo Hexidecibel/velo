@@ -192,8 +192,16 @@ try {
     throw new Error('live tune should default OFF in a production build');
   }
   await evalIn(cdp, `(window.velo.liveTune.setEnabled(true), true)`);
+  // Land on a KNOWN baseline before measuring the restart below. The playback
+  // started above resets the sim to tick 0 and then runs for a second and a
+  // half, so a baseline sampled while it is still going can be anything —
+  // including a small number that makes "the tick went backwards" unfalsifiable.
+  // That was an intermittent failure, not a theoretical one.
+  await evalIn(cdp, `(window.velo.restart(false), true)`);
+  await new Promise((r) => setTimeout(r, 1500));
   const hashBefore = await evalIn(cdp, `window.velo.specHash()`);
   const tickBefore = await evalIn(cdp, `window.velo.sim.state.tick`);
+  if (tickBefore < 512) throw new Error(`live-tune baseline never ran (${tickBefore} ticks)`);
   liveSpec = { version: 'v1', present: true, override: { gravity: 4.25 }, error: null };
   await evalIn(cdp, `(window.velo.liveTune.poke(), true)`);
   await new Promise((r) => setTimeout(r, 600));
@@ -227,6 +235,56 @@ try {
   const cleared = await evalIn(cdp, `({ gravity: window.velo.spec.gravity, held: [...window.velo.liveTune.heldPaths] })`);
   if (cleared.gravity === 4.25) throw new Error('clearing the override left the remote value in place');
   if (cleared.held.length !== 0) throw new Error(`fields still held after a clear (${cleared.held})`);
+
+  // Hold-to-overview, end to end and through the real key path.
+  //
+  // The claim being checked is the one the whole feature rests on: while TAB is
+  // held the sim does not move and the recorder gains nothing, so an overview
+  // cannot change a recorded run. Asserting it in the browser as well as in the
+  // unit test matters because the gate lives in main.ts's frame loop, which no
+  // unit test can reach.
+  await evalIn(cdp, `(window.velo.restart(false), true)`);
+  await evalIn(cdp, `
+    (() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowUp', bubbles: true })); return true; })()
+  `);
+  await new Promise((r) => setTimeout(r, 500));
+  const before = await evalIn(cdp, `({ tick: window.velo.sim.state.tick, frames: window.velo.recordedFrames })`);
+  await evalIn(cdp, `
+    (() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Tab', bubbles: true })); return true; })()
+  `);
+  await new Promise((r) => setTimeout(r, 800));
+  const during = await evalIn(cdp, `
+    ({
+      tick: window.velo.sim.state.tick,
+      frames: window.velo.recordedFrames,
+      frozen: window.velo.overview.frozen,
+      blend: window.velo.overview.blend,
+      zoom: window.velo.cam.zoom,
+      minZoom: window.velo.cam.params.minZoom,
+    })
+  `);
+  await evalIn(cdp, `
+    (() => {
+      window.dispatchEvent(new KeyboardEvent('keyup', { code: 'Tab', bubbles: true }));
+      return true;
+    })()
+  `);
+  await new Promise((r) => setTimeout(r, 600));
+  const after = await evalIn(cdp, `
+    ({ tick: window.velo.sim.state.tick, frames: window.velo.recordedFrames, frozen: window.velo.overview.frozen, zoom: window.velo.cam.zoom })
+  `);
+  await evalIn(cdp, `
+    (() => { window.dispatchEvent(new KeyboardEvent('keyup', { code: 'ArrowUp', bubbles: true })); return true; })()
+  `);
+  console.log('    overview: ' + JSON.stringify({ before, during, after }));
+  if (!during.frozen) throw new Error('holding TAB did not freeze the sim');
+  if (during.tick !== before.tick) throw new Error(`the clock ran during overview (${before.tick} -> ${during.tick})`);
+  if (during.frames !== before.frames) throw new Error(`the recorder grew during overview (${before.frames} -> ${during.frames}) — a held overview would change the replay`);
+  if (during.blend < 0.9) throw new Error(`overview never eased in (blend ${during.blend})`);
+  if (during.zoom >= during.minZoom) throw new Error(`overview did not zoom past the play floor (${during.zoom} >= ${during.minZoom})`);
+  if (after.frozen) throw new Error('releasing TAB did not unfreeze the sim');
+  if (after.tick <= during.tick) throw new Error('the sim did not resume after TAB was released');
+  if (after.zoom <= during.zoom) throw new Error('the camera never eased back toward play framing');
 
   cdp.close();
 } catch (e) {

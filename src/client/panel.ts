@@ -21,7 +21,9 @@
 import type { BikeSpec } from '@/sim/spec.ts';
 import { specHash } from '@/sim/spec.ts';
 import type { CameraParams } from './camera.ts';
+import type { OverviewParams } from './overview.ts';
 import { PRESETS, leanAngleOf, leanVectors } from './presets.ts';
+import { loadFlag, saveFlag } from './store.ts';
 
 interface Field<T> {
   label: string;
@@ -291,6 +293,50 @@ const CAMERA_GROUPS: Group<CameraParams>[] = [
   },
 ];
 
+const OVERVIEW_GROUPS: Group<OverviewParams>[] = [
+  {
+    title: 'Overview (TAB)',
+    why: 'Hold TAB and the camera eases out to frame the whole level; the sim and the clock freeze while it is held, which is what lets this ignore the readability floor above and what makes it impossible for it to affect a recorded run. Not a minimap, on purpose: this shows the real level through the real renderer rather than an abstraction of it that has to be maintained separately.',
+    fields: [
+      {
+        label: 'padding', min: 0, max: 0.4, step: 0.01,
+        hint: 'Margin around the level as a fraction of its longest span. 0 puts the outer wall exactly on the screen edge, which reads as "cut off" rather than "the end".',
+        get: (o) => o.padding, set: (o, v) => { o.padding = v; },
+      },
+      {
+        label: 'overview MIN zoom (px/m)', min: 3, max: 40, step: 0.5,
+        hint: 'Floor for the wide view — far below the driving floor, because nobody is driving. A level too big to fit above this frames a generous radius around the bike instead, clamped to stay inside the level.',
+        get: (o) => o.minZoom, set: (o, v) => { o.minZoom = v; },
+      },
+      {
+        label: 'ease-out half-life (s)', min: 0.02, max: 1, step: 0.01,
+        hint: 'Going INTO the overview. A snap at this scale is disorienting.',
+        get: (o) => o.inHalfLife, set: (o, v) => { o.inHalfLife = v; },
+      },
+      {
+        label: 'ease-in half-life (s)', min: 0.02, max: 1, step: 0.01,
+        hint: 'Coming BACK. The sim unfreezes the instant TAB is released, not when this finishes — a half-second of stuck controls would be worse than a fast zoom.',
+        get: (o) => o.outHalfLife, set: (o, v) => { o.outHalfLife = v; },
+      },
+      {
+        label: 'start-of-level hold (s)', min: 0, max: 4, step: 0.1,
+        hint: 'How long the opening peek lasts. Route planning IS the game — apples come in any order — so a player who never sees the whole level cannot plan one. Any input skips it; 0 disables it. It fires on a LEVEL LOAD and never on R.',
+        get: (o) => o.introHold, set: (o, v) => { o.introHold = v; },
+      },
+      {
+        label: 'marker inset (px)', min: 0, max: 120, step: 1,
+        hint: 'How far in from the window edge the off-screen apple and flower arrows sit.',
+        get: (o) => o.markerInset, set: (o, v) => { o.markerInset = v; },
+      },
+      {
+        label: 'marker alpha', min: 0, max: 1, step: 0.01,
+        hint: 'Subtlety knob, and the readability rule is what it is for: these must never compete with the collision edge. 0 turns them off entirely.',
+        get: (o) => o.markerAlpha, set: (o, v) => { o.markerAlpha = v; },
+      },
+    ],
+  },
+];
+
 export interface PanelHooks {
   /** A spec field moved. The sim is rebuilt around the new spec in place. */
   onSpecChange(spec: BikeSpec): void;
@@ -298,6 +344,8 @@ export interface PanelHooks {
   onLiveTune(on: boolean): void;
   /** A camera field moved. Nothing physical happens. */
   onCameraChange(cam: CameraParams): void;
+  /** An overview field moved. Read every frame, so also nothing to rebuild. */
+  onOverviewChange(ov: OverviewParams): void;
   /** A whole preset was selected; the run restarts. */
   onPreset(spec: BikeSpec, label: string): void;
   /** Throw away the stored tune and go back to the preset as shipped. */
@@ -344,6 +392,7 @@ export function createPanel(
    */
   effective: () => BikeSpec,
   camera: CameraParams,
+  overview: OverviewParams,
   liveTuneOn: boolean,
   hooks: PanelHooks,
 ): Panel {
@@ -528,6 +577,7 @@ export function createPanel(
   // The camera is not a BikeSpec and cannot be driven remotely, so it reads and
   // writes the same object and no row of it ever goes read-only.
   buildGroups(CAMERA_GROUPS, camera, (c) => hooks.onCameraChange(c));
+  buildGroups(OVERVIEW_GROUPS, overview, (o) => hooks.onOverviewChange(o));
 
   const keys = document.createElement('div');
   keys.className = 'keys';
@@ -536,6 +586,7 @@ export function createPanel(
     '<b>arrows / WASD</b> gas, brake, volt left, volt right<br>' +
     '<b>space</b> FLIP direction &nbsp; <b>R</b> restart &nbsp; <b>T</b> replay last run<br>' +
     '<b>E</b> export replay &nbsp; <b>L</b> load a replay file (or drop one on the window)<br>' +
+    '<b>TAB</b> (hold) see the whole level — the sim and the clock freeze<br>' +
     '<b>[ / ]</b> previous / next level &nbsp; <b>G</b> contacts &amp; normals<br>' +
     '<b>H</b> hide this panel &nbsp; <b>+ / -</b> zoom &nbsp; <b>P</b> pause' +
     '<h2 style="margin-top:18px">Live tune</h2>' +
@@ -554,7 +605,21 @@ export function createPanel(
   }
   refreshHash();
 
-  let visible = true;
+  // DEFAULT CLOSED, remembered once touched.
+  //
+  // Someone opening the link should get the game, not a wall of sliders — the
+  // panel is a development instrument and it was the first thing a visitor saw.
+  // This is PRESENTATION, not access control: H still opens it for anyone who
+  // knows the key, and this app deliberately has no idea who is on the other end
+  // of the connection (HAProxy and the cush-auth device gate decide that, and
+  // they pass no identity down here). Live tune makes the panel much less
+  // necessary anyway — the bike can be changed from `bin/spec` without anybody
+  // opening a slider.
+  //
+  // Remembered because the person who tunes does it constantly and must not
+  // have to re-open it on every hot reload.
+  let visible = loadFlag('panel', false);
+  root.classList.toggle('hidden', !visible);
   return {
     sync(): void {
       for (const s of syncers) s();
@@ -579,6 +644,7 @@ export function createPanel(
     toggle(): void {
       visible = !visible;
       root.classList.toggle('hidden', !visible);
+      saveFlag('panel', visible);
     },
     get visible() {
       return visible;

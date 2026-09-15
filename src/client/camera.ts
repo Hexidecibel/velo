@@ -86,7 +86,32 @@ export interface CameraTarget {
   vy: number;
 }
 
+/**
+ * A wide framing to blend toward, plus how far to blend. Supplied by
+ * overview.ts, which owns the state machine and the easing; the camera's only
+ * job is to publish a view that is `blend` of the way there.
+ *
+ * This is the one thing that may take the camera below `minZoom`, and it is
+ * allowed to because the sim is frozen whenever `blend` is being driven toward
+ * 1 — the readability floor exists for somebody who is driving.
+ */
+export interface OverviewView {
+  x: number;
+  y: number;
+  /** Pixels per metre. */
+  zoom: number;
+  /** 0 = play framing, 1 = fully the wide view. */
+  blend: number;
+}
+
 export interface Camera {
+  /**
+   * The PUBLISHED view — what the renderer reads. Equal to the play framing
+   * whenever no overview is blended in, which is the overwhelmingly common
+   * case; the play framing itself is kept separately and keeps smoothing
+   * underneath, so releasing the overview returns to where following had got
+   * to rather than to a stale position.
+   */
   x: number;
   y: number;
   /** Pixels per metre. */
@@ -97,23 +122,35 @@ export interface Camera {
   /** Place the camera on the target immediately. Restart, level change, load. */
   snap(t: CameraTarget): void;
   /** One rendered frame. `dt` in seconds; never the sim's dt. */
-  update(t: CameraTarget, dtSec: number, cssW: number, cssH: number): void;
+  update(t: CameraTarget, dtSec: number, cssW: number, cssH: number, ov?: OverviewView | null): void;
 }
 
-/** Frame-rate-independent exponential approach. `hl` is a half-life in seconds. */
-function approach(cur: number, target: number, hl: number, dt: number): number {
+/**
+ * Frame-rate-independent exponential approach. `hl` is a half-life in seconds.
+ * Exported because overview.ts eases its blend with exactly this curve, and two
+ * different easings in one camera is how a system starts feeling inconsistent.
+ */
+export function approach(cur: number, target: number, hl: number, dt: number): number {
   if (hl <= 0) return target;
   const k = 1 - Math.pow(0.5, dt / hl);
   return cur + (target - cur) * k;
 }
 
-function clamp(v: number, lo: number, hi: number): number {
+export function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
 
 export function createCamera(params: CameraParams): Camera {
   let leadX = 0;
   let leadY = 0;
+  // The PLAY framing, kept apart from the published view. Everything below
+  // smooths these; `cam.x/y/zoom` are then these blended toward the overview.
+  // Keeping them separate is what lets the overview be a pure view effect: the
+  // follow never learns that it happened, so releasing TAB does not have to
+  // recover from anything.
+  let fx = 0;
+  let fy = 0;
+  let fzoom = params.baseZoom;
 
   const cam: Camera = {
     x: 0,
@@ -125,12 +162,15 @@ export function createCamera(params: CameraParams): Camera {
     snap(t: CameraTarget): void {
       leadX = 0;
       leadY = 0;
-      cam.x = t.x;
-      cam.y = t.y;
-      cam.zoom = clamp(cam.params.baseZoom * cam.zoomBias, cam.params.minZoom, cam.params.maxZoom);
+      fx = t.x;
+      fy = t.y;
+      fzoom = clamp(cam.params.baseZoom * cam.zoomBias, cam.params.minZoom, cam.params.maxZoom);
+      cam.x = fx;
+      cam.y = fy;
+      cam.zoom = fzoom;
     },
 
-    update(t: CameraTarget, dtSec: number, cssW: number, cssH: number): void {
+    update(t: CameraTarget, dtSec: number, cssW: number, cssH: number, ov: OverviewView | null = null): void {
       const p = cam.params;
       // A tab that was backgrounded hands back a huge dt. Clamping it here means
       // the camera eases back in rather than teleporting on the first frame.
@@ -153,11 +193,11 @@ export function createCamera(params: CameraParams): Camera {
       const span = Math.max(p.zoomToSpeed - p.zoomFromSpeed, 1e-6);
       const k = clamp((speed - p.zoomFromSpeed) / span, 0, 1);
       const want = clamp((p.baseZoom + (p.minZoom - p.baseZoom) * k) * cam.zoomBias, p.minZoom, p.maxZoom);
-      cam.zoom = approach(cam.zoom, want, want < cam.zoom ? p.zoomOutHalfLife : p.zoomInHalfLife, dt);
+      fzoom = approach(fzoom, want, want < fzoom ? p.zoomOutHalfLife : p.zoomInHalfLife, dt);
 
       // --- follow -------------------------------------------------------
-      cam.x = approach(cam.x, t.x + leadX, p.followHalfLife, dt);
-      cam.y = approach(cam.y, t.y + leadY, p.followHalfLife, dt);
+      fx = approach(fx, t.x + leadX, p.followHalfLife, dt);
+      fy = approach(fy, t.y + leadY, p.followHalfLife, dt);
 
       // --- the guarantee ------------------------------------------------
       // Applied LAST and unconditionally. Smoothing is a lag and a lag can lose
@@ -165,12 +205,35 @@ export function createCamera(params: CameraParams): Camera {
       // does nothing at all — it only bites during a direction change fast
       // enough to outrun the half-life, which is precisely when you would
       // otherwise be looking at empty cave.
-      const halfW = (cssW * 0.5) / cam.zoom;
-      const halfH = (cssH * 0.5) / cam.zoom;
+      //
+      // It clamps the PLAY framing, which is the framing it is a guarantee
+      // about. The overview blend below may legitimately put the bike anywhere
+      // in the frame, including a corner of a 176 m level — that is the whole
+      // point of it, and the sim is frozen while it is happening.
+      const halfW = (cssW * 0.5) / fzoom;
+      const halfH = (cssH * 0.5) / fzoom;
       const boxX = halfW * p.safeBox;
       const boxY = halfH * p.safeBox;
-      cam.x = clamp(cam.x, t.x - boxX, t.x + boxX);
-      cam.y = clamp(cam.y, t.y - boxY, t.y + boxY);
+      fx = clamp(fx, t.x - boxX, t.x + boxX);
+      fy = clamp(fy, t.y - boxY, t.y + boxY);
+
+      // --- publish ------------------------------------------------------
+      const b = ov ? clamp(ov.blend, 0, 1) : 0;
+      if (b <= 0) {
+        cam.x = fx;
+        cam.y = fy;
+        cam.zoom = fzoom;
+        return;
+      }
+      const o = ov as OverviewView;
+      cam.x = fx + (o.x - fx) * b;
+      cam.y = fy + (o.y - fy) * b;
+      // GEOMETRIC, not linear. Zoom is a scale factor, and a linear blend from
+      // 62 px/m to 6 px/m spends most of its travel in the high numbers and
+      // then plummets — it reads as a lurch at the far end. Blending the
+      // logarithm makes the apparent rate of zoom constant, which is what
+      // "smooth" means for a scale.
+      cam.zoom = fzoom * Math.pow(Math.max(o.zoom, 1e-3) / fzoom, b);
     },
   };
   return cam;

@@ -10,6 +10,8 @@ import { PICKUP_RADIUS } from '@/sim/consts.ts';
 import type { BikeSpec } from '@/sim/spec.ts';
 import type { SimState } from '@/sim/step.ts';
 import type { World } from '@/sim/world.ts';
+import { drawEdgeMarkers, edgeMarkers } from './markers.ts';
+import type { MarkerTarget } from './markers.ts';
 
 const COL_SOLID = '#1b2029';
 const COL_FREE = '#0b0d11';
@@ -76,6 +78,14 @@ export function interpolate(prev: SimState, cur: SimState, a: number): Pose {
 export interface RenderOpts {
   debug: boolean;
   ghost: Pose | null;
+  /**
+   * 0..1 — how far the camera is into the wide overview framing. Drives the
+   * bike locator, because at 9 px/m the bike is fifteen pixels of thin line in
+   * a screenful of cave and "show the bike's position clearly" is not optional.
+   */
+  overview: number;
+  /** Off-screen indicators for the uncollected apples and the flower. */
+  markers: { inset: number; alpha: number } | null;
 }
 
 export function render(
@@ -142,32 +152,81 @@ export function render(
     if (state.applesTaken[i] !== 0) continue;
     const a = level.apples[i];
     ctx.fillStyle = COL_APPLE;
-    circle(ctx, a.x, a.y, 0.16);
+    // A pixel FLOOR on the radius, not a fixed size in metres. Zoomed out to
+    // frame a 176 m level an apple is a third of a pixel and simply is not
+    // there — which would make the overview useless for the one question it
+    // most needs to answer. Above the floor this is exactly the old size.
+    circle(ctx, a.x, a.y, Math.max(0.16, 3.5 * px));
     ctx.fill();
     ctx.strokeStyle = COL_APPLE;
     ctx.globalAlpha = 0.25;
     ctx.lineWidth = px;
-    circle(ctx, a.x, a.y, PICKUP_RADIUS);
+    circle(ctx, a.x, a.y, Math.max(PICKUP_RADIUS, 7 * px));
     ctx.stroke();
     ctx.globalAlpha = 1;
   }
   const fl = level.flower;
+  const flr = Math.max(0.22, 5 * px);
   ctx.strokeStyle = COL_FLOWER;
   ctx.lineWidth = 2 * px;
   ctx.globalAlpha = state.applesLeft === 0 ? 1 : 0.35;
-  circle(ctx, fl.x, fl.y, 0.22);
+  circle(ctx, fl.x, fl.y, flr);
   ctx.stroke();
   ctx.beginPath();
-  ctx.moveTo(fl.x, fl.y - 0.22);
-  ctx.lineTo(fl.x, fl.y - 0.55);
+  ctx.moveTo(fl.x, fl.y - flr);
+  ctx.lineTo(fl.x, fl.y - flr * 2.5);
   ctx.stroke();
   ctx.globalAlpha = 1;
 
   if (opts.ghost) drawBike(ctx, opts.ghost, spec, px, 0.25, state.facing);
   drawBike(ctx, pose, spec, px, 1, state.facing);
 
+  if (opts.overview > 0) drawLocator(ctx, pose, px, opts.overview);
+
   if (opts.debug) drawContacts(ctx, world, px);
 
+  ctx.restore();
+
+  // Screen space from here down: the world transform is gone, so these are in
+  // CSS pixels and do not scale with the zoom. That is the point — an edge
+  // indicator that shrank as you zoomed out would vanish exactly when it
+  // started being useful.
+  if (opts.markers) {
+    const targets: MarkerTarget[] = [];
+    for (let i = 0; i < level.apples.length; i++) {
+      if (state.applesTaken[i] !== 0) continue;
+      targets.push({ x: level.apples[i].x, y: level.apples[i].y, kind: 'apple' });
+    }
+    // The flower only points the way once it is actually the thing to go to.
+    // Before that it is a spoiler at best and a wrong answer at worst.
+    if (state.applesLeft === 0) targets.push({ x: fl.x, y: fl.y, kind: 'flower' });
+    const list = edgeMarkers(targets, cam, cssW, cssH, { x: pose.px, y: pose.py }, opts.markers.inset);
+    drawEdgeMarkers(ctx, list, opts.markers.alpha);
+  }
+}
+
+/**
+ * Where the bike is, in SCREEN-sized pixels, so it stays findable at any zoom.
+ *
+ * A ring plus four ticks rather than a dot: a dot at this scale is
+ * indistinguishable from an apple, and the one thing this must never do is make
+ * you look in the wrong place.
+ */
+function drawLocator(ctx: CanvasRenderingContext2D, p: Pose, px: number, alpha: number): void {
+  const r = 16 * px;
+  ctx.save();
+  ctx.globalAlpha = alpha * 0.85;
+  ctx.strokeStyle = COL_HEAD;
+  ctx.lineWidth = 1.5 * px;
+  circle(ctx, p.px, p.py, r);
+  ctx.stroke();
+  ctx.globalAlpha = alpha * 0.5;
+  ctx.beginPath();
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+    ctx.moveTo(p.px + dx * r * 1.35, p.py + dy * r * 1.35);
+    ctx.lineTo(p.px + dx * r * 2.2, p.py + dy * r * 2.2);
+  }
+  ctx.stroke();
   ctx.restore();
 }
 
