@@ -23,7 +23,7 @@ import { parseLevel } from '../src/sim/level.ts';
 import type { Level } from '../src/sim/level.ts';
 import { createSim } from '../src/sim/sim.ts';
 import { buildReplay, toReplayFile, replayFileName, verifyReplay } from '../src/sim/replay.ts';
-import { probeReachability } from './_pilot.ts';
+import { probeAll } from './_pilot.ts';
 import type { Cap, Run } from './_pilot.ts';
 import { BOOT_PRESET } from '../src/client/presets.ts';
 import type { BikeSpec } from '../src/sim/spec.ts';
@@ -83,7 +83,7 @@ for (const f of args.files) {
     routes.push([[a, a + span / 6 + 2, 6]] as Cap[]);
   }
   const t0 = Date.now();
-  const r = probeReachability(lvl, BOOT_PRESET.spec, routes);
+  const r = probeAll(lvl, BOOT_PRESET.spec, routes);
   const miss = r.ever.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
   console.log((r.finished ? '==> DRIVEABLE  ' : '==> INCOMPLETE ') + f);
   console.log('    ' + lvl.name);
