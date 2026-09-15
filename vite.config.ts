@@ -13,6 +13,11 @@ export default defineConfig({
   server: {
     host: '127.0.0.1',
     port: 5173,
+    // Vite rejects requests whose Host header it does not recognise, which is a
+    // sensible default and exactly wrong for a cush-tools tunnel: the browser
+    // sends `velo.tunnel.cush.rocks` and Vite answers 403 before any of our code
+    // runs. Still bound to loopback above, so the only route in is the tunnel.
+    allowedHosts: true,
   },
   build: {
     target: 'es2022',
