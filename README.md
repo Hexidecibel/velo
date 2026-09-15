@@ -452,13 +452,13 @@ can be changed from a terminal while somebody else rides it:
 
 ```
 bin/spec                                   print the effective spec
-bin/spec set rider.inertialTransfer 0.45   set one field by dotted path
+bin/spec set rider.inertialTransferDrive 0.45   set one field by dotted path
 bin/spec set gravity 9.2
-bin/spec unset rider.inertialTransfer      drop one override
+bin/spec unset rider.inertialTransferDrive      drop one override
 bin/spec reset                             clear every override
 bin/spec load tuned.json                   apply a whole spec file
 bin/spec preset poppy                      apply one of the built-in presets
-bin/spec --paths                           list all 45 addressable fields
+bin/spec --paths                           list all 46 addressable fields
 ```
 
 Source of truth is **`data/spec.json`** (gitignored), holding a *partial*
@@ -1212,29 +1212,42 @@ The fix is to evaluate that same torque in the pivot's **accelerating** frame.
 The rider does not pull against gravity, it pulls against gravity minus the
 pivot's acceleration, and the arm already integrates exactly that pseudo-force
 one step later in the tick. Feeding the same quantity to the chassis is two
-lines, and `rider.inertialTransfer` scales it:
+lines:
 
 ```
-tq += -m*g*L*ax                  * weightTransfer      static, as before
-tq +=  m*L*(ay*acx - ax*acy)     * inertialTransfer    new
+tq += -m*g*L*ax                  * weightTransfer                   static, as before
+tq +=  m*L*(ay*acx - ax*acy)     * inertialTransferBrake | ...Drive   inertial
 ```
 
 Measured with `bin/dive` — full brake from 9 m/s with the rear wheel down, nose
--down pitch at 0.15 s and time to reach 30° nose-down:
+-down pitch at 0.15 s and time to reach 30° nose-down. Both halves swept
+together, so each row is one symmetric coefficient:
 
 | `inertialTransfer` | at 0.15 s | to −30° |
 | --- | --- | --- |
-| 0 *(the old bike)* | −17.3° | 0.211 s |
-| 0.5 | −29.3° | 0.156 s |
-| **0.6** *(default)* | **−32.5°** | **0.148 s** |
-| 1.0 *(physically honest)* | −41.5° | 0.125 s |
-| 2.0 | −54.1° | 0.109 s |
+| 0 *(the old bike)* | −16.1° | 0.233 s |
+| 0.3 | −19.8° | 0.208 s |
+| **0.6** *(default)* | **−23.4°** | **0.189 s** |
+| 1.0 *(physically honest)* | −23.2° | 0.181 s |
+| 2.0 | −32.3° | 0.152 s |
 
-It ships at 0.6 rather than the honest 1.0 for two reasons: it matches
-`weightTransfer`, and the two are literally the two halves of one quantity, so
-scaling them apart would be odd to have to explain; and sustained full brake
-already loops the bike over the front at every setting including zero, with 1.0
-getting there in two-thirds the time. It is a slider.
+It ships at 0.6 rather than the honest 1.0 because sustained full brake already
+loops the bike over the front at every setting including zero, with 1.0 getting
+there sooner still. It is a slider.
+
+**These numbers replace an earlier table that was measured on a broken rig, and
+the break is worth recording.** `bin/dive` borrowed `bin/air`'s test level,
+whose flat section ends at x = 30 — so its "run up to speed and settle" gate
+never fired, and every measurement started from the runway bail-out instead, at
+whatever attitude and whatever point in the suspension's oscillation the bike
+happened to be in. Entry *speed* was right to within 0.3 m/s, which is exactly
+why it read as a working instrument. The symptom was rows that were not monotone
+in the coefficient being swept, which no physics can produce. The rig now has
+its own 140 m runway, and because the throttle and the level-hold are both
+bang-bang controllers a cruising bike sits in a limit cycle rather than at a
+fixed point, so each row is now the **mean of 8 entries spread across more than
+one period of that cycle**, with the spread printed alongside. Averaging is not
+polish here; it is what removes the phase and leaves the input.
 
 **It is deliberately not gated on being grounded.** Braking a spinning wheel in
 mid-air puts reaction torque on the chassis and pitches it — a different
@@ -1242,6 +1255,66 @@ mechanism, also real, also a technique worth keeping. `bin/dive` reports the
 airborne row separately so the two are never conflated. A brake-input special
 case would have scored the same on the braking measurement and produced nothing
 at all on a landing, which is the half that matters more.
+
+### …and the same term lifts it, which is why there are now two of them
+
+*SIM_REV 4.* Read as pure mechanics that term is symmetric, and the symmetry was
+the problem. The same rider mass that dives the nose under braking **lifts it
+under acceleration**, so the user hit the identical slider from the other side:
+*"i'm having a hard time hitting top speed without front tire lifting"* against
+*"slamming on brake should slam down the front end"*. Every notch that tamed the
+launch wheelie took the same notch out of the brake dive. No single value
+satisfies both, because they are two ends of one slider.
+
+So it is two coefficients now — `rider.inertialTransferBrake` and
+`rider.inertialTransferDrive` — selected by the sign of the pivot's acceleration
+along the bike's forward axis. **This is an active-rider model, not a fudge.** A
+symmetric coefficient models a sack of potatoes strapped to the pivot: it reacts
+to acceleration in both directions with the same authority because it is not
+doing anything. A rider is not a sack of potatoes. Under acceleration a real
+rider shifts their weight *forward* — crouches over the bars, pulls on them —
+precisely to keep the front wheel down, and that is the most-practised habit in
+the sport; under braking they do the opposite of resisting. Two directions, two
+effective masses on the arm, and one number cannot express that. Elma's bike
+behaves like there is somebody riding it.
+
+Set the two equal and the branch selects the same number, so a matched pair is
+arithmetically the rev-3 bike.
+
+The drive side is picked off the **wheelie threshold**, which is a pure torque
+balance about the rear contact patch with inertia absent from it entirely — mass
+71 kg, CoM 0.658 m above the contact, half-wheelbase 0.6 m, so the restoring
+moment is `m*g*a` = 383 N·m against `m*a*h` plus the rider's extra `m_r*L*a`
+scaled by the coefficient. At `drive.maxTorque` 126 the front comes up above
+0.373 and stays down below it, so **0.3** is the largest round value with any
+margin — and it is the value the user had live while playing. Confirmed
+dynamically, full throttle from a standstill, time to 30° nose-up (the peak
+reaches 90° at *every* setting, so only the time discriminates):
+
+| bike | to 30° nose-up |
+| --- | --- |
+| rev 3 as shipped — mt 140, both 0.6 | 0.91 s |
+| the user's hand-tune — mt 126, both 0.45 | 1.02 s |
+| what was live — mt 126, both 0.30 | 1.10 s |
+| **rev 4 as shipped — mt 126, 0.6 / 0.30** | **1.12 s** |
+| mt 126, 0.6 / 0 | 1.48 s |
+
+Which is the split doing its job exactly: the shipped bike lifts the nose as
+reluctantly as the symmetric 0.30 the user was riding, while braking behaves
+like 0.6 — which the symmetric 0.30 could not. 23% longer to the wheelie than
+the rev-3 bike, and no brake dive given up for it.
+
+`drive.maxTorque` **126** ships with it, down from 140. That is the user's own
+hand-tune, recovered from an exported replay, and it belongs in the same change
+because the wheelie threshold moves with drive torque — the two are a pair. The
+`m1` comparison preset stays at 140 and therefore still wheelies on the same
+coefficient, which is the honest thing for a preset kept for comparison to do.
+
+One measurement gap to note: `bin/dive`'s grounded-throttle row does **not**
+show this. At 9 m/s the drive torque has already tapered against `maxWheelSpin`,
+so there is barely any acceleration left to react to and every coefficient reads
+the same. The wheelie is a low-speed phenomenon and the rig cruises. `bin/dive`
+wants a standstill-launch row; it does not have one yet.
 
 Because the same term also fires on **impacts**, timing a lean into a face now
 pays. Re-running the slope sweep, the technique-versus-naive gap in energy
@@ -1752,8 +1825,9 @@ arc primitive itself did **not** bump the rev: no existing level contains an
 arc, `levels/test01.json` hashed bit-identically across it, and no line of the
 sim changed. **Replacing the rider's rotation model did**, and so did rev 3 — the
 asymmetric suspension damping split and the rider's inertial reaction on the
-pivot, shipped together because neither ever escaped on its own. `SIM_REV` is
-now **3**, and earlier revs' code is not kept. Note what counted as a physics
+pivot, shipped together because neither ever escaped on its own. So did rev 4 —
+splitting that inertial reaction into a brake half and a drive half. `SIM_REV`
+is now **4**, and earlier revs' code is not kept. Note what counted as a physics
 change there: moving the weight-transfer line to a different point in the tick
 reordered two floating-point additions, worth ~5e-16 at frame 400 — and a
 visibly different line by frame 5000, because a bike bouncing off geometry is

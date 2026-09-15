@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Measure chassis pitch under braking and under throttle, in degrees.
 #
-#   bin/dive                       # every preset
-#   bin/dive --sweep 0,0.5,1,1.5   # sweep rider.inertialTransfer
-#   bin/dive --speed 12            # a faster entry
+#   bin/dive                             # every preset
+#   bin/dive --sweep 0,0.5,1,1.5         # both halves together (= the rev-3 bike)
+#   bin/dive --sweep-drive 0,0.3,0.45    # the launch-wheelie half alone
+#   bin/dive --sweep-brake 0,0.6,1.0     # the brake-dive half alone
+#   bin/dive --speed 12                  # a faster entry
 #
 # WHY: "slamming on the brake should slam the front end down, just like gassing
 # lifts it up" is a claim about a SYMMETRY, and a symmetry is something you can
@@ -11,6 +13,11 @@
 # the chassis; braking had no comparable path until the rider's inertial
 # reaction on the pivot existed. This prints both halves so the asymmetry is
 # visible as numbers rather than as a feeling.
+#
+# Since SIM_REV 4 the inertial reaction is TWO coefficients, brake and drive,
+# because the symmetric one made the two feels fight: every notch that tamed the
+# launch wheelie weakened the brake dive. The per-half sweeps above are how you
+# check one without disturbing the other.
 #
 # The grounded brake case is the one to judge — that is what the report was
 # about. The airborne row is a genuinely different mechanism (reaction torque

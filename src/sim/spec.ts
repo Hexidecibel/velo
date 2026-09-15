@@ -176,8 +176,10 @@ export interface BikeSpec {
      */
     weightTransfer: number;
     /**
-     * The rider's INERTIAL reaction on the pivot, scaled. This is the m*a term
-     * that the tick comment used to call the top candidate for M2.
+     * The rider's INERTIAL reaction on the pivot — the m*a term — scaled by
+     * TWO coefficients rather than one, selected by the sign of the pivot's
+     * acceleration along the bike's forward axis. See `inertialTransferDrive`
+     * below, and step.ts step 3b for where the branch is taken.
      *
      * `weightTransfer` above transfers only the rider's STATIC weight: the
      * torque about the chassis origin of a mass hanging L metres up. That makes
@@ -189,8 +191,8 @@ export interface BikeSpec {
      * frame rather than in an inertial one. The rider does not feel gravity, it
      * feels gravity MINUS the pivot's acceleration, and the arm already
      * integrates exactly that pseudo-force (see step.ts step 5). Feeding the
-     * same quantity into the chassis torque is a two-line change and it is
-     * symmetric by construction:
+     * same quantity into the chassis torque is two lines, and it produces all
+     * of this from one term:
      *
      *   brake        pivot decelerates, the rider's mass keeps going forward,
      *                and 35 kg at 1.2 g on a 0.55 m arm is ~230 N m of
@@ -202,16 +204,51 @@ export interface BikeSpec {
      *                hit" convert momentum into climb — an inertial term
      *                governs timing, a static one cannot
      *
+     * This one is the BRAKING half: the stoppie, and the one the user asked for
+     * in as many words — "slamming on brake should slam down the front end,
+     * right? just like gassing lifts up".
+     *
      * Separate from `weightTransfer` on purpose: that one is set where the user
-     * left it and the static behaviour it controls is signed off, so the new
-     * term gets its own slider and its own zero. Set this to 0 and the bike is
-     * arithmetically the rev-3 bike.
+     * left it and the static behaviour it controls is signed off, so this gets
+     * its own slider and its own zero. Set both halves to 0 and the bike is
+     * arithmetically the rev-2 bike.
      *
      * NOT gated on being grounded. Braking a spinning wheel in mid-air puts
      * reaction torque on the chassis and pitches it — a different mechanism,
      * also real, also worth keeping. Two behaviours, not one with an exception.
      */
-    inertialTransfer: number;
+    inertialTransferBrake: number;
+    /**
+     * The DRIVING half of the same term: the pivot is accelerating the way the
+     * rider is pointing, the rider's mass is left behind, and the nose lifts.
+     * The launch wheelie.
+     *
+     * WHY THIS IS A SEPARATE NUMBER, AND WHY THE ASYMMETRY IS AN ACTIVE-RIDER
+     * MODEL RATHER THAN A FUDGE. Read as pure mechanics the term is symmetric,
+     * and that symmetry was the problem: the same rider mass that dives the
+     * nose under braking lifts it under acceleration, so with one coefficient
+     * every notch that tamed the launch wheelie took the same notch out of the
+     * brake dive. The user hit exactly that wall from both sides — "i'm having
+     * a hard time hitting top speed without front tire lifting" against
+     * "slamming on brake should slam down the front end" — and no single value
+     * satisfies both, because they are the two ends of one slider.
+     *
+     * A symmetric coefficient models a sack of potatoes strapped to the pivot:
+     * it reacts to acceleration in both directions with the same authority
+     * because it is not doing anything. A rider is not a sack of potatoes.
+     * Under acceleration a real rider shifts their weight FORWARD — crouches
+     * over the bars, pulls on them — precisely to keep the front wheel down,
+     * and that is the most-practised habit in the sport. Under braking they do
+     * not resist at all: they let the deceleration throw them forward and push
+     * into the bars, which loads the front further. So the two directions
+     * genuinely present different effective masses on the arm, and one number
+     * cannot express that. Elma's bike behaves like there is somebody riding
+     * it; this pair is what decides whether ours does.
+     *
+     * Set the two equal and the arithmetic is exactly the rev-3 single
+     * coefficient — the branch selects the same number.
+     */
+    inertialTransferDrive: number;
   };
 
   damping: {
@@ -292,9 +329,11 @@ export const DEFAULT_SPEC: BikeSpec = deepFreeze({
     // presets.ts, which is where these numbers are actually set together.
     attitudeTorque: 340,
     weightTransfer: 1,
-    // Zero in DEFAULT_SPEC, which is the plan verbatim and has no such term.
-    // The presets turn it on; see presets.ts for the measured numbers.
-    inertialTransfer: 0,
+    // Both zero in DEFAULT_SPEC, which is the plan verbatim and has no such
+    // term at all. The presets turn them on; see presets.ts for the measured
+    // numbers and for why the two halves do not match.
+    inertialTransferBrake: 0,
+    inertialTransferDrive: 0,
   },
 
   damping: {
@@ -381,7 +420,8 @@ export function specHash(s: BikeSpec): string {
   h.num(s.rider.servoMaxTorque);
   h.num(s.rider.attitudeTorque);
   h.num(s.rider.weightTransfer);
-  h.num(s.rider.inertialTransfer);
+  h.num(s.rider.inertialTransferBrake);
+  h.num(s.rider.inertialTransferDrive);
   h.num(s.damping.linear);
   h.num(s.damping.angular);
   return h.digest();
@@ -482,7 +522,8 @@ export function parseSpec(raw: unknown): BikeSpec {
       servoMaxTorque: num(rider.servoMaxTorque, 'spec.rider.servoMaxTorque'),
       attitudeTorque: num(rider.attitudeTorque, 'spec.rider.attitudeTorque'),
       weightTransfer: num(rider.weightTransfer, 'spec.rider.weightTransfer'),
-      inertialTransfer: num(rider.inertialTransfer, 'spec.rider.inertialTransfer'),
+      inertialTransferBrake: num(rider.inertialTransferBrake, 'spec.rider.inertialTransferBrake'),
+      inertialTransferDrive: num(rider.inertialTransferDrive, 'spec.rider.inertialTransferDrive'),
     },
     damping: {
       linear: num(damping.linear, 'spec.damping.linear'),

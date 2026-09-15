@@ -109,31 +109,99 @@ function m1Candidate(): BikeSpec {
   // is a slider; 1.0 is the old behaviour exactly.
   s.rider.weightTransfer = 0.6;
 
-  // 0 -> 0.6. The rider's INERTIAL reaction on the pivot, new in SIM_REV 3 and
-  // the fix for "slamming on the brake should slam down the front end, right?
-  // just like gassing lifts up". They were right and the asymmetry was real:
-  // drive torque is reacted straight onto the chassis so gassing lifted the
-  // front, while braking had no comparable path at all and the nose just did
-  // not dive.
+  // 0 -> 0.6 braking, 0.3 driving. The rider's INERTIAL reaction on the pivot,
+  // and TWO numbers since SIM_REV 4 because one could not do the job.
   //
-  // Measured with bin/dive, full brake from 9 m/s with the rear wheel down,
-  // nose-down pitch at 0.15 s and time to reach -30 degrees:
+  // It arrived in rev 3 as a single coefficient, as the fix for "slamming on
+  // the brake should slam down the front end, right? just like gassing lifts
+  // up". They were right and that asymmetry was real: drive torque is reacted
+  // straight onto the chassis so gassing lifted the front, while braking had no
+  // comparable path at all and the nose just did not dive.
   //
-  //   inertialTransfer 0      -17.3 deg    0.211 s     (the old bike)
-  //   inertialTransfer 0.5    -29.3 deg    0.156 s
-  //   inertialTransfer 0.6    -32.5 deg    0.148 s     <- here
-  //   inertialTransfer 1.0    -41.5 deg    0.125 s     (physically honest)
-  //   inertialTransfer 2.0    -54.1 deg    0.109 s
+  // What the single coefficient then bought was a second, worse deadlock. The
+  // term is symmetric read as pure mechanics, so the same rider mass that dives
+  // the nose under braking LIFTS it under acceleration — and the user hit that
+  // from the other side: "i'm having a hard time hitting top speed without
+  // front tire lifting". Every notch that tamed the launch wheelie took the
+  // same notch out of the brake dive they liked. The split is not a fudge to
+  // escape that; it is a more honest rider. See src/sim/spec.ts and step.ts
+  // step 3b for the active-rider argument in full.
   //
-  // 0.6 rather than the honest 1.0 for two reasons. It matches
-  // `weightTransfer` above, and the two are literally the two halves of one
-  // quantity — cross(L*u, m*(g - a_pivot)) — so scaling them apart would be an
-  // odd thing to have to explain. And sustained full brake already loops the
-  // bike over the front at every setting including zero; 1.0 gets there in
-  // two-thirds the time, which is a bigger change to a feel the user has
-  // already signed off on than the report asked for. It is a slider, and 1.0
-  // is one drag away.
-  s.rider.inertialTransfer = 0.6;
+  // BRAKE SIDE, 0.6. Where the user signed it off, and it is not moved here:
+  // nothing about braking changed in rev 4.
+  //
+  // RE-MEASURED, and the old table in this comment is gone rather than kept,
+  // because it was taken on a broken rig. bin/dive borrowed bin/air's level,
+  // whose flat section ends at x = 30, so its "run up and settle" never
+  // settled — every row started from wherever the bike happened to be when it
+  // ran out of runway. See bin/_dive.ts. The rig now has its own 140 m runway
+  // and averages 8 entries across the run-up's limit cycle, and its rows are
+  // monotone in the coefficient for the first time.
+  //
+  // bin/dive --sweep, full brake from 9 m/s with the rear wheel down. Both
+  // halves move together, so every row is the old single coefficient:
+  //
+  //                      at 0.15 s   to -30 deg
+  //   inertialTransfer 0    -16.1       0.233 s   (the rev-2 bike)
+  //   inertialTransfer 0.3  -19.8       0.208 s
+  //   inertialTransfer 0.45 -20.4       0.206 s
+  //   inertialTransfer 0.6  -23.4       0.189 s   <- the brake side
+  //   inertialTransfer 1.0  -23.2       0.181 s   (physically honest)
+  //   inertialTransfer 2.0  -32.3       0.152 s
+  //
+  // 0.6 rather than the honest 1.0 because sustained full brake already loops
+  // the bike over the front at every setting including zero; 1.0 gets there
+  // sooner still, which is a bigger change to a signed-off feel than the report
+  // asked for. It is a slider, and 1.0 is one drag away.
+  //
+  // DRIVE SIDE, 0.3. Picked off the wheelie threshold rather than off a feel,
+  // because the threshold is a pure torque balance about the rear contact patch
+  // and has a closed form. Inertia is absent from it entirely:
+  //
+  //   mass 71 kg, CoM (0, 0.258), half-wheelbase 0.6 m, CoM 0.658 m above the
+  //   contact, so the restoring moment is m*g*a = 383 N m. The nose-up moment
+  //   is the whole bike's d'Alembert reaction at CoM height, m*a*h, plus the
+  //   rider's extra m_r*L*a scaled by this coefficient.
+  //
+  //   at drive.maxTorque 126 (F = 504 N, accel 7.1 m/s^2):
+  //     drive 0.45   nose-up 393   LIFTS by 10     the user's own hand-tune
+  //     drive 0.30   nose-up 373   planted by 11   <- here
+  //     drive 0      nose-up 332   planted by 51
+  //
+  // So the front comes up above 0.373 and stays down below it. 0.3 is the
+  // largest round value on the planted side with any margin at all, which makes
+  // it the setting that keeps the most throttle-lift feel while still answering
+  // the complaint — and it is the value the user had live on data/spec.json
+  // while playing, so it is the one they have actually ridden. It is not a
+  // claim about what they will settle on: both halves are on the panel and the
+  // brake side is untouched, which is the whole point of the split.
+  //
+  // CONFIRMED DYNAMICALLY, because the threshold above is a static balance and
+  // the complaint is about a sustained hold. Full throttle from a standstill on
+  // flat ground, time for the chassis to reach 30 degrees nose-up (it reaches
+  // 90 eventually at EVERY setting, so the peak measures the loop and not the
+  // wheelie — the time to get there is the number that discriminates):
+  //
+  //   mt 140, both 0.6    0.91 s     the rev-3 bike as shipped
+  //   mt 126, both 0.45   1.02 s     the user's own hand-tune
+  //   mt 126, both 0.30   1.10 s     what was live on data/spec.json
+  //   mt 126, 0.6 / 0.30  1.12 s  <- here
+  //   mt 126, 0.6 / 0.45  1.03 s
+  //   mt 126, 0.6 / 0      1.48 s
+  //
+  // Which is the split doing exactly its job: the shipped bike lifts the nose
+  // as reluctantly as the symmetric 0.30 the user was riding — 1.12 s against
+  // 1.10 s — while braking behaves like 0.6, which the symmetric 0.30 could
+  // not. 23% longer to the wheelie than the rev-3 bike, and no brake dive
+  // given up for it.
+  //
+  // bin/dive's grounded-throttle row is NOT where this shows: at 9 m/s the
+  // drive torque has already tapered against maxWheelSpin, so there is barely
+  // any acceleration left to react to and every coefficient reads the same. The
+  // wheelie is a low-speed phenomenon and the rig cruises. Worth giving bin/dive
+  // a standstill-launch row; it does not have one yet.
+  s.rider.inertialTransferBrake = 0.6;
+  s.rider.inertialTransferDrive = 0.3;
 
   return s;
 }
@@ -167,6 +235,18 @@ function m1Candidate(): BikeSpec {
  *                              they wanted. Nothing in the suspension touches
  *                              this, which is why the earlier hunt through the
  *                              damping sliders could never have found it.
+ *
+ * A fourth arrived later, by the same route — driven by hand, recovered from an
+ * exported replay rather than reasoned to:
+ *
+ *   maxTorque    140 -> 126    Their number. It is also what the drive-side
+ *                              inertial coefficient above was chosen against:
+ *                              the wheelie threshold is a torque balance and it
+ *                              moves with drive torque, so these two are a
+ *                              pair. At 140 the front lifts at full throttle
+ *                              above drive 0.096, which is why m1Candidate —
+ *                              still at 140 — wheelies on the same coefficient
+ *                              and is left that way, being a comparison preset.
  */
 function handTuned(): BikeSpec {
   const s = m1Candidate();
@@ -174,6 +254,7 @@ function handTuned(): BikeSpec {
   s.suspension.compressionDamping = 320;
   s.suspension.reboundDamping = 320;
   s.gravity = 9;
+  s.drive.maxTorque = 126;
   return s;
 }
 

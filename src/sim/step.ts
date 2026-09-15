@@ -286,8 +286,9 @@ export function stepTick(w: World, s: SimState, mask: number): void {
   //     a spin it is a wobble, not a brake — which is why it is scaled down to
   //     flavour and `attitudeTorque` carries the rotation authority.
   //
-  //   INERTIAL, scaled by `inertialTransfer` — tau = cross(L*u, -m*a_pivot).
-  //     The term the old comment here called the top M2 candidate. Brake and
+  //   INERTIAL, scaled by `inertialTransferBrake` / `inertialTransferDrive` —
+  //     tau = cross(L*u, -m*a_pivot), with the coefficient chosen by the SIGN
+  //     of the pivot's acceleration along the bike's forward axis. Brake and
   //     the pivot decelerates while 35 kg of rider keeps going: that is the
   //     stoppie, and it was missing entirely. Gas and it mirrors. Land and the
   //     pivot decelerates upward, so the rider's weight lands with the bike.
@@ -296,10 +297,36 @@ export function stepTick(w: World, s: SimState, mask: number): void {
   //     pointing, and unlike a brake-input special case it is one honest term
   //     that happens to produce all of those behaviours.
   //
+  //     THE ASYMMETRY IS AN ACTIVE-RIDER MODEL, NOT A FUDGE, and a future
+  //     reader finding an asymmetric physical term with no explanation would be
+  //     right to assume it is a bug, so: read as pure mechanics this term is
+  //     symmetric, and the symmetry is exactly the problem. The same mass that
+  //     dives the nose under braking lifts it under acceleration, so with one
+  //     coefficient every notch that tames the launch wheelie takes the same
+  //     notch out of the brake dive. One number models a sack of potatoes
+  //     strapped to the pivot, reacting equally both ways because it is not
+  //     doing anything. A real rider shifts their weight FORWARD under
+  //     acceleration — crouches over the bars, pulls on them — precisely to
+  //     keep the front down, and under braking does the opposite of resisting.
+  //     Two directions, two effective masses. Elma's bike behaves like there is
+  //     somebody riding it. Set the two coefficients equal and this is
+  //     arithmetically the rev-3 term: the branch selects the same number.
+  //
+  //     On a landing the forward-axis acceleration is near zero and its sign
+  //     can alternate tick to tick while the term itself is large. That is
+  //     deliberate and harmless: at 512 Hz the chassis inertia integrates the
+  //     alternation into the mean of the two coefficients rather than buzzing.
+  //
   // Together they are exactly `cross(L*u, m*(g_vec - a_pivot))`, which is the
   // same quantity the arm itself integrates in step 5 — see `ex`/`ey` there.
+  //
+  // The rotor (ox, oy) IS the chassis's local +x axis in world space and
+  // `facing` says which end of it is the nose, so `afwd` is the acceleration
+  // the rider has to brace against: positive is the way they are pointing.
+  const afwd = (acx * s.ox + acy * s.oy) * s.facing;
+  const itk = afwd < 0 ? sp.rider.inertialTransferBrake : sp.rider.inertialTransferDrive;
   tq += -sp.rider.mass * sp.gravity * sp.rider.armLength * s.ax * sp.rider.weightTransfer;
-  tq += sp.rider.mass * sp.rider.armLength * (s.ay * acx - s.ax * acy) * sp.rider.inertialTransfer;
+  tq += sp.rider.mass * sp.rider.armLength * (s.ay * acx - s.ax * acy) * itk;
 
   // --- 4. integrate velocities ------------------------------------------
   s.vx += acx * DT;

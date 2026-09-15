@@ -116,7 +116,7 @@ const BIKE_GROUPS: Group<BikeSpec>[] = [
   },
   {
     title: 'Volt authority',
-    why: 'Attitude torque is the big one — it is the primary rotation control and it works identically upright, inverted and spinning. Weight transfer and inertial transfer are the two halves of the rider\'s load on the pivot: one static, one from acceleration. The pendulum below them moves the rider and therefore the HEAD, which is what makes volting under a low ceiling lethal.',
+    why: 'Attitude torque is the big one — it is the primary rotation control and it works identically upright, inverted and spinning. Weight transfer and the two inertial transfers are the rider\'s load on the pivot: one static, and one from acceleration split by its SIGN — a real rider shifts forward under power to keep the front down, so the nose-lift half is not the nose-dive half. The pendulum below them moves the rider and therefore the HEAD, which is what makes volting under a low ceiling lethal.',
     fields: [
       {
         label: 'attitude torque', paths: ['rider.attitudeTorque'], min: 0, max: 900, step: 5,
@@ -129,9 +129,14 @@ const BIKE_GROUPS: Group<BikeSpec>[] = [
         get: (s) => s.rider.weightTransfer, set: (s, v) => { s.rider.weightTransfer = v; },
       },
       {
-        label: 'inertial transfer', paths: ['rider.inertialTransfer'], min: 0, max: 3, step: 0.05,
-        hint: 'BRAKE DIVE. The rider\'s mass reacting to the pivot\'s acceleration — brake and the nose slams down, gas and it lifts, land and the weight lands with you. 0 is the old bike with no dive at all. Full brake at 9 m/s, nose-down at 0.15 s: 0 -> 17 deg, 0.6 -> 33, 1.0 -> 42.',
-        get: (s) => s.rider.inertialTransfer, set: (s, v) => { s.rider.inertialTransfer = v; },
+        label: 'inertial transfer — brake', paths: ['rider.inertialTransferBrake'], min: 0, max: 3, step: 0.05,
+        hint: 'BRAKE DIVE. The rider\'s mass reacting to the pivot DECELERATING — brake and the nose slams down, land and the weight lands with you. 0 is the old bike with no dive at all. Full brake at 9 m/s, nose-down at 0.15 s: 0 -> 17 deg, 0.6 -> 33, 1.0 -> 42.',
+        get: (s) => s.rider.inertialTransferBrake, set: (s, v) => { s.rider.inertialTransferBrake = v; },
+      },
+      {
+        label: 'inertial transfer — drive', paths: ['rider.inertialTransferDrive'], min: 0, max: 3, step: 0.05,
+        hint: 'LAUNCH WHEELIE. The same mass reacting to the pivot ACCELERATING, and a separate number because a real rider shifts their weight forward to keep the front down. Above 0.37 at maxTorque 126 the front lifts at full throttle; match it to the brake slider for the symmetric rev-3 bike.',
+        get: (s) => s.rider.inertialTransferDrive, set: (s, v) => { s.rider.inertialTransferDrive = v; },
       },
       {
         label: 'lean angle (deg)', paths: ['rider.leanL.x', 'rider.leanL.y', 'rider.leanR.x', 'rider.leanR.y'], min: 0, max: 90, step: 0.5,

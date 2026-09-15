@@ -22,7 +22,7 @@ import type { Replay, VerifyResult } from './replay.ts';
 import type { Level } from './level.ts';
 import type { BikeSpec } from './spec.ts';
 
-export const SIM_REV = 3;
+export const SIM_REV = 4;
 
 export interface Engine {
   rev: number;
@@ -36,6 +36,29 @@ export interface Engine {
  * The changelog, newest first. Old revs' code is NOT kept: through milestone 1
  * the rev bumps freely and times reset, which is the whole reason freezing revs
  * into directories is a launch-time job rather than a today job.
+ *
+ *   4  The rider's inertial reaction on the pivot became ASYMMETRIC:
+ *      `rider.inertialTransfer` split into `inertialTransferBrake` and
+ *      `inertialTransferDrive`, selected by the sign of the pivot's
+ *      acceleration along the bike's forward axis.
+ *
+ *      Read as pure mechanics the rev-3 term is symmetric, and that symmetry
+ *      was a tuning deadlock: the same rider mass that dives the nose under
+ *      braking lifts it under acceleration, so every notch that tamed the
+ *      launch wheelie weakened the brake dive the user had signed off on. The
+ *      split is an ACTIVE-RIDER model — a real rider shifts their weight
+ *      forward under acceleration precisely to keep the front down, which one
+ *      coefficient cannot express. See step.ts step 3b for the full reasoning.
+ *      Set the two equal and the branch selects the same number, so rev 4 with
+ *      matched coefficients is arithmetically rev 3.
+ *
+ *      `drive.maxTorque` on the shipped preset also came down 140 -> 126, the
+ *      user's own hand-tune, and the two changes ship together because the
+ *      drive-side coefficient was chosen against that torque.
+ *
+ *      `specHash` moved: one spec field became two. Rev 3 replays do not
+ *      verify here and cannot be made to — which is the versioning scheme
+ *      working, not a fault.
  *
  *   3  Two changes, shipped together because neither ever escaped on its own.
  *
@@ -58,7 +81,7 @@ export interface Engine {
  *      gravity weight transfer to a scaled flavour term.
  */
 const ENGINE_CURRENT: Engine = {
-  rev: 3,
+  rev: 4,
   dt: DT,
   ticksPerFrame: TICKS_PER_FRAME,
   createSim,
@@ -67,7 +90,7 @@ const ENGINE_CURRENT: Engine = {
 
 export function getEngine(rev: number): Engine {
   switch (rev) {
-    case 3:
+    case 4:
       return ENGINE_CURRENT;
     default:
       throw new Error(`unknown SIM_REV ${rev}; this build knows ${SIM_REV}`);

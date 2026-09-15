@@ -22,7 +22,8 @@ describe('spec paths', () => {
     const paths = specPaths();
     expect(paths).toContain('gravity');
     expect(paths).toContain('suspension.reboundDamping');
-    expect(paths).toContain('rider.inertialTransfer');
+    expect(paths).toContain('rider.inertialTransferBrake');
+    expect(paths).toContain('rider.inertialTransferDrive');
     // Array elements are addressed by index, with no bracket syntax to quote
     // in a shell.
     expect(paths).toContain('wheel.anchors.1.x');
@@ -114,10 +115,10 @@ describe('diffSpec', () => {
     const a = cloneSpec(DEFAULT_SPEC);
     const b = cloneSpec(DEFAULT_SPEC);
     b.gravity = 9.2;
-    b.rider.inertialTransfer = 0.45;
+    b.rider.inertialTransferBrake = 0.45;
     expect(diffSpec(a, b)).toEqual([
       { path: 'gravity', from: 10, to: 9.2 },
-      { path: 'rider.inertialTransfer', from: 0, to: 0.45 },
+      { path: 'rider.inertialTransferBrake', from: 0, to: 0.45 },
     ]);
     expect(diffSpec(a, a)).toEqual([]);
   });
@@ -147,7 +148,7 @@ describe('what an override CANNOT reach', () => {
     // silently, because it prints the drifted value quite happily.
     const base = cloneSpec(DEFAULT_SPEC);
     const before = specHash(base);
-    const r = applySpecOverride(base, { gravity: 1, rider: { inertialTransfer: 2 }, wheel: { anchors: [{ x: -9 }, {}] } });
+    const r = applySpecOverride(base, { gravity: 1, rider: { inertialTransferBrake: 2 }, wheel: { anchors: [{ x: -9 }, {}] } });
     expect(specHash(base)).toBe(before);
     expect(specHash(r.spec)).not.toBe(before);
     // ...including on the paths it actually wrote.

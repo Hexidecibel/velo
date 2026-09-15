@@ -416,7 +416,7 @@ describe("the rider's inertial reaction on the pivot", () => {
    */
   function brakeDive(inertialTransfer: number): number {
     const s = rideable();
-    s.rider.inertialTransfer = inertialTransfer;
+    s.rider.inertialTransferBrake = inertialTransfer;
     const sim = createSim(FLAT, s);
     // Run up holding the chassis level. Without the lean the bike wheelies to
     // 40 degrees on the way to speed and the brake measurement starts from a
@@ -438,8 +438,9 @@ describe("the rider's inertial reaction on the pivot", () => {
     return worst;
   }
 
-  it('is off at zero in DEFAULT_SPEC — rev 3 at 0 is the rev 2 bike', () => {
-    expect(DEFAULT_SPEC.rider.inertialTransfer).toBe(0);
+  it('is off at zero in DEFAULT_SPEC — rev 4 at 0 is the rev 2 bike', () => {
+    expect(DEFAULT_SPEC.rider.inertialTransferBrake).toBe(0);
+    expect(DEFAULT_SPEC.rider.inertialTransferDrive).toBe(0);
   });
 
   it('dives the nose under braking, and more of it with a bigger coefficient', () => {
@@ -465,7 +466,11 @@ describe("the rider's inertial reaction on the pivot", () => {
     // above and produce exactly nothing here.
     const spin = (it: number): number => {
       const s = rideable();
-      s.rider.inertialTransfer = it;
+      // BOTH halves, so this is arithmetically the rev-3 single coefficient and
+      // the test measures the term rather than which side of the branch a
+      // landing happens to fall on.
+      s.rider.inertialTransferBrake = it;
+      s.rider.inertialTransferDrive = it;
       const sim = createSim(FLAT, s);
       sim.state.py += 2;
       for (let i = 0; i < 2; i++) sim.state.wy[i] += 2;
@@ -477,5 +482,66 @@ describe("the rider's inertial reaction on the pivot", () => {
       return Math.abs(worst);
     };
     expect(spin(1)).toBeGreaterThan(spin(0) * 1.02);
+  });
+
+  /** The brake rig again, but with BOTH halves under the caller's control. */
+  function brakeDiveWith(brake: number, drive: number): number {
+    const s = rideable();
+    s.rider.inertialTransferBrake = brake;
+    s.rider.inertialTransferDrive = drive;
+    const sim = createSim(FLAT, s);
+    for (let f = 0; f < 128 * 6; f++) {
+      let m: number = IN_THROTTLE;
+      const err = sim.state.oy + sim.state.w * 0.18;
+      if (err > 0.02) m |= IN_LEAN_R;
+      else if (err < -0.02) m |= IN_LEAN_L;
+      sim.advance(m);
+    }
+    let worst = sim.state.oy;
+    for (let f = 0; f < 20; f++) {
+      sim.advance(IN_BRAKE);
+      if (sim.state.oy < worst) worst = sim.state.oy;
+    }
+    return worst;
+  }
+
+  /**
+   * Hold the throttle from a standstill on flat ground and report the most
+   * nose-UP the chassis got. The mirror of `brakeDive`, and the measurement the
+   * drive half exists for: "i'm having a hard time hitting top speed without
+   * front tire lifting".
+   */
+  function throttleLift(drive: number, brake: number): number {
+    const s = rideable();
+    s.rider.inertialTransferBrake = brake;
+    s.rider.inertialTransferDrive = drive;
+    const sim = createSim(FLAT, s);
+    let best = 0;
+    // One second exactly. Longer saturates: hold the throttle for two and the
+    // bike eventually loops at every setting including zero, so `oy` pins at 1
+    // and the measurement stops measuring.
+    for (let f = 0; f < 128; f++) {
+      sim.advance(IN_THROTTLE);
+      if (sim.state.oy > best) best = sim.state.oy;
+      if (sim.state.dead) break;
+    }
+    return best;
+  }
+
+  it('lifts the nose more the bigger the DRIVE half is', () => {
+    // Monotone in the half that governs acceleration, which is what makes it a
+    // usable lever on the launch wheelie.
+    expect(throttleLift(1, 0.6)).toBeGreaterThan(throttleLift(0.3, 0.6));
+    expect(throttleLift(0.3, 0.6)).toBeGreaterThan(throttleLift(0, 0.6));
+  });
+
+  it('the two halves act on OPPOSITE situations — that is the whole of rev 4', () => {
+    // The asymmetry, asserted from both ends. A brake-heavy bike dives harder
+    // under braking than a drive-heavy one; a drive-heavy bike lifts harder
+    // under throttle than a brake-heavy one. With a single symmetric
+    // coefficient neither comparison could come out this way, because the same
+    // number would be doing both jobs.
+    expect(brakeDiveWith(1, 0)).toBeLessThan(brakeDiveWith(0, 1));
+    expect(throttleLift(1, 0)).toBeGreaterThan(throttleLift(0, 1));
   });
 });
