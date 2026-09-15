@@ -490,3 +490,146 @@ export function parseSpec(raw: unknown): BikeSpec {
     },
   };
 }
+
+// --- dotted paths ------------------------------------------------------------
+//
+// A BikeSpec is a nested object of numbers, and three separate things now need
+// to talk about ONE of those numbers by name: `bin/spec set gravity 9.2`, the
+// override file on disk, and the panel row that has to grey itself out because
+// something else is driving that field. A dotted path is the obvious shared
+// vocabulary, and enumerating the legal ones from the spec itself rather than
+// from a hand-written list means a field added to BikeSpec is addressable the
+// moment it exists — a list you have to remember to update is a list that is
+// wrong.
+//
+// Array elements are addressed by index: `wheel.anchors.0.x`,
+// `chassis.colliders.1.r`. That is uniform with object keys and needs no
+// bracket syntax to parse or to quote in a shell.
+//
+// Deliberately NOT part of `specHash`: these are an addressing scheme, not
+// state. Nothing here can change what the sim computes.
+
+function walkPaths(node: unknown, prefix: string, out: string[]): void {
+  if (typeof node === 'number') {
+    out.push(prefix);
+    return;
+  }
+  if (Array.isArray(node)) {
+    node.forEach((v, i) => walkPaths(v, prefix ? `${prefix}.${i}` : String(i), out));
+    return;
+  }
+  if (node && typeof node === 'object') {
+    for (const k of Object.keys(node as object)) {
+      walkPaths((node as Record<string, unknown>)[k], prefix ? `${prefix}.${k}` : k, out);
+    }
+  }
+}
+
+/**
+ * Every addressable numeric field, in declaration order. Derived from
+ * DEFAULT_SPEC, so it is by construction the complete and current set.
+ */
+export function specPaths(): string[] {
+  const out: string[] = [];
+  walkPaths(DEFAULT_SPEC, '', out);
+  return out;
+}
+
+/** The value at a dotted path, or undefined if the path does not name a number. */
+export function getSpecPath(spec: BikeSpec, path: string): number | undefined {
+  let node: unknown = spec;
+  for (const seg of path.split('.')) {
+    if (node === null || typeof node !== 'object') return undefined;
+    node = (node as Record<string, unknown>)[seg];
+  }
+  return typeof node === 'number' ? node : undefined;
+}
+
+/**
+ * Write a value at a dotted path. Returns false — rather than creating the
+ * path — when it does not already name a number on the spec.
+ *
+ * Refusing to create is the important half. `bin/spec set rider.intertialTransfer 1`
+ * with the typo left in would otherwise write a field nothing reads, report
+ * success, and leave somebody wondering why the bike did not change.
+ */
+export function setSpecPath(spec: BikeSpec, path: string, value: number): boolean {
+  if (!Number.isFinite(value)) return false;
+  const segs = path.split('.');
+  let node: unknown = spec;
+  for (let i = 0; i < segs.length - 1; i++) {
+    if (node === null || typeof node !== 'object') return false;
+    node = (node as Record<string, unknown>)[segs[i]];
+  }
+  const last = segs[segs.length - 1];
+  if (node === null || typeof node !== 'object') return false;
+  const target = node as Record<string, unknown>;
+  if (typeof target[last] !== 'number') return false;
+  target[last] = value;
+  return true;
+}
+
+export interface SpecChange {
+  path: string;
+  from: number;
+  to: number;
+}
+
+/**
+ * Every numeric field where two specs disagree. This is what the client turns
+ * into "gravity 9 → 9.2" when a spec arrives from somewhere else mid-session:
+ * a bike that silently changes under a player who is concentrating is the worst
+ * possible outcome, because they conclude they have lost their touch.
+ */
+export function diffSpec(a: BikeSpec, b: BikeSpec): SpecChange[] {
+  const out: SpecChange[] = [];
+  for (const p of specPaths()) {
+    const from = getSpecPath(a, p);
+    const to = getSpecPath(b, p);
+    if (from !== undefined && to !== undefined && from !== to) out.push({ path: p, from, to });
+  }
+  return out;
+}
+
+/**
+ * Layer a partial override over a base spec, returning a NEW spec plus the
+ * paths that were actually applied.
+ *
+ * `override` is a partial BikeSpec-shaped object — the same shape a whole spec
+ * has, with any subset of the fields — so a file written by hand, by
+ * `bin/spec set`, or by dumping a complete tuned spec all parse the same way.
+ * Unknown paths are reported rather than applied; the caller decides whether
+ * that is a warning or an error, because a file written by a newer build with
+ * a field this one has not got is a very different situation from a typo on a
+ * command line.
+ */
+export function applySpecOverride(
+  base: BikeSpec,
+  override: unknown,
+): { spec: BikeSpec; applied: string[]; unknown: string[] } {
+  const spec = cloneSpec(base);
+  const applied: string[] = [];
+  const unknownPaths: string[] = [];
+  const flat: { path: string; value: unknown }[] = [];
+
+  const flatten = (node: unknown, prefix: string): void => {
+    if (node === null || typeof node !== 'object') {
+      flat.push({ path: prefix, value: node });
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach((v, i) => flatten(v, prefix ? `${prefix}.${i}` : String(i)));
+      return;
+    }
+    for (const k of Object.keys(node as object)) {
+      flatten((node as Record<string, unknown>)[k], prefix ? `${prefix}.${k}` : k);
+    }
+  };
+  if (override && typeof override === 'object') flatten(override, '');
+
+  for (const { path, value } of flat) {
+    if (typeof value === 'number' && setSpecPath(spec, path, value)) applied.push(path);
+    else unknownPaths.push(path);
+  }
+  return { spec, applied, unknown: unknownPaths };
+}

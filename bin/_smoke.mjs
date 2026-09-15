@@ -19,8 +19,18 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DIST = join(ROOT, 'dist');
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.map': 'application/json' };
 
+// The live-tune override the page will see. Served from memory rather than out
+// of data/spec.json, so this check never touches a file somebody may be halfway
+// through tuning with.
+let liveSpec = { version: 'none', present: false, override: {}, error: null };
+
 const serve = createServer(async (req, res) => {
   const raw = decodeURIComponent((req.url || '/').split('?')[0]);
+  if (raw === '/api/spec') {
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(JSON.stringify(liveSpec));
+    return;
+  }
   const rel = normalize(raw === '/' ? '/index.html' : raw).replace(/^(\.\.[/\\])+/, '');
   try {
     const body = await readFile(join(DIST, rel));
@@ -169,6 +179,54 @@ try {
     );
   }
   console.log(`    cross-engine: chrome === node over ${a.frames} frames / ${a.ticks} ticks / ${a.runs + 1} runs, final ${a.final}`);
+
+  // Live tune, end to end. LAST, because applying an override restarts the
+  // attempt and would throw away the banked replay the checks above need.
+  //
+  // Every part of this is fine in isolation and useless if the poll never
+  // fires, so the poll, the layering, the restart, the toast and the panel's
+  // read-only rows are asserted together. It has to be switched ON first: a
+  // production build defaults it off, which is the intended behaviour and is
+  // itself worth asserting.
+  if ((await evalIn(cdp, `window.velo.liveTune.enabled`)) !== false) {
+    throw new Error('live tune should default OFF in a production build');
+  }
+  await evalIn(cdp, `(window.velo.liveTune.setEnabled(true), true)`);
+  const hashBefore = await evalIn(cdp, `window.velo.specHash()`);
+  const tickBefore = await evalIn(cdp, `window.velo.sim.state.tick`);
+  liveSpec = { version: 'v1', present: true, override: { gravity: 4.25 }, error: null };
+  await evalIn(cdp, `(window.velo.liveTune.poke(), true)`);
+  await new Promise((r) => setTimeout(r, 600));
+  const live = await evalIn(cdp, `
+    (() => ({
+      gravity: window.velo.spec.gravity,
+      hash: window.velo.specHash(),
+      held: [...window.velo.liveTune.heldPaths],
+      toast: (document.getElementById('toast').textContent || ''),
+      greyed: document.querySelectorAll('.row.remote-held').length,
+      tick: window.velo.sim.state.tick,
+    }))()
+  `);
+  console.log('    live tune: ' + JSON.stringify(live));
+  if (live.gravity !== 4.25) throw new Error(`live tune did not apply (gravity=${live.gravity})`);
+  if (live.hash === hashBefore) throw new Error('live tune applied but the spec hash did not move');
+  if (!live.held.includes('gravity')) throw new Error(`gravity not reported as held (${live.held})`);
+  if (!live.toast.includes('gravity')) throw new Error(`no toast naming the change (got "${live.toast}")`);
+  if (live.greyed < 1) throw new Error('the held row was not greyed out in the panel');
+  // The tick going BACKWARDS is the restart. An absolute threshold would be
+  // wrong: the loop keeps running during the poll, so a fresh attempt is
+  // already a few hundred ticks old by the time this reads it.
+  if (live.tick >= tickBefore) {
+    throw new Error(`live tune did not restart the attempt (tick ${tickBefore} -> ${live.tick})`);
+  }
+
+  // ...and clearing it hands the field back rather than freezing the last value.
+  liveSpec = { version: 'v2', present: false, override: {}, error: null };
+  await evalIn(cdp, `(window.velo.liveTune.poke(), true)`);
+  await new Promise((r) => setTimeout(r, 600));
+  const cleared = await evalIn(cdp, `({ gravity: window.velo.spec.gravity, held: [...window.velo.liveTune.heldPaths] })`);
+  if (cleared.gravity === 4.25) throw new Error('clearing the override left the remote value in place');
+  if (cleared.held.length !== 0) throw new Error(`fields still held after a clear (${cleared.held})`);
 
   cdp.close();
 } catch (e) {

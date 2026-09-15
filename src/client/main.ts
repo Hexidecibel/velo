@@ -7,6 +7,7 @@ import { cloneSpec, parseSpec, specHash } from '@/sim/spec.ts';
 import type { BikeSpec } from '@/sim/spec.ts';
 import { copyState } from '@/sim/step.ts';
 import type { SimState } from '@/sim/step.ts';
+import { applySpecOverride, diffSpec } from '@/sim/spec.ts';
 import { checkReplayCompat, decodeInputs, replaySpec, ticksToSeconds } from '@/sim/replay.ts';
 import type { Replay, ReplayFile } from '@/sim/replay.ts';
 import { SIM_REV } from '@/sim/rev.ts';
@@ -24,12 +25,14 @@ import { LEVELS, adoptLevel, findBySimHash, resolveLevel } from './levels.ts';
 import type { LevelEntry } from './levels.ts';
 import { createLegend, createLevelBar } from './chrome.ts';
 import { downloadReplay, onReplayDropped, pickReplay } from './replayio.ts';
-import { clearStoredSpec, loadBests, loadLastLevel, loadStoredSpec, recordBest, saveLastLevel, saveStoredSpec } from './store.ts';
+import { clearStoredSpec, loadBests, loadFlag, loadLastLevel, loadStoredSpec, recordBest, saveFlag, saveLastLevel, saveStoredSpec } from './store.ts';
+import { createLiveTune } from './livetune.ts';
 
 const canvas = document.getElementById('view') as HTMLCanvasElement;
 const hud = document.getElementById('hud') as HTMLElement;
 const panelRoot = document.getElementById('panel') as HTMLElement;
 const levelbarRoot = document.getElementById('levelbar') as HTMLElement;
+const toastRoot = document.getElementById('toast') as HTMLElement;
 const legendRoot = document.getElementById('legend') as HTMLElement;
 const ctx = canvas.getContext('2d', { alpha: false }) as CanvasRenderingContext2D;
 
@@ -59,7 +62,23 @@ let level = entry.level;
 
 let presetId = BOOT_PRESET.id;
 let presetLabel = BOOT_PRESET.label;
-let spec: BikeSpec = cloneSpec(BOOT_PRESET.spec);
+
+// THREE specs, and the distinction is the whole of how live tune and the panel
+// coexist:
+//
+//   localSpec  what the PANEL writes and what localStorage remembers. Yours.
+//   remote     the partial override from data/spec.json, driven by bin/spec.
+//   spec       the EFFECTIVE bike: localSpec with remote layered on top,
+//              per field. This is what the sim runs and what a replay records.
+//
+// Precedence is per FIELD, not whole-spec: `bin/spec set gravity 9.2` takes
+// gravity and leaves every slider you touched alone, and `bin/spec unset
+// gravity` hands gravity back to your value rather than to the preset's. That
+// is the only precedence under which both halves stay usable at once, and the
+// panel makes it visible by greying out exactly the rows that are held.
+let localSpec: BikeSpec = cloneSpec(BOOT_PRESET.spec);
+let remoteOverride: Record<string, unknown> = {};
+let spec: BikeSpec = cloneSpec(localSpec);
 let specIsTuned = false;
 
 (function restoreSpec(): void {
@@ -76,7 +95,8 @@ let specIsTuned = false;
   }
   presetId = p.id;
   presetLabel = p.label;
-  spec = parsed;
+  localSpec = parsed;
+  spec = cloneSpec(parsed);
   specIsTuned = specHash(parsed) !== specHash(p.spec);
 })();
 
@@ -98,6 +118,7 @@ cam.snap({ x: level.start.x, y: level.start.y, vx: 0, vy: 0 });
 let debug = false;
 let hudCache = '';
 let fps = 0;
+let liveTuneError: string | null = null;
 
 const input = createInput();
 
@@ -141,27 +162,104 @@ function stepLevel(delta: number): void {
 }
 
 /**
- * Rebuild the world around an edited spec WITHOUT teleporting the bike back to
- * the start. Live tuning is the whole point of the panel, and being thrown to
- * the start line on every slider drag would make it useless mid-air.
+ * Recompute the effective spec from `localSpec` + `remoteOverride` and rebuild
+ * the world around it.
  *
- * The recording dies, though: a replay whose spec changed halfway through is
+ * `carry` keeps the bike exactly where it is rather than teleporting it to the
+ * start. Live tuning is the whole point of the panel and being thrown to the
+ * start line on every slider drag would make it useless mid-air. A REMOTE
+ * change does not get that treatment — see `applyRemote`.
+ *
+ * The recording dies either way: a replay whose spec changed halfway through is
  * not reproducible, and silently keeping one would be worse than losing it.
  */
-function applySpec(next: BikeSpec, persist = true): void {
-  const carry = sim.snapshot();
-  spec = next;
+function recomputeSpec(carry: boolean): void {
+  spec = applySpecOverride(localSpec, remoteOverride).spec;
+  const carried = carry ? sim.snapshot() : null;
   sim = createSim(level, spec);
-  sim.restore(carry);
+  if (carried) sim.restore(carried);
   prevState = sim.snapshot();
   recorder.reset();
   lastReplay = null;
-  replayNote = 'spec changed — press R for a clean run to record';
   playback = null;
   const p = PRESETS.find((x) => x.id === presetId);
-  specIsTuned = p ? specHash(spec) !== specHash(p.spec) : true;
+  specIsTuned = p ? specHash(localSpec) !== specHash(p.spec) : true;
   panel.setTuned(specIsTuned);
-  if (persist) saveStoredSpec(presetId, spec);
+}
+
+/** A panel slider moved: `localSpec` has already been mutated in place. */
+function onPanelEdit(): void {
+  recomputeSpec(true);
+  replayNote = 'spec changed — press R for a clean run to record';
+  saveStoredSpec(presetId, localSpec);
+  panel.setRemote(liveTune.heldPaths, remoteNote());
+}
+
+/** Set the whole local spec — a preset swap, a reset, or a replay's own bike. */
+function setLocalSpec(next: BikeSpec, opts: { persist: boolean; carry: boolean }): void {
+  localSpec = next;
+  recomputeSpec(opts.carry);
+  if (opts.persist) saveStoredSpec(presetId, localSpec);
+  else clearStoredSpec();
+  panel.sync();
+  panel.setRemote(liveTune.heldPaths, remoteNote());
+}
+
+/**
+ * A new override arrived from `data/spec.json`.
+ *
+ * It RESTARTS the attempt, deliberately and always. A replay records the bike
+ * spec's hash, so a spec that changes mid-run makes that run meaningless — and
+ * silently so, which is the worse half. Restarting costs nothing while tuning
+ * and it is honest. Playback is cancelled for the same reason.
+ *
+ * And it SAYS WHAT CHANGED. A bike that silently changes under somebody
+ * concentrating on a run is the worst possible outcome: they conclude they have
+ * lost their touch rather than that the numbers moved.
+ */
+function applyRemote(override: Record<string, unknown>, held: ReadonlySet<string>): void {
+  const before = spec;
+  remoteOverride = override;
+  recomputeSpec(false);
+  restart(false);
+  panel.setRemote(held, remoteNote());
+  panel.sync();
+
+  const changes = diffSpec(before, spec);
+  if (changes.length === 0) return;
+  const shown = changes.slice(0, 4).map((c) => `${c.path} ${fmtNum(c.from)} → ${fmtNum(c.to)}`);
+  if (changes.length > shown.length) shown.push(`and ${changes.length - shown.length} more`);
+  toast(shown.join('   '), 'live tune');
+  replayNote = `live tune: ${shown.join(', ')} — attempt restarted`;
+}
+
+function remoteNote(): string {
+  const n = liveTune.heldPaths.size;
+  if (n === 0) return '';
+  return (
+    `LIVE TUNE holding ${n} field${n === 1 ? '' : 's'} from data/spec.json. ` +
+    'Those rows are read-only here; run `bin/spec unset <path>` (or `bin/spec reset`) to take them back. ' +
+    'Your own tuning underneath is untouched.'
+  );
+}
+
+function fmtNum(v: number): string {
+  return Number.isInteger(v) ? String(v) : String(parseFloat(v.toPrecision(6)));
+}
+
+let toastTimer = 0;
+/** Brief, non-blocking, and never in the way of the collision edge. */
+function toast(message: string, label = ''): void {
+  toastRoot.textContent = '';
+  if (label) {
+    const tag = document.createElement('b');
+    tag.textContent = label;
+    toastRoot.append(tag);
+  }
+  toastRoot.append(document.createTextNode(message));
+  toastRoot.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => toastRoot.classList.remove('show'), 6000);
 }
 
 function finishRun(): void {
@@ -261,7 +359,18 @@ function loadReplay(file: ReplayFile, name: string): void {
         'and the file carries no usable spec of its own.';
       return;
     }
-    applySpec(embedded, false);
+    // Live tune has to come OFF here, not just be layered under. A replay only
+    // reproduces against the exact spec it was recorded on, and the next poll
+    // two seconds from now would quietly change the bike underneath the
+    // playback and make the hash chain diverge. Turning it off is stated, and
+    // the toggle is right there.
+    if (liveTune.enabled) {
+      liveTune.setEnabled(false);
+      saveFlag('livetune', false);
+      panel.setLiveTune(false);
+      notes.push('live tune switched off so the recorded bike can be reproduced');
+    }
+    setLocalSpec(embedded, { persist: false, carry: false });
     notes.push(`adopted the replay's bike spec ${file.specHash}`);
   }
 
@@ -380,6 +489,11 @@ function updateHud(): void {
     `<span class="k">keys </span> ${keys}`,
     `<span class="k">facing</span> ${s.facing > 0 ? '+x' : '-x'}   <span class="k">contacts</span> ${sim.world.contactCount}   <span class="k">zoom</span> ${cam.zoom.toFixed(0)} px/m   <span class="k">fps</span> ${fps.toFixed(0)}`,
     '',
+    liveTuneError
+      ? `<span class="bad">${liveTuneError}</span>`
+      : liveTune.enabled
+        ? `<span class="k">live tune</span> on${liveTune.heldPaths.size ? `, holding ${liveTune.heldPaths.size} field(s)` : ', no override'}`
+        : '<span class="k">live tune</span> off',
     `<span class="k">recorded</span> ${recorder.frames} frames${lastReplay ? `  <span class="k">banked</span> ${lastReplay.frames}` : ''}  <span class="k">attempts</span> ${attempts.forLevel(level.simHash).length}`,
     replayNote ? `<span class="${replayNote.startsWith('REPLAY DESYNC') || replayNote.startsWith('CANNOT PLAY') ? 'bad' : 'warn'}">${replayNote}</span>` : '',
     '',
@@ -410,34 +524,41 @@ createLegend(legendRoot);
   history.replaceState(null, '', url);
 })();
 
-const panel = createPanel(panelRoot, spec, cam.params, {
-  onSpecChange: (s) => applySpec(s),
+// On by default under `bin/dev` and off by default in a build, because that is
+// where each is wanted: a dev server is somebody tuning, a built page is
+// somebody playing. Either way the toggle is remembered once touched.
+const liveTuneDefault = loadFlag('livetune', import.meta.env.DEV);
+
+const panel = createPanel(panelRoot, localSpec, () => spec, cam.params, liveTuneDefault, {
+  onSpecChange: () => onPanelEdit(),
   onCameraChange: () => {
     // Nothing to rebuild: the camera reads its params every frame. It is here
     // so that adding a camera parameter that DOES need work has a place to go.
+  },
+  onLiveTune: (on) => {
+    saveFlag('livetune', on);
+    liveTune.setEnabled(on);
+    replayNote = on
+      ? 'live tune ON — following data/spec.json, change it with bin/spec'
+      : 'live tune OFF — the bike is yours again';
+    toast(replayNote);
   },
   onPreset: (s, label) => {
     const p = PRESETS.find((x) => x.label === label);
     presetId = p?.id ?? presetId;
     presetLabel = label;
-    spec = cloneSpec(s);
-    specIsTuned = false;
-    clearStoredSpec();
-    sim = createSim(level, spec);
+    setLocalSpec(cloneSpec(s), { persist: false, carry: false });
     restart(false);
-    panel.sync();
-    panel.setTuned(false);
   },
   onResetSpec: () => {
     const p = PRESETS.find((x) => x.id === presetId) ?? BOOT_PRESET;
-    spec = cloneSpec(p.spec);
-    specIsTuned = false;
-    clearStoredSpec();
-    sim = createSim(level, spec);
+    setLocalSpec(cloneSpec(p.spec), { persist: false, carry: false });
     restart(false);
-    panel.sync();
-    panel.setTuned(false);
-    replayNote = `reset to "${p.label}" as shipped`;
+    // Deliberately does NOT clear the remote override: that is somebody else's
+    // and it is not this button's to throw away. The banner says how.
+    replayNote = liveTune.heldPaths.size
+      ? `reset to "${p.label}" as shipped — live tune still holds ${liveTune.heldPaths.size} field(s); bin/spec reset clears those`
+      : `reset to "${p.label}" as shipped`;
   },
   onRestart: () => restart(false),
   onReplay: () => startPlayback(),
@@ -445,6 +566,17 @@ const panel = createPanel(panelRoot, spec, cam.params, {
   onImport: () => importReplay(),
 });
 panel.setTuned(specIsTuned);
+
+// Live tune. Created after the panel, because a poll that lands before the
+// panel exists has nothing to grey out. The first poll fires immediately, so a
+// spec file that is already in place is in force before the first frame the
+// player sees rather than two seconds into their first run.
+const liveTune = createLiveTune(() => localSpec, {
+  onChange: (override, held) => applyRemote(override, held),
+  onError: (msg) => {
+    liveTuneError = msg;
+  },
+}, liveTuneDefault);
 
 onReplayDropped(
   window,
@@ -520,6 +652,8 @@ interface VeloWindow extends Window {
   get lastReplay() {
     return lastReplay;
   },
+  specHash: () => specHash(spec),
+  liveTune,
   get attempts() {
     return attempts.all;
   },

@@ -1,10 +1,39 @@
 import { defineConfig } from 'vite'
+import type { Plugin } from 'vite'
 import path from 'node:path'
+import { specPayload } from './src/server/specfile.ts'
 
-// Client-only for milestone 1. There is no server yet, so there is no /api
-// proxy stanza here — when the server lands it goes in exactly like
-// codegrind's, with `changeOrigin: false`.
+/**
+ * Serve `GET /api/spec` during `bin/dev`.
+ *
+ * A middleware rather than a proxy to the real Hono server, deliberately.
+ * `bin/dev` is one process and should stay one process — a proxy stanza would
+ * mean remembering to run `bin/start` alongside it, and the failure mode of
+ * forgetting is a live-tune poll that 404s forever while the game looks fine.
+ * Both routes call the same `specPayload()`, so dev and production cannot
+ * disagree about what the endpoint says.
+ *
+ * Read-only here too: writes are `bin/spec`'s job and never the network's.
+ */
+function liveTuneApi(): Plugin {
+  return {
+    name: 'velo-live-tune',
+    configureServer(server) {
+      server.middlewares.use('/api/spec', (_req, res) => {
+        res.setHeader('content-type', 'application/json')
+        // The whole point is to notice a change within a couple of seconds.
+        res.setHeader('cache-control', 'no-store')
+        res.end(JSON.stringify(specPayload()))
+      })
+    },
+  }
+}
+
+// Client-only for milestone 1 apart from the live-tune endpoint above. The
+// leaderboard API lands with the server milestone and goes in as a proxy
+// stanza exactly like codegrind's, with `changeOrigin: false`.
 export default defineConfig({
+  plugins: [liveTuneApi()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

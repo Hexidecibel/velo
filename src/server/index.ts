@@ -21,6 +21,7 @@
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
+import { SPEC_FILE, specPayload } from './specfile.ts';
 
 const app = new Hono();
 
@@ -34,6 +35,24 @@ const app = new Hono();
 // is a recorded incident on this box (a probe against jam's root minted 13,105
 // session rows in 18 days, one per poll).
 app.get('/api/health', (c) => c.json({ status: 'ok', service: 'velo' }));
+
+// Live tune. The client polls this while somebody at a terminal drives
+// `bin/spec`, so that changing the bike does not mean talking a player through
+// a table of sliders to drag.
+//
+// READ-ONLY, and that is a decision rather than an omission. Writes go through
+// `bin/spec` to `data/spec.json`, which means nothing reachable over the
+// network can change the bike — this binds loopback behind the cush-auth gate
+// today, but "the only way to write is to be on the box" is a property worth
+// having unconditionally rather than one that depends on the front door staying
+// shut.
+//
+// `version` is a content hash of the override, so a poll is one cheap
+// comparison and rewriting identical values does not read as a change. A
+// malformed file answers 200 with `error` set rather than 500: the client shows
+// it and keeps playing, because a typo in a tuning file must not take the game
+// down.
+app.get('/api/spec', (c) => c.json(specPayload()));
 
 // The built client. `precompressed` makes serveStatic prefer a `.br`/`.gz`
 // sibling when the request's Accept-Encoding allows it — bin/deploy writes
@@ -61,6 +80,7 @@ const hostname = process.env.HOST || '127.0.0.1';
 
 console.log(`velo server listening on http://${hostname}:${port}`);
 console.log('  static root: ./dist (precompressed)');
-console.log('  api:         /api/health only — no game API yet, by design');
+console.log('  api:         /api/health, /api/spec (read-only live tune)');
+console.log(`  live tune:   ${SPEC_FILE} — change it with bin/spec`);
 
 serve({ fetch: app.fetch, port, hostname });

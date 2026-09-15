@@ -54,6 +54,7 @@ add a script rather than running an ad-hoc command.
 | `bin/level-export` | Writes the built-in levels out to `levels/test01.json` and `levels/test02-bowl.json`. |
 | `bin/level-check` | Validates a hand-authored level JSON, prints its two hashes, and **warns about straight runs too coarse to ride smoothly**. |
 | `bin/level-drive` | Drives a level headlessly with a scripted rider and reports whether every apple and the flower can actually be reached. |
+| `bin/spec` | **Changes the bike from a terminal while somebody rides it.** Writes `data/spec.json`; the client picks it up within ~2 s and says what moved. |
 | `bin/replay` | **Re-simulates an exported replay file** and reports identity, hash-chain verification and a diagnostic pass. This is what turns "sometimes it gets weird" into a reproducible artifact. |
 | `bin/air` | Measures jump height and airtime off a fixed synthetic feature, per bike, in metres. Turns "it should catch more air" into a number. |
 | `bin/dive` | Measures chassis pitch under braking and under throttle, in degrees. Turns "braking should slam the front down like gassing lifts it" into a symmetry you can check. |
@@ -135,6 +136,99 @@ taken on if this build does not ship it.
 Every attempt of a session is retained, not just the most recent, keyed by
 level. There is no UI for that yet; it is the cheap groundwork for replaying
 every failed attempt alongside the line that worked.
+
+## Live tune — changing the bike from a terminal
+
+Tuning by talking somebody through a table of sliders to drag is slow, and it
+puts the person who can *measure* the result furthest from the knob. So the bike
+can be changed from a terminal while somebody else rides it:
+
+```
+bin/spec                                   print the effective spec
+bin/spec set rider.inertialTransfer 0.45   set one field by dotted path
+bin/spec set gravity 9.2
+bin/spec unset rider.inertialTransfer      drop one override
+bin/spec reset                             clear every override
+bin/spec load tuned.json                   apply a whole spec file
+bin/spec preset poppy                      apply one of the built-in presets
+bin/spec --paths                           list all 45 addressable fields
+```
+
+Source of truth is **`data/spec.json`** (gitignored), holding a *partial*
+BikeSpec — only the fields you set. The client polls `GET /api/spec` every two
+seconds and applies a change when the content hash moves. The endpoint is served
+by the Hono server in a build and by a Vite middleware under `bin/dev`, both
+calling the same `specPayload()`, so the two cannot disagree.
+
+**The HTTP surface is read-only, deliberately.** Writes go through `bin/spec` to
+a file, which means nothing reachable over the network can change the bike. That
+binds loopback behind the cush-auth gate today, but "the only way to write is to
+be on the box" is a property worth having unconditionally rather than one that
+depends on the front door staying shut.
+
+### Precedence: per field, not per spec
+
+There are three specs and the distinction is the whole of how the panel and
+live tune coexist:
+
+| | |
+| --- | --- |
+| **local** | what the panel writes, and what `localStorage` remembers. Yours. |
+| **remote** | the partial override from `data/spec.json`, driven by `bin/spec`. |
+| **effective** | local with remote layered on top, **per field**. What the sim runs and what a replay records. |
+
+So `bin/spec set gravity 9.2` takes gravity and leaves every slider you touched
+alone, and `bin/spec unset gravity` hands gravity back to *your* value rather
+than to the preset's. That is the only precedence under which both halves stay
+usable at once.
+
+It is made visible rather than left to be inferred. A held row in the panel goes
+**read-only with a LIVE badge** — a slider you can still drag but that a poll
+overwrites two seconds later is worse than no slider at all — and a banner names
+how many fields are held and how to take them back. The sliders *display* the
+effective value and *write* underneath it, so unsetting an override restores
+what you had rather than whatever the slider last showed. **Reset to preset**
+clears your tune and deliberately leaves the remote override alone: it is
+somebody else's and it is not that button's to throw away.
+
+### Three rules it does not break
+
+- **Applying a change restarts the attempt.** Always, and never mid-flight. A
+  replay records the bike spec's hash, so a spec that changes during a run makes
+  that run meaningless — and silently so, which is the worse half. Restarting
+  costs nothing while tuning and it is honest.
+- **It says what changed.** A brief toast names the fields: `gravity 9 → 9.2`.
+  A bike that silently changes under somebody concentrating on a run is the
+  worst possible outcome — they conclude they have lost their touch rather than
+  that the numbers moved.
+- **Replay integrity is untouched.** Verification still keys on the spec hash
+  embedded in the replay. Loading a replay whose bike differs switches live tune
+  **off** and says so, because the next poll would otherwise change the bike
+  underneath the playback and diverge the hash chain.
+
+Determinism is unaffected: this changes *which* spec is loaded, never how a tick
+is computed. The purity guard, the hash chain and the cross-engine check are
+exactly as they were.
+
+**`bin/spec` cannot reach the physics version or the shipped default.** It
+layers a runtime override and nothing else: `SIM_REV`, `DT`, the tick order and
+the level are not fields on a `BikeSpec`, so no dotted path names them; the
+layering clones before it writes, so the preset it reads cannot drift; and
+`DEFAULT_SPEC` is deep-frozen, so a write aimed at it throws rather than
+silently succeeding. All three are asserted in `src/sim/specpath.test.ts`. The
+committed boot spec stays exactly what it is — **`c911d20c1e1fc095`**, "Soft
+(hand-tuned default)", which is the bike the user signed off on. `bin/spec`
+prints that hash next to the effective one on every invocation, so a drift would
+be visible immediately.
+
+The toggle is on by default under `bin/dev` and off by default in a build — a
+dev server is somebody tuning, a built page is somebody playing — and is
+remembered once touched. The poll skips while the tab is hidden, backs off from
+2 s to 30 s on errors and recovers immediately on the next success, and a failed
+fetch can never reach the game loop. A malformed `data/spec.json` answers 200
+with an `error` field, keeps the last good override, and shows the message:
+a typo in a tuning file must not take the game down or yank the bike back to the
+preset mid-edit.
 
 ## The camera
 
@@ -358,18 +452,21 @@ This is not a NaN and not a desync — the hash chain verifies perfectly — but
 is exactly the shape of a complaint like "it got weird": a wheel inside a wall,
 and the bike feeling stuck against it.
 
-The standard fix is to collect contacts against the *predicted* positions, solve
-velocities, and only then integrate positions, so that the corrected velocity is
-the one that moves the body. That is a tick-order change and therefore a
-`SIM_REV` bump, and it is not made here: it would land on top of a feel the user
-has just signed off on, and it deserves its own decision rather than being
-smuggled in with a suspension change. Raising `MAX_CORRECTION_VEL` or adding a
-positional projection pass are the cheaper alternatives; the projection pass was
-already considered and rejected, because three chassis circles in a corner
-triple-count and pop the bike.
+**This is a KNOWN, ACCEPTED issue and is deliberately not fixed.** It was put to
+the user with the measurement, and the call was theirs: *"wheel in wall feels
+fine. no changes there until we move on."* So it stays, and it stays documented
+here rather than in somebody's head. Do not quietly fix it — it is not an
+oversight, it is a decision, and reopening it is a decision too.
 
-`bin/replay` flags penetration over 5 cm, so the next report will say whether
-this is what the player was seeing.
+The fix, when it is wanted, is to collect contacts against the *predicted*
+positions, solve velocities, and only then integrate positions, so that the
+corrected velocity is the one that moves the body. That is a tick-order change
+and therefore a `SIM_REV` bump. Raising `MAX_CORRECTION_VEL` is the cheaper
+alternative; a positional projection pass was already considered and rejected,
+because three chassis circles in a corner triple-count and pop the bike.
+
+`bin/replay` flags penetration over 5 cm on any run, so if this ever *does* stop
+feeling fine, the evidence arrives with the complaint.
 
 ### Rotation authority, and why the pendulum alone was wrong
 

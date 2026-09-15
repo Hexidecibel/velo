@@ -171,3 +171,70 @@ body:has(#panel.hidden) #levelbar { right: 14px; }
   font-size: 10px;
   line-height: 1.4;
 }
+
+/* --- live-tune toast ------------------------------------------------------ */
+/* Top-centre, above the canvas, never over the bottom-left legend or the
+   top-left HUD — and it fades rather than sitting there, because the readability
+   rule says the collision edge and the bike are what the eye should be on. */
+#toast {
+  position: fixed;
+  top: 44px;
+  left: 50%;
+  transform: translate(-50%, -8px);
+  max-width: 62vw;
+  padding: 6px 12px;
+  background: #11151ceb;
+  border: 1px solid #3b6b8a;
+  border-radius: 3px;
+  color: var(--ink);
+  text-shadow: 0 1px 2px #000;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .18s ease, transform .18s ease;
+  white-space: pre-wrap;
+}
+#toast.show { opacity: 1; transform: translate(-50%, 0); }
+#toast b {
+  color: var(--accent);
+  font-weight: normal;
+  margin-right: 8px;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  font-size: 10px;
+}
+
+/* --- live tune, in the panel ---------------------------------------------- */
+#panel .remote {
+  margin: 8px 0;
+  padding: 5px 7px;
+  border: 1px solid #3b6b8a;
+  border-radius: 3px;
+  background: #0e1a22;
+  color: #cfe9fb;
+  font-size: 10px;
+  line-height: 1.4;
+}
+#panel .toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 10px 0 2px;
+  cursor: pointer;
+  color: var(--ink);
+}
+#panel .toggle input { accent-color: #7fd4ff; cursor: pointer; }
+
+/* A row bin/spec is holding. Visibly not yours to drag: a slider that a poll
+   overwrites two seconds later is worse than no slider at all. */
+.row.remote-held label { color: #7fd4ff; }
+.row.remote-held .num { color: #7fd4ff; opacity: .75; }
+.row.remote-held input[type=range] { opacity: .4; cursor: not-allowed; }
+.live-badge {
+  margin-left: 6px;
+  padding: 0 4px;
+  border: 1px solid #3b6b8a;
+  border-radius: 2px;
+  color: #7fd4ff;
+  font-size: 9px;
+  letter-spacing: .08em;
+}

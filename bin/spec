@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Change the bike from here, while somebody else is riding it in a browser.
+#
+#   bin/spec                                   print the effective spec
+#   bin/spec set rider.inertialTransfer 0.45   set one field by dotted path
+#   bin/spec set gravity 9.2
+#   bin/spec unset rider.inertialTransfer      drop one override
+#   bin/spec reset                             clear every override
+#   bin/spec load tuned.json                   apply a whole spec file
+#   bin/spec preset poppy                      apply one of the built-in presets
+#   bin/spec --paths                           list every addressable field
+#
+# WHY: tuning by talking somebody through a table of sliders is slow and it puts
+# the person who can measure the result furthest from the knob. This writes
+# data/spec.json; the client polls GET /api/spec every couple of seconds and
+# picks the change up, naming what moved.
+#
+# The override is PARTIAL — only the fields you set — layered over whatever
+# preset the client booted on. `unset` therefore restores the preset's value,
+# not some previous override. Applying a change RESTARTS the current attempt,
+# deliberately: a replay records the bike-spec hash, so a spec that changed
+# mid-run makes that run meaningless, and silently so.
+#
+# Writes never happen over HTTP. The endpoint is read-only and this is the only
+# way in, so nothing reachable on the network can change the bike.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+exec "$ROOT/node_modules/.bin/tsx" "$ROOT/bin/_spec.ts" "$@"
