@@ -65,6 +65,16 @@ ExecStart=@VELO_NODE_BIN@/node @VELO_REPO@/node_modules/.bin/tsx src/server/inde
 Restart=always
 RestartSec=5
 
+# A clean shutdown is not a failure. tsx TRANSLATES SIGTERM into exit status
+# 143 (128+15) instead of dying by the signal, so without this every single
+# `systemctl stop`/`restart` logs "Main process exited, code=exited,
+# status=143" followed by "Failed with result 'exit-code'" — and the unit then
+# sits in a failed state that looks exactly like a crash to anyone reading
+# `systemctl status`, or to a monitor watching for one. Restart=always meant it
+# always came back, so the only cost was the lie in the journal; the lie is
+# still worth removing.
+SuccessExitStatus=143
+
 # Modest hardening. Nothing here needs to write outside the repo, and the repo
 # is not on the mergerfs pool (see the SQLite rule) — it is on NVMe, so
 # ReadWritePaths is a real path and not a FUSE mount that these directives
