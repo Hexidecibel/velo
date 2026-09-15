@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Sweep a synthetic ramp across slope angles and entry speeds and print what the
+# bike does: reached the top, stalled, looped, or lost its momentum at the
+# corner — plus the speed it retained and the pitch it reached.
+#
+#   bin/slope-sweep                 the shipping M1 candidate
+#   bin/slope-sweep --plan          the plan's DEFAULT_SPEC, for comparison
+#
+# It exists because "cannot get up a semi-steep slope" has at least three
+# different causes with three different fixes — no thrust, a backflip, or a
+# collision impulse at the base eating the speed — and picking between them by
+# argument is how you tune the wrong number. Re-run it after touching drive
+# torque, maxWheelSpin, friction, restitution or angular damping.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+exec "$ROOT/node_modules/.bin/tsx" -e "
+  import { sweep, table } from './bin/_slope.ts';
+  import { DEFAULT_SPEC } from './src/sim/spec.ts';
+  import { BOOT_PRESET } from './src/client/presets.ts';
+  const plan = process.argv.includes('--plan');
+  const spec = plan ? DEFAULT_SPEC : BOOT_PRESET.spec;
+  const degs = [20, 25, 30, 35, 40, 45, 50];
+  const entries = [4, 8, 12, 16];
+  console.log('==> slope sweep: ' + (plan ? 'plan DEFAULT_SPEC' : 'M1 candidate'));
+  console.log('    drive ' + spec.drive.maxTorque + ' N m, maxWheelSpin ' + spec.drive.maxWheelSpin
+    + ' rad/s (zero torque at ' + (spec.drive.maxWheelSpin * spec.wheel.radius).toFixed(1) + ' m/s)'
+    + ', friction ' + spec.wheel.friction);
+  for (const fillet of [0, 1.5]) {
+    for (const strategy of ['naive', 'technique'] as const) {
+      console.log('');
+      console.log('--- ' + strategy + (strategy === 'naive' ? '  (throttle only)' : '  (throttle + lean tracking the face)')
+        + (fillet ? ',  ' + fillet + ' m filleted transition' : ',  sharp corner at the base'));
+      console.log('');
+      console.log(table(sweep(spec, degs, entries, strategy, fillet), degs, entries));
+    }
+  }
+" -- "$@"

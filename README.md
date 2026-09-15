@@ -53,6 +53,8 @@ add a script rather than running an ad-hoc command.
 | `bin/preview` | Serves the built `dist/`. A production-bundle sanity check, not a deployment. |
 | `bin/level-export` | Writes the built-in levels out to `levels/test01.json` and `levels/test02-bowl.json`. |
 | `bin/level-check` | Validates a hand-authored level JSON, prints its two hashes, and **warns about straight runs too coarse to ride smoothly**. |
+| `bin/level-drive` | Drives a level headlessly with a scripted rider and reports whether every apple and the flower can actually be reached. |
+| `bin/slope-sweep` | Sweeps a synthetic ramp across slope angle, entry speed, input strategy and transition sharpness, and prints what the bike does. |
 | `bin/clean` | Removes `dist/` and `tsconfig.tsbuildinfo`; `--all` also removes `node_modules/`. |
 
 `start`, `stop`, `status`, `logs`, `install-units` and `deploy` arrive with the
@@ -207,6 +209,72 @@ Still true, and still the first slider to reach for:
   rotation authority there was. Lean angle is now back to meaning what it should
   — where the rider's **weight and head** go — which is why 28° is fine.
 
+## Climbing a hill, and what a sharp corner costs
+
+A playtest: *"impossible to go up a semi-steep slope, even with lots of speed."*
+`bin/slope-sweep` exists to answer that with measurement rather than argument —
+it sweeps slope angle against entry speed, for two input strategies and two
+transition geometries, and reports the outcome, the energy that survived the
+transition, and the peak chassis pitch.
+
+**Being unable to blast up a hill is correct, and it is where the skill lives.**
+In Elasto Mania you arrive with momentum, lean into the face as you make contact
+so the bike's attitude matches it, and correct your way up. So the target is a
+*gap*: naive input fails legibly, technique succeeds repeatably. Here is that gap
+(M1 candidate, sharp corner at the base, 3.5 m of rise):
+
+| slope | naive, throttle only | technique, lean into the face |
+| --- | --- | --- |
+| 20–35° | OK at 4–16 m/s | OK at 4–16 m/s |
+| 40° | loops at 4 m/s, OK above | OK at 4–16 m/s |
+| 45° | loops at 4 and 8 m/s | OK at 4–16 m/s |
+| 50° | **loops at every speed** | OK at 8–16 m/s, stalls at 4 |
+
+Naive fails by **looping** — peak pitch 180° — which is legible and recoverable
+knowledge. Technique holds it at 45–66° and climbs. That is the shape wanted, and
+it arrived for free with the rotation-authority fix; **no drive or traction
+number was changed.**
+
+### The dominant variable is not the bike, it is the corner
+
+The counterintuitive half of the report — *"even with lots of speed"* — is real,
+and the reason is geometric, not a tuning miss. A wheel meeting a corner square
+loses the component of its velocity **normal to the new face**, and restitution
+is 0.05, so almost none of it comes back: `cos²θ` of the kinetic energy is
+destroyed on contact, before the rider has any say. Measured, as the fraction of
+energy surviving the transition:
+
+| slope | 8 m/s | 12 m/s | 16 m/s |
+| --- | --- | --- | --- |
+| 30°, sharp corner | 1.00 | 0.79 | 0.61 |
+| 40°, sharp corner | 0.86 | 0.61 | 0.40 |
+| 50°, sharp corner | 0.62 | 0.29 | **0.19** |
+| 50°, 1.5 m fillet | 1.00 | 0.58 | 0.34 |
+
+So arriving fast at a sharp 50° corner throws away four fifths of the run-up. It
+compounds with the drive curve — torque falls linearly to zero at 20 m/s, so
+speed also buys less thrust — but the corner is much the larger term.
+
+**The fix is level design, and the tool is the arc primitive.** A filleted
+transition converts the velocity direction gradually instead of destroying it:
+with a 1.5 m fillet the technique rider gets up **every** angle tested, including
+50° from 4 m/s, where a sharp corner stalls. `test02` fillets its transitions and
+a scripted rider completes it in every configuration tried; `test01` is all hard
+corners on purpose and its slopes are kept correspondingly gentle, with one real
+35° climb.
+
+### What was ruled out
+
+- **Not traction.** Friction 1.4 allows ~54° before the tyre slips, and the
+  wheel is not breaking loose at the angles that fail.
+- **Not raising `maxWheelSpin`.** It would let throttle alone brute-force a steep
+  face, which deletes the technique and makes the game worse. Explicitly not done.
+- **Not the missing `m·a` inertial reaction** — at least not first. Leaning
+  already transfers real load onto the driven wheel: on a 50° face, holding the
+  attitude-matching lean roughly doubles the driven wheel's suspension
+  compression (26 mm → 60 mm) against the same run. The mechanism exists, so the
+  dynamic term is a refinement rather than the missing piece.
+
 ## Determinism
 
 Replays must reproduce **bit-identically** in the browser and on the server, or
@@ -309,6 +377,17 @@ and `src/sim/curvelevel.ts`, which are the same data as TypeScript literals.
   ice and teleporters. Rev 1 ignores them, and the loader **tolerates unknown
   entries rather than rejecting**, which is what keeps a level authored in 2027
   loadable by a 2026 client.
+- **Known limitation: nothing here can tell you a level is completable.**
+  `bin/level-check` validates *geometry* — degenerate edges, non-finite
+  coordinates, apples inside solid, and coarse-tessellation sag. It cannot tell
+  you whether a route through the level exists. That gap is not theoretical: the
+  very first hand-authored level shipped with apples nobody could reach, with a
+  human placing five of them by hand, and it took a playtest to find out. That is
+  a strong argument that solver-backed reachability checking is not a
+  nice-to-have for generated content later but a basic authoring tool, and when
+  the visual builder lands it should be a live check while you author.
+  `bin/level-drive` is the interim answer — a scripted rider, a lower bound, not
+  a proof — and the real fix is the solver in milestone 7.
 - **Two hashes.** `simHash` covers only what the sim reads — collidable polygons
   in order, start, apples in order, flower. `contentHash` covers the whole file.
   Leaderboards key on `simHash`, so retitling or recolouring a level preserves

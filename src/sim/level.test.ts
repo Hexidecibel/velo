@@ -146,10 +146,18 @@ const arcBox = (points: unknown[]) => ({
 });
 
 describe('backwards compatibility with plain point lists', () => {
-  it('produces a BIT-IDENTICAL simHash for the only level that existed', () => {
+  it('produces a BIT-IDENTICAL simHash for the plain-point-list fixture', () => {
     // The cheapest possible guard against silently invalidating every time ever
-    // recorded. If this literal has to change, the change is not a refactor.
-    expect(parseLevel(TEST_LEVEL).simHash).toBe('d016a3cde9c75c2e');
+    // recorded: test01 contains no arcs, so no amount of arc machinery may move
+    // this number. If it changes, the change is not a refactor.
+    //
+    // It HAS moved once, deliberately: test01's geometry was edited to make
+    // apples that nobody could reach reachable. Apple positions and collidable
+    // vertices are exactly what simHash covers, so that edit SHOULD re-identify
+    // the level, and the fixture now pins the post-edit value. Weakening this
+    // assertion so that a real geometry change can hide behind it would defeat
+    // the entire point of having it.
+    expect(parseLevel(TEST_LEVEL).simHash).toBe('6e559edfc280798c');
   });
 
   it('agrees with the exported JSON on disk', () => {

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Drive a level headlessly and report whether every apple and the flower can
+# actually be reached.
+#
+#   bin/level-drive levels/test01.json
+#   bin/level-drive levels/*.json
+#
+# bin/level-check validates GEOMETRY — degenerate edges, non-finite coordinates,
+# apples inside solid, coarse tessellation. It cannot tell you whether a level is
+# COMPLETABLE, and the first hand-authored level in this repo shipped with apples
+# nobody could reach. This is the cheap answer to that: a scripted rider that
+# throttles when a wheel is down, lets go in the air, and leans into the face on
+# a climb, run over a few route variations.
+#
+# It is a lower bound, not a proof: "some run reached it" means reachable, and
+# "no run reached it" means only that this rider could not. Solver-backed
+# reachability is the real fix and a later milestone.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+[[ $# -ge 1 ]] || { echo "usage: bin/level-drive <file.json> [more.json ...]" >&2; exit 2; }
+exec "$ROOT/node_modules/.bin/tsx" -e "
+  import { readFileSync } from 'node:fs';
+  import { parseLevel } from './src/sim/level.ts';
+  import { probeReachability } from './bin/_pilot.ts';
+  import { BOOT_PRESET } from './src/client/presets.ts';
+  import type { Cap } from './bin/_pilot.ts';
+  // Route variations: straight through, or easing off over each third of the
+  // level so that anything down a hole gets a chance to be dropped into.
+  let bad = 0;
+  for (const f of process.argv.slice(1)) {
+    const lvl = parseLevel(JSON.parse(readFileSync(f, 'utf8')));
+    const span = lvl.maxX - lvl.minX;
+    const routes: Cap[][] = [[]];
+    for (let i = 0; i < 6; i++) {
+      const a = lvl.minX + (span * i) / 6;
+      routes.push([[a, a + span / 6 + 2, 6]] as Cap[]);
+    }
+    const t0 = Date.now();
+    const r = probeReachability(lvl, BOOT_PRESET.spec, routes);
+    const miss = r.ever.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
+    console.log((r.finished ? '==> DRIVEABLE  ' : '==> INCOMPLETE ') + f);
+    console.log('    ' + lvl.name);
+    console.log('    apples reached  ' + r.ever.filter(Boolean).length + '/' + lvl.apples.length
+      + (miss.length ? '   NOT REACHED: ' + miss.map((i) => i + ' at (' + lvl.apples[i].x + ', ' + lvl.apples[i].y + ')').join(', ') : ''));
+    console.log('    best run        ' + r.best.outcome + ' at x ' + r.best.x.toFixed(1) + ' after ' + r.best.seconds.toFixed(1) + ' s');
+    console.log('    ' + ((Date.now() - t0) / 1000).toFixed(1) + ' s of search');
+    if (!r.finished) bad++;
+  }
+  process.exit(bad ? 1 : 0);
+" "$@"
