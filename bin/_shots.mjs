@@ -6,11 +6,11 @@
 // the same moment on several levels, at the three zooms the camera actually
 // reaches, with the art on, the art off, and the G overlay up.
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
 import { readFile, writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join, extname, normalize } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { reapOrphans, spawnChrome } from './_chrome.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DIST = join(ROOT, 'dist');
@@ -20,6 +20,23 @@ const H = Number(process.env.SHOTS_H || 900);
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.map': 'application/json' };
 const levels = process.argv.slice(2).filter((a) => !a.startsWith('-'));
 const want = levels.length ? levels : ['07-the-chimney', '10-cathedral', '19-low-roof', '20-close-quarters'];
+/**
+ * Which of the seven shots to take, as a comma list.
+ *
+ * Added for the question Phase 2 has to answer that Phase 1 did not: "do the
+ * twenty levels look like twenty places". That is judged by looking at ONE shot
+ * of each as a SET, and taking seven of each first means a hundred and forty
+ * images to compare twenty of. `SHOTS_ONLY=art-62 bin/shots <all twenty>`.
+ */
+const only = (process.env.SHOTS_ONLY || '').split(',').map((x) => x.trim()).filter(Boolean);
+/**
+ * `SHOTS_AT=x,y,zoom` frames one exact place instead of following the bike.
+ *
+ * Added while debugging a prop that looked wrong in an overview and could not
+ * be identified from it. "What does this thing at world x=83 actually look
+ * like" is a question the bike-follows-the-level framing cannot answer.
+ */
+const at = (process.env.SHOTS_AT || '').split(',').map(Number).filter((n) => Number.isFinite(n));
 
 await mkdir(OUT, { recursive: true });
 const serve = createServer(async (req, res) => {
@@ -41,13 +58,10 @@ const serve = createServer(async (req, res) => {
 await new Promise((r) => serve.listen(0, '127.0.0.1', r));
 const url = `http://127.0.0.1:${serve.address().port}/`;
 
+reapOrphans();
 const profile = await mkdtemp(join(tmpdir(), 'velo-shots-'));
 const cdpPort = await freePort();
-const chrome = spawn(process.env.CHROME || 'google-chrome', [
-  '--headless=new', '--disable-gpu', '--no-sandbox', '--mute-audio',
-  `--window-size=${W},${H}`, '--hide-scrollbars',
-  `--remote-debugging-port=${cdpPort}`, `--user-data-dir=${profile}`, 'about:blank',
-], { stdio: ['ignore', 'pipe', 'pipe'] });
+const chrome = spawnChrome(profile, cdpPort, W, H);
 
 try {
   const cdp = await connect(await waitForTarget(cdpPort));
@@ -67,10 +81,17 @@ try {
     // framing over whatever we just captured, and every shot comes out
     // identical — which is exactly what happened the first time this ran.
     await ev(cdp, '(()=>{window.velo.loop.stop();return 1})()');
+    // FULL DETAIL FOR A SCREENSHOT. The adaptive system is doing its job during
+    // the drive above, but a still taken to judge the art must show the art
+    // rather than whatever the last two seconds of frame times asked for.
+    await ev(cdp, '(()=>{window.velo.art.adaptive=0;window.velo.art.quality=1;return 1})()');
 
     const where = await ev(cdp, 'JSON.stringify({x:window.velo.sim.state.px,y:window.velo.sim.state.py})');
     const { x, y } = JSON.parse(where);
-    const variants = [
+    const variants = at.length === 3 ? [
+      ['at', `window.velo.renderAt(${at[0]},${at[1]},${at[2]},{art:true})`],
+      ['at-debug', `window.velo.renderAt(${at[0]},${at[1]},${at[2]},{art:true,debug:true})`],
+    ] : [
       ['art-62', `window.velo.renderAt(${x},${y},62,{art:true})`],
       ['art-110', `window.velo.renderAt(${x},${y},110,{art:true})`],
       ['art-debug', `window.velo.renderAt(${x},${y},62,{art:true,debug:true})`],
@@ -83,12 +104,12 @@ try {
       ['art-tight-debug', `(()=>{const g=window.velo.tightestGap();return window.velo.renderAt(g.x,g.y,62,{art:true,debug:true})})()`],
       ['art-overview', `window.velo.renderAt((window.velo.level.minX+window.velo.level.maxX)/2,(window.velo.level.minY+window.velo.level.maxY)/2,Math.min(30,${W - 80}/(window.velo.level.maxX-window.velo.level.minX)),{art:true,overview:1})`],
     ];
-    for (const [name, expr] of variants) {
+    for (const [name, expr] of variants.filter(([n]) => !only.length || only.includes(n))) {
       await ev(cdp, `(()=>{${expr};return 1})()`);
       const r = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false, fromSurface: true });
       await writeFile(join(OUT, `${lv}--${name}.png`), Buffer.from(r.data, 'base64'));
     }
-    console.log(`    ${lv}: ${variants.length} shots`);
+    console.log(`    ${lv}: ${variants.filter(([n]) => !only.length || only.includes(n)).length} shots`);
   }
   console.log(`==> ${OUT}`);
 } catch (e) {

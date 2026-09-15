@@ -27,7 +27,14 @@ import type { CompiledPolygon, Level } from '@/sim/level.ts';
 import type { ArtParams } from './params.ts';
 import { faceThreshold } from './params.ts';
 import type { Palette } from './palette.ts';
-import { alpha, HAZE, HAZE_A, wash } from './palette.ts';
+import { alpha, HAZE, HAZE_A, levelPalette, wash } from './palette.ts';
+import type { StyleVariant } from './variant.ts';
+import { deriveVariant, MID_VARIANT } from './variant.ts';
+import type { SolidField } from './space.ts';
+import { buildField, playSolidFraction } from './space.ts';
+import { planProps } from './props.ts';
+import type { BakedProp } from './propdraw.ts';
+import { bakeProp } from './propdraw.ts';
 import { rng, seedFrom, substream } from './rng.ts';
 import type { Rng } from './rng.ts';
 import { CHUNK, chunkKey, edgesOfPoly, hazardCorners, DEFAULT_HAZARD } from './geom.ts';
@@ -111,6 +118,26 @@ export interface BakedLevel {
   /** What the bake was built for. A mismatch means rebake. */
   signature: string;
   palette: Palette;
+  /** The level's non-colour look parameters: panel pitch, hatch, light, density. */
+  variant: StyleVariant;
+  /** Set dressing, already in world-space Path2D and culled by bounding box. */
+  props: BakedProp[];
+  /**
+   * The subset drawn INSIDE the solid — road markings and stencilled signage.
+   * Split at bake time rather than filtered per frame, because a filter in a
+   * frame loop is an allocation sixty times a second for an answer that never
+   * changes.
+   */
+  paint: BakedProp[];
+  /**
+   * Solid occupancy and clearance, kept past the bake on purpose.
+   *
+   * The prop placement needs it, and so does the ADAPTIVE DETAIL system: the
+   * fraction of the viewport that is solid is the cheapest honest predictor of
+   * what a frame will cost, and unlike measured frame time it is knowable
+   * BEFORE the frame is drawn. Ninety-six lookups a frame.
+   */
+  field: SolidField;
   polys: BakedPoly[];
   /** Stepped luminance bands, lightest first. Strips, with bounds to cull by. */
   bands: { path: Path2D; color: string; minY: number; maxY: number }[];
@@ -125,7 +152,10 @@ export interface BakedLevel {
   /** For the haze: everything above this y gets the extra light wash. */
   brightY: number;
   /** Diagnostics, reported by bin/artbench. */
-  stats: { subpaths: number; stamps: number; chevrons: number; pipes: number; ms: number };
+  stats: {
+    subpaths: number; stamps: number; chevrons: number; pipes: number; ms: number;
+    props: number; sites: number; refused: number; budget: number;
+  };
 }
 
 /**
@@ -134,7 +164,10 @@ export interface BakedLevel {
  * geometry mid-drag, so `detail` scales opacity rather than count.
  */
 export function bakeSignature(level: Level, p: ArtParams): string {
-  return `${level.simHash}|${p.faceAngle}`;
+  // `props` and `parallax` are deliberately absent: they are draw-time gates,
+  // so dragging either must not rebuild a level's geometry mid-drag. `derive`
+  // and `variety` are present because they change what gets built.
+  return `${level.simHash}|${p.faceAngle}|${p.derive}|${p.variety}`;
 }
 
 // --- densities, in world units ----------------------------------------------
@@ -149,13 +182,11 @@ export function bakeSignature(level: Level, p: ArtParams): string {
 // the radius keeps the grain and drops the price. Measured on 20-close-quarters,
 // where the solid fills nine tenths of the screen and this layer was the single
 // most expensive thing in the frame.
-const PATCH_PER_M2 = 0.11;
-const CRACK_PER_M2 = 0.035;
+// Phase 2 moved the densities themselves onto the per-level StyleVariant —
+// blotches, cracks, panel pitch, stains and wall stamps all vary by level now,
+// because a palette swap alone still reads as the same room repainted. What is
+// left here is the one number the variant does not touch.
 const PATCH_R_MIN = 0.4;
-const PATCH_R_SPAN = 0.95;
-const PANEL_W = 2.0;
-const PANEL_H = 1.0;
-const WALL_STAMP_PER_M2 = 0.012;
 /**
  * Metres of free space a ceiling needs before anything gets hung under it.
  * Three and a half is about two bike-heights: enough that the pipework is
@@ -163,12 +194,21 @@ const WALL_STAMP_PER_M2 = 0.012;
  */
 const PIPE_MIN_CLEARANCE = 3.5;
 const REGION_MARGIN = 26;
-const BAND_COUNT = 6;
 
 export function bakeLevel(level: Level, params: ArtParams, palette: Palette): BakedLevel {
   const t0 = performance.now();
   const seed = seedFrom(level.simHash);
   const t = faceThreshold(params);
+
+  // THE PALETTE. `params.derive` is the A/B switch, and the third argument is
+  // what it switches back TO: at 0 every level is drawn in the one hand-authored
+  // palette, which is exactly Phase 1's look and therefore the honest
+  // comparison for "did per-level palettes earn their place". At 1 — the
+  // default — a level with no style block gets a palette derived from its own
+  // simHash, and an explicit `style.palette` or `style.colors` still wins over
+  // both.
+  const P = params.derive > 0 ? levelPalette(level.style, level.simHash) : palette;
+  let V = MID_VARIANT;
 
   const minX = level.minX - REGION_MARGIN;
   const minY = level.minY - REGION_MARGIN;
@@ -176,21 +216,42 @@ export function bakeLevel(level: Level, params: ArtParams, palette: Palette): Ba
   const maxY = level.maxY + REGION_MARGIN;
 
   const brightY = level.maxY - (level.maxY - level.minY) * 0.22;
+  // The field first, because how solid this level's frames typically are is an
+  // input to BOTH the look parameters and the prop budget: a level whose frames
+  // are mostly material cannot afford the dense end of either range.
+  const field = buildField(level);
+  const busy = playSolidFraction(field, level);
+  if (params.derive > 0) V = deriveVariant(level.simHash, params.variety, level.style, busy);
   const out: BakedLevel = {
     signature: bakeSignature(level, params),
-    palette,
+    palette: P,
+    variant: V,
+    props: [],
+    paint: [],
+    field,
     polys: [],
-    bands: bakeLuminance(minX, minY, maxX, maxY, brightY, palette, substream(seed, 'lum')),
-    wedge: bakeWedge(minX, minY, maxX, maxY, substream(seed, 'wedge')),
-    wall: bakeWall(minX, minY, maxX, maxY, palette, seed),
+    bands: bakeLuminance(minX, minY, maxX, maxY, brightY, P, V, substream(seed, 'lum')),
+    wedge: bakeWedge(minX, minY, maxX, maxY, V),
+    wall: bakeWall(minX, minY, maxX, maxY, P, V, seed),
     minX, minY, maxX, maxY,
     brightY,
-    stats: { subpaths: 0, stamps: 0, chevrons: 0, pipes: 0, ms: 0 },
+    stats: { subpaths: 0, stamps: 0, chevrons: 0, pipes: 0, ms: 0, props: 0, sites: 0, refused: 0, budget: 0 },
   };
 
   level.polys.forEach((poly, i) => {
-    out.polys.push(bakePoly(poly, i, t, palette, seed, minX, minY, maxX, maxY, level.polys, out.stats));
+    out.polys.push(bakePoly(poly, i, t, P, V, seed, minX, minY, maxX, maxY, level.polys, out.stats));
   });
+
+  // Set dressing. Planned against the clearance field, budgeted by level area,
+  // then baked into world-space Path2D like everything else.
+  const plan = planProps(level, P, V, t, field, busy);
+  const allProps = plan.props.map((pr) => bakeProp(pr, P));
+  out.props = allProps.filter((x) => x.prop.cls !== 'paint');
+  out.paint = allProps.filter((x) => x.prop.cls === 'paint');
+  out.stats.props = plan.props.length;
+  out.stats.sites = plan.sites;
+  out.stats.refused = plan.refused;
+  out.stats.budget = plan.budget;
 
   for (const c of out.wall.values()) out.stats.stamps += c.stamps.length;
   out.stats.ms = performance.now() - t0;
@@ -204,6 +265,7 @@ function bakePoly(
   index: number,
   faceT: number,
   P: Palette,
+  V: StyleVariant,
   seed: number,
   rminX: number, rminY: number, rmaxX: number, rmaxY: number,
   all: readonly CompiledPolygon[],
@@ -314,7 +376,7 @@ function bakePoly(
   const by0 = poly.solidInside ? Math.max(rminY, poly.minY) : rminY;
   const bx1 = poly.solidInside ? Math.min(rmaxX, poly.maxX) : rmaxX;
   const by1 = poly.solidInside ? Math.min(rmaxY, poly.maxY) : rmaxY;
-  const tex = bakeTexture(bx0, by0, bx1, by1, substream(seed, `tex${index}`), stats);
+  const tex = bakeTexture(bx0, by0, bx1, by1, V, substream(seed, `tex${index}`), stats);
 
   stats.stamps += stamps.length;
   stats.chevrons += chevrons.length;
@@ -370,7 +432,8 @@ function bakeChevron(c: ReturnType<typeof hazardCorners>[number]): Chevron {
 }
 
 function bakeTexture(
-  x0: number, y0: number, x1: number, y1: number, r: Rng, stats: BakedLevel['stats'],
+  x0: number, y0: number, x1: number, y1: number, V: StyleVariant, r: Rng,
+  stats: BakedLevel['stats'],
 ): Map<number, TexChunk> {
   const out = new Map<number, TexChunk>();
   const cx0 = Math.floor(x0 / CHUNK);
@@ -392,11 +455,11 @@ function bakeTexture(
       // Seeded blotches. Two tones so the surface has a grain rather than a
       // noise; both go into ONE path each, because a thousand separate fills is
       // the difference between free and not.
-      const nb = Math.floor(area * PATCH_PER_M2);
+      const nb = Math.floor(area * V.patchPerM2);
       for (let i = 0; i < nb; i++) {
         const px = ax + r() * w;
         const py = ay + r() * h;
-        const rad = PATCH_R_MIN + r() * PATCH_R_SPAN;
+        const rad = PATCH_R_MIN + r() * V.patchRadius;
         const k = 6 + Math.floor(r() * 4);
         const into = r() < 0.55 ? t.patchA : t.patchB;
         for (let j = 0; j < k; j++) {
@@ -410,7 +473,7 @@ function bakeTexture(
         stats.subpaths++;
       }
 
-      const nc = Math.floor(area * CRACK_PER_M2);
+      const nc = Math.floor(area * V.crackPerM2);
       for (let i = 0; i < nc; i++) {
         let px = ax + r() * w;
         let py = ay + r() * h;
@@ -465,7 +528,8 @@ function clearanceUnder(all: readonly CompiledPolygon[], e: ArtEdge): number {
 // --- background wall --------------------------------------------------------
 
 function bakeLuminance(
-  x0: number, y0: number, x1: number, y1: number, brightY: number, P: Palette, r: Rng,
+  x0: number, y0: number, x1: number, y1: number, brightY: number, P: Palette,
+  V: StyleVariant, r: Rng,
 ): { path: Path2D; color: string; minY: number; maxY: number }[] {
   // Stepped, hard-edged, staggered: light spills from above, and a gradient
   // would read as fog rather than as a lit shaft.
@@ -478,16 +542,20 @@ function bakeLuminance(
   // actually on screen. It measured as most of the background's cost.
   const out: { path: Path2D; color: string; minY: number; maxY: number }[] = [];
   const span = y1 - y0;
+  // How many steps the light falls in, and how ragged each boundary is, are
+  // both per-level: a four-band room with a straight edge is a flat industrial
+  // ceiling, and a nine-band one with a torn edge is a shaft.
+  const bands = V.lumBands;
   const jag = (i: number): number[] => {
     const steps = 4;
     const ys: number[] = [];
-    const yTop = y1 - (i / BAND_COUNT) * span;
-    for (let k = 0; k <= steps; k++) ys.push(yTop + (r() - 0.5) * span * 0.04);
+    const yTop = y1 - (i / bands) * span;
+    for (let k = 0; k <= steps; k++) ys.push(yTop + (r() - 0.5) * span * V.lumJag);
     return ys;
   };
   let upper = [y1, y1, y1, y1, y1];
-  for (let i = 1; i <= BAND_COUNT; i++) {
-    const lower = i === BAND_COUNT ? [y0, y0, y0, y0, y0] : jag(i);
+  for (let i = 1; i <= bands; i++) {
+    const lower = i === bands ? [y0, y0, y0, y0, y0] : jag(i);
     const p = new Path2D();
     const steps = upper.length - 1;
     p.moveTo(x0, upper[0]);
@@ -510,13 +578,14 @@ function bakeLuminance(
 }
 
 function bakeWedge(
-  x0: number, y0: number, x1: number, y1: number, r: Rng,
+  x0: number, y0: number, x1: number, y1: number, V: StyleVariant,
 ): { path: Path2D; alpha: number; minX: number; maxX: number }[] {
-  // A hard-edged shaft of light. Where it falls is seeded rather than authored:
-  // it is atmosphere, and the one thing it must not do is look identical on
-  // every level.
-  const cx = x0 + (0.25 + r() * 0.5) * (x1 - x0);
-  const slant = (r() - 0.5) * 0.5;
+  // A hard-edged shaft of light. Where it falls, how far it leans and how many
+  // there are all come off the level's own variant now rather than off a local
+  // RNG draw — the one thing this must not do is look identical on every level,
+  // and putting it on the variant is what lets a level override it.
+  const cx = x0 + V.wedgeAt * (x1 - x0);
+  const slant = V.wedgeSlant;
   const mk = (halfTop: number, halfBottom: number, a: number): { path: Path2D; alpha: number; minX: number; maxX: number } => {
     const p = new Path2D();
     const drop = (y1 - y0) * slant;
@@ -531,11 +600,19 @@ function bakeWedge(
       maxX: Math.max(cx + halfTop, cx + halfBottom + drop),
     };
   };
-  return [mk(3.5, 8, 0.14), mk(1.5, 4, 0.1)];
+  // Count and width are per-level too. A level with no shaft at all is a
+  // legitimate room, and the generator is allowed to make one.
+  const out: { path: Path2D; alpha: number; minX: number; maxX: number }[] = [];
+  const w = V.wedgeWidth;
+  for (let i = 0; i < V.wedgeCount; i++) {
+    const k = 1 - i * 0.42;
+    out.push(mk(3.5 * w * k, 8 * w * k, 0.14 - i * 0.03));
+  }
+  return out;
 }
 
 function bakeWall(
-  x0: number, y0: number, x1: number, y1: number, P: Palette, seed: number,
+  x0: number, y0: number, x1: number, y1: number, P: Palette, V: StyleVariant, seed: number,
 ): Map<number, WallChunk> {
   const out = new Map<number, WallChunk>();
   const cx0 = Math.floor(x0 / CHUNK);
@@ -554,25 +631,30 @@ function bakeWall(
       };
       const ax = cx * CHUNK;
       const ay = cy * CHUNK;
-      const rows = Math.ceil(CHUNK / PANEL_H);
-      const colsN = Math.ceil(CHUNK / PANEL_W) + 1;
+      // The COURSING. Panel pitch is the loudest non-colour cue a wall has,
+      // and it is the difference between a room built of two-metre precast
+      // slabs and one built of one-metre blocks.
+      const pw = V.panelW;
+      const ph = V.panelH;
+      const rows = Math.ceil(CHUNK / ph);
+      const colsN = Math.ceil(CHUNK / pw) + 1;
       for (let row = 0; row < rows; row++) {
-        const py = ay + row * PANEL_H;
-        const off = (row % 2) * PANEL_W * 0.5;
+        const py = ay + row * ph;
+        const off = (row % 2) * pw * 0.5;
         c.grid.moveTo(ax, py);
         c.grid.lineTo(ax + CHUNK, py);
         c.gridHi.moveTo(ax, py + 0.035);
         c.gridHi.lineTo(ax + CHUNK, py + 0.035);
         for (let col = 0; col < colsN; col++) {
-          const px = ax + col * PANEL_W - off;
+          const px = ax + col * pw - off;
           c.grid.moveTo(px, py);
-          c.grid.lineTo(px, py + PANEL_H);
+          c.grid.lineTo(px, py + ph);
           const v = r();
-          if (v < 0.16) c.toneDark.rect(px, py, PANEL_W, PANEL_H);
-          else if (v > 0.9) c.toneLight.rect(px, py, PANEL_W, PANEL_H);
-          if (r() < 0.12) {
-            const sx = px + r() * PANEL_W;
-            const sy = py + PANEL_H - r() * PANEL_H * 0.5;
+          if (v < V.panelTone * 0.6) c.toneDark.rect(px, py, pw, ph);
+          else if (v > 1 - V.panelTone * 0.4) c.toneLight.rect(px, py, pw, ph);
+          if (r() < V.stainDensity) {
+            const sx = px + r() * pw;
+            const sy = py + ph - r() * ph * 0.5;
             c.stains.moveTo(sx - 0.2, sy);
             c.stains.quadraticCurveTo(sx, sy + 0.16, sx + 0.24, sy);
             c.stains.lineTo(sx + 0.11, sy - 0.44 - r() * 0.66);
@@ -581,7 +663,7 @@ function bakeWall(
           }
         }
       }
-      const ns = Math.floor(CHUNK * CHUNK * WALL_STAMP_PER_M2);
+      const ns = Math.floor(CHUNK * CHUNK * V.stampPerM2);
       for (let i = 0; i < ns; i++) {
         c.stamps.push({
           key: STENCIL_KEYS[Math.floor(r() * STENCIL_KEYS.length)],

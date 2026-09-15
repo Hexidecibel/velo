@@ -69,10 +69,21 @@ add a script rather than running an ad-hoc command.
 | `bin/air` | Measures jump height and airtime off a fixed synthetic feature, per bike, in metres. Turns "it should catch more air" into a number. |
 | `bin/dive` | Measures chassis pitch under braking and under throttle, in degrees. Turns "braking should slam the front down like gassing lifts it" into a symmetry you can check. |
 | `bin/slope-sweep` | Sweeps a synthetic ramp across slope angle, entry speed, input strategy and transition sharpness, and prints what the bike does. |
+| `bin/artbench` | **Measures the art renderer's frame budget with the camera moving.** Flies the camera across a level at play speed, times the render call against the old flat renderer on the same frames, breaks the cost down layer by layer, and then drives the real game and watches real frame times. Exits 2 if a warm frame's p95 goes over 16.7 ms. Every timed pass runs at FULL detail with the adaptive system off, so "it passes" can never quietly mean "it passed by turning everything off"; what the adaptive system settles at is printed separately. `BENCH_OUT=<file>` appends each level as it finishes, so a killed sweep costs only what it had not reached. `BENCH_ART='{"props":0,...}'` overrides art parameters before measuring, which is how a before/after stays honest on one build. |
+| `bin/shots` | Screenshots several levels at the three zooms the camera reaches, with the art on, the art off, the `G` overlay up, and framed on the level's tightest ceiling. Output to `shots/` (gitignored). The A/B pair is the point: "is the collision edge still the most legible line" is a comparison, not an opinion. `SHOTS_ONLY=art-62` takes one shot per level, which is how you judge twenty levels as a SET; `SHOTS_AT=x,y,zoom` frames one exact place, which is how you find out what a prop that looked wrong in an overview actually is. |
 | `bin/clean` | Removes `dist/` and `tsconfig.tsbuildinfo`; `--all` also removes `node_modules/`. |
 
 `start`, `stop`, `status`, `logs`, `install-units` and `deploy` arrive with the
 server milestone and deliberately do not exist yet.
+
+`bin/_chrome.mjs` is shared by the two scripts that drive headless Chrome, and
+it exists for a reason worth knowing: **both of them kill Chrome in a `finally`,
+which does nothing when the script itself is killed** — and a long sweep gets
+killed routinely. A headless Chrome rasterising a canvas in software sits at
+most of a core rather than idling, so orphans accumulate and the next benchmark
+silently measures the load left behind by the last one. Here that took the same
+level from 77% of the frame budget to 253% over an afternoon. The scripts now
+reap any Chrome holding one of their own profile directories before they start.
 
 ## Controls
 
@@ -86,7 +97,8 @@ server milestone and deliberately do not exist yet.
 | E | **export the last run** as a self-contained `.replay.json` file |
 | L | load a replay file and watch it (or drag one onto the window) |
 | `[` / `]` | previous / next level |
-| G | draw contacts and surface normals |
+| G | **draw the true collision boundary**, its normals and the live contacts, over everything else |
+| V | art renderer on / off — the A/B for readability |
 | H | show/hide the tuning panel — **closed by default**, remembered once you open it |
 | `+` / `-` | zoom bias |
 | P | pause |
@@ -296,6 +308,503 @@ fetch can never reach the game loop. A malformed `data/spec.json` answers 200
 with an `error` field, keeps the last good override, and shows the message:
 a typo in a tuning file must not take the game down or yank the bike back to the
 preset mid-edit.
+
+## The art
+
+Press **V** to turn it off. That toggle is not a leftover — it is the instrument
+the whole look is judged with, and it stays.
+
+Phase 2 added three things on top of the terrain and edge treatment below:
+**every level derives its own palette and its own non-colour look** from its
+`simHash`, **props** with a placement rule and an enforced budget, and an
+**adaptive detail** system that gives back exactly what a long frame costs.
+Those have their own sections further down, and each has its own 0/1 or 0..1
+slider on the panel so it can be compared against the version without it.
+
+### The rule, and the inversion that serves it
+
+> The player and the collision edge are always the highest-contrast things on
+> screen.
+
+The flat renderer obeyed that with a thin cyan line on near-black. It was honest
+and almost unreadable: a dark ledge against a dark cave is a shape you infer
+rather than see, and inferring where the floor is at 20 m/s is not a skill worth
+testing.
+
+The art inverts the value structure. **Solids are dark, air is light** — a lit
+concrete wall behind, dark terrain in front — so the silhouette of the ground
+reads before any texture, any stencil and any prop. On top of that goes the rule
+that does the actual work:
+
+- **5 px of ink on every collidable edge**, stroked centred on the true boundary.
+- **A coloured lip just inside it**, 4 px wide: **yellow on tops, orange on
+  sides, lilac on undersides.** The colour tells you which way a surface faces
+  before you have parsed its shape.
+- **Cel bands** behind the lip in the same three classes — lit, mid, dark — with
+  drips off the undersides.
+
+Both widths are in SCREEN pixels, not metres, because the rule is about what an
+eye can resolve; the cel bands are in metres, because a band is material catching
+light. Ink and lip taper below 40 px/m so the overview reads as shape rather than
+as a hairball of outlines.
+
+The lip is stroked at `inkWidth + 2 * lipWidth` and clipped to the solid. That
+arithmetic matters: stroke it at `2 * lipWidth` — which is what the mockup did
+and what this shipped first — and the ink, being centred, covers the lip exactly.
+The first screenshots came out with no lip at all anywhere, which is the kind of
+bug you only find by looking.
+
+### What derives from geometry, and therefore works on every level
+
+Nothing below is placed by hand. All of it falls out of the polygons plus a
+palette, so a generated level gets it for free:
+
+- Terrain base fill, seeded blotches, cracks and diagonal tooth.
+- Cel bands and the ink-and-lip edge treatment, classified by each edge's
+  **air-facing normal** — which is `CompiledPolygon.nx/ny` unchanged, the same
+  array the narrowphase reads. The art and the sim cannot disagree about which
+  side the material is on because they share the number.
+- **Hazard chevrons at every convex top-to-side corner** — which is every ledge
+  you can ride off. This is the cheapest safety feature in the game: it marks the
+  drop-offs of a level nobody has ever looked at.
+- Stencil stamps at seeded intervals along long top edges.
+- Under-ledge shadow bands, and bracketed pipework under ceilings longer than 4 m.
+- The background wall: stepped luminance bands, a concrete panel grid with seeded
+  tone and stains, a hard light wedge, seeded panel stencils, and drifting dust.
+- The bloom pass, the apples, the bike, the rider, the FX and the in-canvas HUD.
+- **The palette itself, and every non-colour look parameter** — panel pitch,
+  hatch, band contrast, light-wedge angle — derived from the level's `simHash`.
+- **Every prop in the game**: pieces, tags, numerals, posters, banners, signs,
+  vents, ladders, hose boxes, lamps, conduit, cables and painted floor marks,
+  placed from a clearance field computed off the same polygons.
+- **Parallax depth layers**, which are the level's own rings under a transform.
+
+Two of those needed a rule the mockup did not have, because the mockup was one
+hand-framed shot of one ledge:
+
+**Convexity flips sign with `solidInside`.** On a `ground` platform the solid is
+to the LEFT of the direction of travel and a ledge is a left turn; in a `cave`
+the solid is on the RIGHT and a ledge is a right turn. The mockup only ever ran
+on ground polygons and needed one sign. Most of our levels are a single cave, so
+getting this wrong would have put chevrons on every inside corner of every room
+and none on any actual ledge. A minimum turn angle keeps tessellated arcs — which
+are hundreds of segments whose class drifts gradually — from sprouting a chevron
+every few centimetres.
+
+**Pipework needs headroom.** A bracketed pipe slung under a ledge looks exactly
+like collidable geometry. Hanging one through a two-metre corridor on
+`19-low-roof`, whose entire lesson is head clearance, would be the renderer lying
+about where the ceiling is. So the bake measures the free space under every
+candidate ceiling and hangs nothing where there is less than 3.5 m, and clamps
+the under-ledge shadow to under half the clearance so a tight corridor does not
+go black.
+
+### `G` still tells the truth
+
+The debug overlay now draws the **true collision boundary** in a colour the
+palette does not contain, plus normals and live contacts, **last and at full
+opacity, over everything else.** An overlay the terrain can paint over is not a
+check. `bin/shots` captures it on every level, and the green line sits exactly on
+the ink.
+
+### How it renders at 60 fps with the camera moving
+
+This was the actual risk and it was measured before any art was tuned.
+
+The mockup draws **one static frame into cached screen-space layers**. Screen
+space is worthless the instant a camera pans, and the obvious replacement — a
+world-space tile cache of rendered pixels — buys a hitch at every tile boundary,
+a memory budget, a zoom ladder and an invalidation policy.
+
+**None of that was necessary, because the expensive thing was never the pixels.
+It was rebuilding the geometry.** A few thousand seeded blotches, cracks, stains
+and stencil placements, reconstructed from the RNG sixty times a second. So
+`src/client/art/bake.ts` builds them **once, as `Path2D` objects in WORLD
+coordinates**, and a frame becomes a few dozen fills under the existing view
+transform. There is no pixel cache, so there is nothing to invalidate when the
+camera moves and nothing to pop in when it moves fast. The result is also exact
+at every zoom instead of being a scaled bitmap.
+
+Geometry is filed into a 12 m chunk grid and a frame fills only the chunks the
+viewport touches, so a 428 m level costs the same as a 50 m one. The bake is
+seeded off `simHash`, so the cracks in a level are the same on every machine and
+do not move when somebody retitles it.
+
+Four things came out of measurement rather than design:
+
+1. **Canvas2D rasterises lazily.** The first version of `bin/artbench` timed the
+   render call alone and reported the old renderer at 0.33 ms and blamed 11.8 ms
+   on the bloom pass — which was simply the one call that read the canvas back
+   and therefore paid for everybody else's deferred work. Every sample now forces
+   a flush with a 1x1 `getImageData`, and the readback cost is reported so it can
+   be subtracted.
+2. **The haze was two full-viewport alpha fills a frame for a result that never
+   changes.** It is now composited into the luminance band colours at bake time.
+   Same arithmetic, no per-frame cost.
+3. **The luminance bands were six stacked half-planes** — six full-screen fills
+   to show two. They are strips with bounds now.
+4. **Hatch is generated live over the viewport**, not baked. It is the one layer
+   where "build it once" loses: baked, it meant walking thousands of line
+   subpaths, mostly offscreen, to draw the two hundred that are on screen. Its
+   pitch is bounded in screen pixels and doubles as you zoom out, because a
+   world-fixed pitch is right at the base camera and catastrophic in the overview.
+
+Texture fades out below 38 px/m and is gone by 26. Both sit under the camera's
+own 38 px/m floor, so it only ever fires in the overview — where the texture is
+sub-pixel mud that hides the silhouette AND by far the most expensive thing on
+screen. Turning it off there is a readability win and a performance win at once.
+
+`bin/artbench` is the standing check. It exits 2 if a warm frame's p95 goes over
+16.7 ms.
+
+Every timed pass runs at **full detail with the adaptive system off**, because a
+budget check that lets the renderer turn layers off to pass is not a check. What
+the adaptive system settles at is measured separately, during the real loop, and
+printed beside the honest numbers.
+
+It also measures **Phase 1's parameter set as one more pass in the same
+process**, so the before/after is a comparison rather than two readings. This
+box is shared: a sweep taken while another project's build agents were running
+reported a level at 162% of budget that measures well under it when the box is
+quiet. Two separate runs cannot tell those apart; two passes in one process
+both pay whatever the load is.
+
+### The numbers
+
+Measured by `bin/artbench` at 1600x900, camera flying across the level at 18 m/s.
+**This box has no GPU**, so Chrome rasterises the canvas in software — these are a
+FLOOR, not a ceiling. A machine with a GPU is faster, never slower.
+
+#### Phase 1 against Phase 2, on interleaved frames
+
+The headline for Phase 2, and the only measurement here that survives a busy
+machine. `BENCH_AB=1` flies one pass across the level alternating between the
+Phase 1 parameter set and the Phase 2 one in blocks, so both configurations pay
+whatever load the box is under. **The ratio is the number to read**; the
+absolute milliseconds in that sweep were taken while another project's agents
+had twelve cores at a load average above twenty, and they say more about the box
+than about the renderer.
+
+Across all twenty levels:
+
+| | median | mean | range |
+| --- | --- | --- | --- |
+| Phase 2 / Phase 1, frame mean | **1.14x** | 1.11x | 0.80x – 1.44x |
+| Phase 2 / Phase 1, frame p95 | **1.04x** | 1.05x | 0.61x – 1.58x |
+
+So the palettes, the variant, the props and the parallax together cost roughly
+**a tenth of a frame more than Phase 1 at the mean, and are inside the noise at
+p95.** Five levels of twenty come in above 1.25x at the mean; the two with the
+least headroom, `19-low-roof` and `20-close-quarters`, both come in BELOW 1.0 —
+which is the level-aware density and prop clamps doing exactly what they were
+built to do.
+
+Three of the four things that make up that cost were free or nearly so. The one
+that was not was the variant's texture density, and the fix was not to narrow
+the range for everybody but to bound its expensive half by what each level's own
+frames can afford.
+
+#### Absolute cost, on a quiet box
+
+From a sweep taken when the machine was idle. Net of the raster-flush readback
+the script reports separately:
+
+| Level | size | art @62 px/m | art @110 | art, overview | OLD renderer @62 |
+| --- | --- | --- | --- | --- | --- |
+| `07-the-chimney` | 52 x 48 m | 8.9 / 12.2 | 8.0 / 9.9 | 3.0 / 3.7 | 0.7 / 2.2 |
+| `10-cathedral` | 176 x 49 m | 8.3 / 9.6 | 6.6 / 7.8 | 3.8 / 5.2 | 1.0 / 1.6 |
+| `16-one-way` | 328 x 55 m | 7.7 / 9.8 | 7.2 / 9.8 | 3.6 / 4.8 | 1.1 / 2.5 |
+| `19-low-roof` | 290 x 11 m | 12.4 / 14.1 | 7.5 / 11.0 | 2.9 / 3.8 | 1.2 / 2.2 |
+| `20-close-quarters` | 332 x 17 m | 13.3 / 14.8 | 10.5 / 13.0 | 4.1 / 5.3 | 1.3 / 2.0 |
+
+(mean / p95, milliseconds, PHASE 1. Budget is 16.7 ms.)
+
+The bake is 16-56 ms once per level, on the frame the level loads, next to a
+level-change that already rebuilds the sim. There is no per-frame cache, so there
+is no warm-up and **no hitching when the camera moves fast**: warm and cold frames
+cost the same thing because nothing is ever rebuilt mid-run.
+
+The worst case is not the biggest level, it is the SHORTEST one. `19-low-roof`
+and `20-close-quarters` are 11 m and 17 m tall, so the whole level height is on
+screen at once and the solid fills nine tenths of the frame; `10-cathedral` is 49
+m tall and most of its frame is background. Cost tracks how much SOLID is on
+screen, not how big the level is.
+
+Layer by layer, on the levels where it is tightest: bloom 2.0-4.4 ms, terrain
+blotches and cracks 1.0-4.4, hatch 0.8-3.6, wall detail 1.0-1.5, everything else
+under half a millisecond each. Bloom is the first thing to turn down, it is a
+slider, and it is also the first thing the adaptive system gives up.
+
+#### What the adaptive system is worth
+
+The same sweep drives the real game loop twice, with the adaptive system off and
+on. Under the heavy external load it was taken under — which is a fair stand-in
+for a machine much slower than the target — it is the difference between
+dropping frames and not:
+
+| Level | art on, fixed detail | adaptive |
+| --- | --- | --- |
+| `17-backswing` | 11 fps | **27 fps** |
+| `09-runaway` | 20 fps | **35 fps** |
+| `10-cathedral` | 23 fps | **40 fps** |
+| `16-one-way` | 23 fps | **47 fps** |
+| `20-close-quarters` | 24 fps | **45 fps** |
+| `15-feather` | 27 fps | **55 fps** |
+| `19-low-roof` | 33 fps | **51 fps** |
+| `01-first-light` | 60 fps | 60 fps — nothing to do |
+
+On a quiet box most levels sit at 60 fps either way and the DETAIL chip never
+appears, which is the intended resting state.
+
+**A caution about reading any of these numbers.** This box is shared, and a
+headless Chrome rasterising a canvas in software sits at most of a core rather
+than idling. A sweep run while another project's build agents were busy measured
+`01-first-light` — one of the cheapest levels — at 153% of budget on the PHASE 1
+parameter set, and the same level reads 90% when the box is quiet. That is why
+the A/B is interleaved and why `bin/_chrome.mjs` exists.
+
+### Every level is its own room now
+
+Twenty levels used to share one palette and one set of seeded parameters, so
+they read as twenty screenshots of the same place. That was a bigger problem
+than prop density, and it is fixed first because it costs nothing at runtime.
+
+**A level with no `style` block derives its palette from its `simHash`.** All
+twenty differ from each other with zero hand-authoring, and a given level looks
+the same on every load and every machine. `style.palette` naming a palette this
+build ships wins over the derivation, and `style.colors` overrides individual
+slots on top of either. `style` is still not in `simHash` — recolouring a level
+must never retire its leaderboard — and `level.test.ts` still asserts that.
+
+**The generator cannot produce an illegible collision edge.** That is the part
+that makes generated palettes safe rather than merely convenient. Everything is
+chosen in LUMINANCE rather than in lightness, because luminance at a fixed HSL
+lightness varies by a factor of five across the hue wheel — a lime at 0.35 is
+brighter than a navy at 0.6 — so sampling lightness and repairing afterwards
+produced palettes whose lit cel band out-shone anything a saturated lip could
+reach. Sampling luminance and solving for it makes the floors arithmetic:
+
+| Guarantee | Floor | Enforced by |
+| --- | --- | --- |
+| Lit (floor) lip vs the brightest terrain tone it can sit on | 4.6:1 | target luminance derived from that tone |
+| Side and underside lips, same | 3.2:1 | same |
+| Solid vs the darkest wall band, after the haze | 1.55:1 | the solid's luminance ceiling comes FROM the wall |
+| The three lip hues are distinguishable | ≥ 40° apart | placed at fixed offsets, so it needs no rejection loop |
+| The ceiling lip never out-shines the floor lip | — | a luminance ceiling on the underside lip |
+
+`palette.test.ts` runs all of that over **400 derived palettes** and reports
+which slot failed rather than merely that one did. The shipped `concrete`
+palette is held to the same bar, so the floors cannot drift away from the thing
+they were calibrated on.
+
+One finding that only a contact sheet of all twenty could have produced:
+**a bright wall has no colour left to have.** Luminance and chroma trade against
+each other in sRGB, so a lightly saturated wall driven to 0.7 luminance comes
+out as the same near-white whatever hue it started from. The first sweep had
+twenty visibly different solids standing in front of twenty identical pale
+walls. Raising the wall's saturation floor and lowering the top of its luminance
+ramp fixed it, and neither of those is something the per-palette tests could
+have caught — they check legibility, and twenty legible rooms that look alike
+pass every one of them.
+
+**Hue alone is not enough.** A palette swap still reads as the same room
+repainted, so a level also derives a `StyleVariant`: concrete panel pitch, panel
+tone frequency, stain density, wall stencil density, blotch and crack density,
+hatch pitch and hatch run, the number of luminance bands and how ragged their
+edges are, how many shafts of light there are, how far they lean and where they
+fall, parallax depth, and prop density. Every field is a midpoint plus a spread,
+and the panel's **variety** slider scales the *spread* — so 0 is exactly the old
+uniform look and is the honest A/B for whether any of this earned its place.
+
+Two of the variant's limits are frame-budget numbers rather than taste:
+`panelW`/`panelH` floor at 1.3 x 0.7 m and `hatchPitch` at 0.18 m. The first
+version let the coursing go to 0.9 x 0.5, which is four and a half times the
+strokes of the mockup's 2.0 x 1.0 — measured, that took the wall-detail layer on
+`20-close-quarters` from about 1.3 ms to 3.1, on the one level with no headroom
+to give.
+
+### Props: the rule for where a prop goes
+
+Phase 1 named the blocker precisely, and this is it. The mockup's props are all
+here now as **parameterised generators** rather than fixed drawings — the VELO
+piece, handstyle tags, painted numerals, posters, banners, arrow signs, a fan
+vent, ladders, hose boxes, wall lamps with their light cones, conduit runs and
+slung cables — and every one varies by seed in size, colour, text and placement.
+
+Placement is seeded from `simHash`, so a level's dressing is stable across loads
+and differs between levels.
+
+**The text is geometry, not a font.** The mockup leaned on Bungee and Permanent
+Marker from Google Fonts; pulling those in would make the art a network
+dependency, and a piece that silently falls back to Arial on a cold load is
+worse than one more chevron. `art/letters.ts` is a stroke alphabet — polylines
+in a unit box — so a piece is the same path stroked fat for the body, offset for
+the extrusion, and again in ink for the outline. Identical on every machine, at
+every zoom, with nothing to load. Tags are a seeded scrawl rather than letters,
+because a tag is read as a gesture and nobody reads the real ones either.
+
+#### Visibly non-collidable, structurally
+
+Every prop is drawn in the **background pass, behind every solid**. Terrain
+paints over it, so a prop can never cover a collision edge, and a lamp that
+overlaps a ledge on screen plainly reads as being behind it. On top of that,
+every prop belongs to exactly one class, and each class carries a geometric
+invariant that `props.test.ts` checks **on every prop of all twenty real
+levels**:
+
+| Class | What it is | Invariant |
+| --- | --- | --- |
+| `paint` | Pigment on the terrain — floor markings, stencilled signage | Its whole box is INSIDE solid material |
+| `mural` | Flat art on the background plane — pieces, numerals, tags | ≥ 0.8 m of clear air around its whole box |
+| `fixture` | A thing in the room — ladders, lamps, posters, vents, conduit | Body entirely in air, **and** the site has the room |
+
+The corollary is the rule that would have prevented the Phase 1 bug outright:
+**a tight space gets paint and never an object.** A fixture needs 3.0 m of free
+air, a hanging one 4.2 m, and — separately — the floor-to-ceiling corridor
+*through the prop itself* must be at least 3.0 m. That last test is not
+redundant: `d.clear` measures out along the mount normal, so a lamp bolted to a
+wall with six metres in front of it passes that while still hanging in a
+two-and-a-half-metre corridor. The test found exactly that on `12-whoops`.
+
+Prop colours are drawn from a decor set with **the three lip colours filtered
+out by appearance**, not by slot name. Exact-match filtering catches the
+hand-authored palette, where `yellow` and `lipTop` are literally the same
+string; it does not catch a derived palette whose decor green sits a few degrees
+of hue and a few per cent of luminance from its floor lip, which looks identical
+on screen. So a decor colour is dropped if it is within 22° of hue AND under
+1.35:1 of contrast against any lip — unless that would leave fewer than five
+usable colours, in which case the whole set is kept, because a level dressed in
+two colours is worse than one that reuses a hue. Those three colours mean "this
+is the boundary and this is which way it faces"; a sign painted in the floor
+lip's yellow spends the player's attention on the wrong thing.
+
+#### Where the sites come from
+
+`art/space.ts` rasterises the level's solid into a 0.5 m grid once, runs a
+chamfer distance transform over it, and every later question is a lookup. A cell
+is solid if its centre is inside material **or an edge crosses it** — without
+the second pass a wall thinner than the pitch reads as open air, which is the
+one error that could put a prop inside a wall. The error is conservative in the
+right direction: the field can only ever think there is *less* room than there
+is.
+
+Five site kinds, refined against what the twenty levels actually contain:
+
+- **pocket** — a local maximum of the clearance field. These are the rooms, and
+  they take the big flat art.
+- **wall** — a long near-vertical face with air in front. Ladders, conduit,
+  lamps, posters, stencilled signage. The commonest site by a wide margin,
+  because most of these levels are one big cave polygon.
+- **ceiling** — a long down-facing edge with real height beneath it. The hardest
+  site to earn, because it is the one that went wrong.
+- **ledge** — the convex corner where a top edge meets a side edge, reusing the
+  hazard-chevron detector so the two can never disagree about where the drop is.
+- **floor** — a long up-facing edge. Paint only, forever: something standing on
+  the floor is something to hit, and the art does not get to add those.
+
+One measurement in here was silently wrong in the first version, in the way
+worth recording: it used the clearance field sampled a metre out from the
+surface. The field measures distance to the *nearest* solid, and a point a metre
+off a wall is a metre from that wall — so every surface in every level reported
+about 1.0, every fixture failed, and the feature produced nothing at all. **A
+rule that silently refuses everything looks a lot like a rule that is working.**
+`rayGap` marches along the normal instead and reports the real corridor.
+
+#### The budget, enforced from the first prop
+
+Capped by level area, and then **by how solid a typical frame of the level is**,
+measured over screen-sized windows centred on air the bike can actually occupy.
+That second term is the level-aware part: render cost tracks visible solid area,
+so the levels whose frames are mostly material are the ones with no headroom —
+and they are precisely the levels where the choppiness was reported.
+
+| Level | Play-time solid | Props (of budget) | mural / fixture / paint |
+| --- | --- | --- | --- |
+| `16-one-way` | 0.10 | 30 / 52 | 11 / 9 / 10 |
+| `17-backswing` | 0.16 | 30 / 52 | 11 / 6 / 13 |
+| `10-cathedral` | 0.22 | 29 / 35 | 10 / 7 / 12 |
+| `04-switchback` | 0.29 | 18 / 27 | 8 / 3 / 7 |
+| `19-low-roof` | 0.41 | 5 / 5 | 2 / 1 / 2 |
+| `20-close-quarters` | 0.54 | 11 / 11 | 3 / 5 / 3 |
+| `08-needle` | 0.88 | 1 / 5 | 0 / 0 / 1 |
+
+There are also **per-kind quotas**. Without them the first run put seventeen
+graffiti pieces on `15-feather` and twenty-six tags on `17-backswing`, because
+those levels are mostly open air and every pocket took the first kind its site
+offered. A piece is a two-metre word: three across a level is a place somebody
+has been, and seventeen is wallpaper. Sites are walked in a seeded shuffle of a
+canonical order, so quotas spread across the level rather than being spent at
+the left-hand end.
+
+### Adaptive detail
+
+Reported from play, on a machine **with** a GPU: *"feels choppy a lil bit
+sometimes"* on `20-close-quarters`, and then, asked how bad, *"its not like
+SUPER choppy, just a tiny bit here and there"*. Occasional dropped frames, not a
+low frame rate — which matches that level measuring 89% of the budget exactly.
+
+The counterintuitive part is why 20 is the worst level: it is the **shortest**
+one, 17 m tall, so its whole height is on screen and the solid fills most of the
+frame. **Cost tracks visible solid area, not level size.** 19 is the same shape.
+
+Four rules, all asserted in `adapt.test.ts`:
+
+1. **Engage late.** Nothing is scaled until frames actually run long. Trading
+   quality across twenty levels to smooth a hitch on one is a regression dressed
+   as a fix.
+2. **Cheapest reduction first**, not proportional scaling: bloom (the most
+   expensive layer and the most forgiving to lose — it is atmosphere, not
+   information), then props, then blotches and cracks, then hatch, then wall
+   detail. The hatch *pitch* widens as well as fading, because it is the line
+   count that costs.
+3. **Never the ink or the lip.** Nor the cel bands, the chevrons or the
+   silhouette. Degrade decoration, never legibility.
+4. **Back off early.** Full detail returns as soon as there is room, smoothly —
+   the bike's detail tiers already taught that lesson.
+
+It is fed by the **visible solid fraction**, which is knowable *before* the frame
+is drawn. That matters: a controller reading only measured time is always one
+frame behind, and one frame behind is the frame that drops. The cost model is
+`unit × load × costAt(q)` with `unit` the only measured term, so it
+self-calibrates on hardware neither of us has.
+
+The HUD shows a **DETAIL** chip whenever the system is doing anything at all.
+Its absence is informative too: a dropped-frame report with no chip on screen
+means the art was at full detail and the frame was long anyway.
+
+`bin/artbench` measures every timed pass with the adaptive system **off**, so
+"it passes" can never quietly mean "it passed by turning everything off", and
+prints what the adaptive system settled at during the real loop beside the
+honest numbers.
+
+### Parallax, and what a background has to earn
+
+The only backdrop added is **silhouettes of the level's own geometry**, scaled
+about the level centre and held back by a fraction of the camera's offset. No
+bake at all, because the rings already exist and the scale plus the offset are a
+single canvas transform. It is also the only background that cannot contradict
+the level, since it *is* the level.
+
+**It is stroked, not filled, and that is the difference between it earning its
+place and not.** The first version filled each ring. Measured on
+`01-first-light`, two full-viewport fills cost **3.9 ms** — a quarter of the
+frame budget for a wash you can barely see, which is exactly the layer the brief
+said not to add. A stroke pays for a few hundred pixels of line instead of every
+pixel behind the room, and it reads *more* like depth rather than less: a ghost
+outline of another shaft behind this one.
+
+It also fades out as the frame fills with solid, and culls per layer against the
+transformed bounds. A background pass is painted and then painted over, so on
+the levels where the solid fills most of the screen almost none of it is
+visible.
+
+### What this deliberately is still not
+
+- **No hand-placed props.** Every prop in the game is generated. `style.theme`
+  is still a hook nothing reads, and a hand pass per level is still possible but
+  is not something any level needs.
+- **No prop animation beyond the fan.** The blades turn; nothing else moves.
+- **No sound, no particles beyond the existing dust, exhaust and motes.**
 
 ## The camera
 
@@ -833,6 +1342,60 @@ and `src/sim/curvelevel.ts`, which are the same data as TypeScript literals.
   ice and teleporters. Rev 1 ignores them, and the loader **tolerates unknown
   entries rather than rejecting**, which is what keeps a level authored in 2027
   loadable by a 2026 client.
+- **`style` is an optional, purely cosmetic block** — a palette name, a theme
+  tag, explicit colour overrides, non-colour look parameters, and room for art
+  hints nobody has thought of yet:
+
+  ```json
+  "style": { "palette": "concrete", "theme": "industrial",
+             "colors": { "solid": "#26214d" },
+             "variant": { "panelW": 2.6, "wedgeCount": 3 } }
+  ```
+
+  It is honoured now. **A level that says nothing gets a palette and a look
+  derived from its own `simHash`**, which is what makes twenty levels twenty
+  places with no hand-authoring; `style.palette` naming a palette this build
+  ships wins over the derivation, `style.colors` overrides individual slots on
+  top of either, and `style.variant` overrides the non-colour parameters. A
+  malformed override — a colour that is not `#rrggbb`, a variant field that is
+  not a finite number — is **ignored rather than fatal**, and an out-of-range
+  variant field is clamped. A cosmetic hint must never be able to stop a level
+  loading or hand the renderer a value that costs the frame. Unknown keys inside
+  it are carried through untouched, like `zones`.
+
+  **`style` is not part of `simHash`, and that is the whole point.** If it were,
+  recolouring a level would re-identify it and wipe its leaderboard — exactly the
+  bug the two-hash split exists to prevent, arriving through the one field most
+  likely to be edited for reasons that have nothing to do with how a level plays.
+  `src/sim/level.test.ts` asserts that adding and changing `style` leaves
+  `simHash` bit-identical while moving `contentHash`.
+- **`provenance` is an optional block recording where the level came from** —
+  who or what made it, and how to make it again:
+
+  ```json
+  "provenance": { "source": "generated", "generator": "velogen 0.3", "seed": 918273 }
+  ```
+
+  It ships as a **slot**, before there is anything to put in it, for the same
+  reason the arc primitive and `style` did. AI level generation is on the
+  roadmap, and the moment authored and generated levels mix in one directory
+  "which of these did a machine make, and can I regenerate it" becomes
+  unanswerable unless the field already existed — the information is not
+  recoverable afterwards, because nothing else records it and nothing can
+  reconstruct it. Absent means UNKNOWN, which is the honest answer for every
+  level authored before the field existed; the twenty are deliberately not
+  backfilled.
+
+  `source` is deliberately **not an enum**. A generator that does not exist yet
+  will want a value this build has never heard of, and rejecting it would let a
+  metadata field stop a level loading. The loader validates the SHAPE only, and
+  carries unknown keys through.
+
+  **It is not in `simHash` either.** Two runs of a generator that land on
+  identical geometry are the same level as far as a leaderboard is concerned, so
+  recording a different seed beside them must not fork their times. It is in
+  `contentHash`, because it is content. Parsed and otherwise ignored in this
+  phase: no behaviour, no UI, no rendering.
 - **Known limitation: nothing here can tell you a level is completable.**
   `bin/level-check` validates *geometry* — degenerate edges, non-finite
   coordinates, apples inside solid, and coarse-tessellation sag. It cannot tell
@@ -985,6 +1548,11 @@ src/client/         canvas renderer, input, tuning panel, record-and-replay
                     the freeze and the opening peek; markers.ts is the off-screen
                     indicators. The last two are pure state and geometry so they
                     test in plain node.
+src/client/art/     the art direction. geom.ts (edge classification and hazard
+                    corners), palette.ts, params.ts, rng.ts and stencils.ts are
+                    DOM-free and tested in plain node; bake.ts builds the
+                    world-space Path2D geometry and is the only browser-only
+                    file. artrender.ts beside them is the per-frame draw.
 bin/                every operational task
 levels/             exported level JSON
 ```

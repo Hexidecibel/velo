@@ -6,6 +6,15 @@
 #   bin/artbench 10-cathedral 16-one-way 20-close-quarters
 #   BENCH_W=1920 BENCH_H=1080 bin/artbench
 #   BENCH_SPEED=25 bin/artbench       # metres per second the camera flies
+#   BENCH_OUT=/tmp/bench.txt bin/artbench 01-first-light 02-the-long-climb
+#                                     # append each level as it finishes, so a
+#                                     # killed sweep costs only what it had not
+#                                     # reached yet
+#   BENCH_ART='{"props":0,"parallax":0,"derive":0,"variety":0}' bin/artbench
+#                                     # measure a subset of the art. This is how
+#                                     # a before/after stays honest on ONE
+#                                     # build: the Phase 1 look, measured
+#                                     # through the Phase 2 renderer.
 #
 # Why: the art direction was proven in a mockup that draws one static frame into
 # cached screen-space layers, and a cache in screen space is worthless the

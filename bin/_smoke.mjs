@@ -248,10 +248,31 @@ try {
     (() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowUp', bubbles: true })); return true; })()
   `);
   await new Promise((r) => setTimeout(r, 500));
-  const before = await evalIn(cdp, `({ tick: window.velo.sim.state.tick, frames: window.velo.recordedFrames })`);
   await evalIn(cdp, `
     (() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Tab', bubbles: true })); return true; })()
   `);
+  // WAIT FOR THE FREEZE, THEN take the baseline.
+  //
+  // The claim under test is "no sim tick advances WHILE the overview is held".
+  // Sampling the clock before dispatching the keydown tested something else and
+  // something weaker: that the freeze engages within one frame of the key, which
+  // depends on how long a CDP round trip takes relative to a frame. It passed
+  // for as long as the round trip happened to be shorter than a frame, and
+  // started failing by eight ticks — exactly one 60 Hz frame's worth of input —
+  // the moment frames got heavier. That is a timing property of this harness,
+  // not a property of the freeze.
+  //
+  // So: dispatch, wait for `frozen`, and only then start the clock. The
+  // promptness of the freeze is still asserted, as a deadline, which is what it
+  // actually is.
+  const froze = Date.now();
+  for (;;) {
+    const f = await evalIn(cdp, `window.velo.overview.frozen`);
+    if (f) break;
+    if (Date.now() - froze > 2000) throw new Error('holding TAB never froze the sim');
+    await new Promise((r) => setTimeout(r, 16));
+  }
+  const before = await evalIn(cdp, `({ tick: window.velo.sim.state.tick, frames: window.velo.recordedFrames })`);
   await new Promise((r) => setTimeout(r, 800));
   const during = await evalIn(cdp, `
     ({

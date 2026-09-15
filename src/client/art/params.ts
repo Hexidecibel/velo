@@ -66,6 +66,67 @@ export interface ArtParams {
 
   /** Degrees off horizontal at which a face stops being a floor. */
   faceAngle: number;
+
+  // --- Phase 2 ---------------------------------------------------------------
+
+  /**
+   * 1 = every level gets its own palette, derived from its simHash; 0 = every
+   * level gets the one hand-authored palette, which is exactly Phase 1's look.
+   *
+   * Kept as a switch for the same reason `enabled` was: "did per-level palettes
+   * earn their place" is a comparison, and twenty levels sharing one palette is
+   * the thing being compared against. It is also what the third argument to
+   * `bakeLevel` is for — that palette is the one used when this is 0.
+   */
+  derive: number;
+  /**
+   * How far a level's NON-COLOUR look may stray from the mid parameters: panel
+   * pitch, hatch, stain density, light-wedge angle, band contrast. 0 gives every
+   * level identical parameters; 1 is the generator's full range. A palette swap
+   * alone still reads as the same room repainted, so this is the other half of
+   * per-level variety.
+   */
+  variety: number;
+
+  /** Set dressing: pieces, signage, ladders, lamps, posters, conduit. */
+  props: number;
+  /** Parallax silhouettes of the level's own geometry, behind the play space. */
+  parallax: number;
+
+  // --- adaptive detail -------------------------------------------------------
+  //
+  // REPORTED FROM PLAY, on a machine WITH a GPU: "feels choppy a lil bit
+  // sometimes", on 20-close-quarters. That level measured at 89% of the frame
+  // budget in Phase 1, and the reason is counterintuitive — 20 is the SHORTEST
+  // level in the set, so its whole height is on screen and the solid fills about
+  // nine tenths of the frame. Cost tracks visible solid area, not level size.
+  //
+  // So the margin is not something to spend on decoration; it is something to
+  // defend. The four layers Phase 1 measured as expensive (bloom, blotches and
+  // cracks, hatch, wall detail) are scaled down when frames run long, and the
+  // ink and the lip are never touched — they are the one thing the whole look
+  // exists to serve and they are nearly free.
+
+  /** 1 = scale the expensive layers to fit the budget. 0 = always full detail. */
+  adaptive: number;
+  /** Milliseconds the art render call is allowed to take. */
+  adaptTarget: number;
+  /** How far detail may be scaled back. 1 is no scaling; the floor keeps a look. */
+  adaptFloor: number;
+
+  // --- outputs ---------------------------------------------------------------
+  //
+  // Written by the renderer, not by the panel. They live here because this
+  // object is the art's public surface — `window.velo.art` — and a diagnostic
+  // that cannot be read from outside the page is not a diagnostic. Nothing
+  // reads them back as input.
+
+  /** Current detail multiplier, 0..1. 1 means nothing has been scaled back. */
+  quality: number;
+  /** Fraction of the last frame that was solid. The feed-forward cost predictor. */
+  solidFrac: number;
+  /** Milliseconds the last art render call took, smoothed. */
+  artMs: number;
 }
 
 export const DEFAULT_ART: ArtParams = {
@@ -98,6 +159,22 @@ export const DEFAULT_ART: ArtParams = {
   artFadeZoom: 38,
   artOffZoom: 26,
   faceAngle: 53,
+  derive: 1,
+  variety: 1,
+  props: 1,
+  parallax: 1,
+  adaptive: 1,
+  // 11 ms, not 16.7. The art render call is not the whole frame — the sim step,
+  // the HUD and the browser's own compositing come out of the same 16.7 — so
+  // aiming the art at the whole budget is how you ship something that drops
+  // frames while every measurement says it fits.
+  adaptTarget: 11,
+  // 0.2 still leaves the cel bands, the ink, the lip, the silhouette and a
+  // trace of texture. Below that the look stops being the look.
+  adaptFloor: 0.2,
+  quality: 1,
+  solidFrac: 0,
+  artMs: 0,
 };
 
 export function cloneArt(p: ArtParams): ArtParams {

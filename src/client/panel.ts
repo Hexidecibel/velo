@@ -437,6 +437,53 @@ const ART_GROUPS: Group<ArtParams>[] = [
       },
     ],
   },
+  {
+    title: 'Per-level look',
+    why: 'Twenty levels used to share one palette and one set of seeded parameters, so they read as twenty screenshots of the same room. Each level now derives its own palette from its simHash — with the collision lip held above a contrast floor by construction, so a generated palette cannot break the one rule the look exists to serve — and its own panel pitch, hatch, stain density, band contrast and light-wedge angle on top. The first two sliders are the A/B for whether that earned its place: at 0 every level is drawn exactly the way Phase 1 drew it.',
+    fields: [
+      {
+        label: 'per-level palettes (0/1)', min: 0, max: 1, step: 1,
+        hint: '1 derives a palette from each level\'s simHash; 0 paints every level in the one hand-authored concrete palette, which is Phase 1\'s look. An explicit style.palette or style.colors in the level file still wins over both. REBUILDS the bake.',
+        get: (a) => a.derive, set: (a, v) => { a.derive = v; },
+      },
+      {
+        label: 'variety', min: 0, max: 1, step: 0.05,
+        hint: 'How far a level\'s NON-colour look may stray from the mid parameters — panel pitch, hatch pitch and run, stain density, band contrast, number of light shafts and where they fall. A palette swap alone still reads as the same room repainted, so this is the other half. REBUILDS the bake.',
+        get: (a) => a.variety, set: (a, v) => { a.variety = v; },
+      },
+      {
+        label: 'props', min: 0, max: 1, step: 0.05,
+        hint: 'Set dressing: pieces, tags, signage, posters, ladders, lamps, vents, conduit, banners and painted floor markings. Placed from the level\'s own clearance field and budgeted by area AND by how solid a typical frame of the level is, so the levels with no headroom get the fewest. A draw-time gate, so moving it does not rebuild anything.',
+        get: (a) => a.props, set: (a, v) => { a.props = v; },
+      },
+      {
+        label: 'parallax depth layers', min: 0, max: 1, step: 0.05,
+        hint: 'Silhouettes of the level\'s OWN geometry, scaled and held back behind the play space. One fill per polygon per layer and no bake at all, which is why it earns its place; it is also the only backdrop that cannot contradict the level, because it is the level.',
+        get: (a) => a.parallax, set: (a, v) => { a.parallax = v; },
+      },
+    ],
+  },
+  {
+    title: 'Adaptive detail',
+    why: 'Reported from play on a machine WITH a GPU, on 20-close-quarters: "feels choppy a lil bit sometimes", and then "its not like SUPER choppy, just a tiny bit here and there". Occasional dropped frames, not a low frame rate — which matches that level measuring 89% of the budget in Phase 1. It is the SHORTEST level in the set, so its whole height is on screen and the solid fills nine tenths of the frame; cost tracks visible solid area, not level size. This gives back what a long frame costs and no more: bloom first, then blotches and cracks, then hatch, then wall detail, then nothing. It never touches the ink, the lip or the cel bands. The HUD shows a DETAIL chip whenever it is doing anything at all.',
+    fields: [
+      {
+        label: 'adaptive (0/1)', min: 0, max: 1, step: 1,
+        hint: '0 always draws full detail, which is what bin/artbench measures — a standing budget check that let the renderer turn layers off to pass would not be a check.',
+        get: (a) => a.adaptive, set: (a, v) => { a.adaptive = v; },
+      },
+      {
+        label: 'art budget (ms)', min: 4, max: 16, step: 0.5,
+        hint: 'Milliseconds the ART RENDER CALL may take, not the whole frame. The sim step, the HUD and the browser\'s own compositing come out of the same 16.7, so aiming this at the full budget is how you ship something that drops frames while every measurement says it fits.',
+        get: (a) => a.adaptTarget, set: (a, v) => { a.adaptTarget = v; },
+      },
+      {
+        label: 'detail floor', min: 0.1, max: 1, step: 0.05,
+        hint: 'How far detail may be scaled back. 1 disables the scaling entirely. At 0.2 the cel bands, the ink, the lip, the silhouette and a trace of texture all survive — below that the look stops being the look.',
+        get: (a) => a.adaptFloor, set: (a, v) => { a.adaptFloor = v; },
+      },
+    ],
+  },
 ];
 
 export interface PanelHooks {

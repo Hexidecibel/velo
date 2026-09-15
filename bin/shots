@@ -5,6 +5,9 @@
 #   bin/shots                                  # the four levels that matter most
 #   bin/shots 04-switchback 13-reservoir
 #   SHOTS_OUT=/tmp/x SHOTS_W=1920 SHOTS_H=1080 bin/shots
+#   SHOTS_ONLY=art-62 bin/shots 01-first-light 02-the-long-climb ...
+#                                              # one shot per level, for judging
+#                                              # the twenty AS A SET
 #
 # Five shots per level: art at the base camera, art zoomed in, art with the G
 # collision overlay up, the OLD flat renderer at the same camera for an A/B, and

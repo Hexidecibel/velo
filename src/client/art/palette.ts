@@ -10,6 +10,10 @@
 // Every colour an art layer uses comes from here. Nothing below this file may
 // contain a literal colour, because the moment one does, a palette swap stops
 // being a palette swap.
+import type { LevelStyle } from '@/sim/level.ts';
+import { atLum, contrast, hsl, lum, wrapHue } from './color.ts';
+import { rng, seedFrom } from './rng.ts';
+
 export interface Palette {
   /** Near-black. Every outline in the game is this colour. */
   ink: string;
@@ -81,17 +85,285 @@ export const PALETTES: Record<string, Palette> = { concrete: CONCRETE };
 export const DEFAULT_PALETTE = 'concrete';
 
 /**
- * Look a palette up by name, falling back to the default.
+ * Look a palette up by name.
  *
- * PHASE 1 NEVER CALLS THIS WITH A LEVEL'S OWN `style`. The `style` block is
- * parsed and carried but deliberately not honoured yet — shipping the format
- * before the behaviour is the cheap half of a one-way door, and wiring the
- * behaviour first would mean every level in the set silently acquiring a look
- * nobody has reviewed. This exists so that the Phase 2 wiring is one line.
+ * Returns null for a name this build has never heard of, so the caller can fall
+ * back to a DERIVED palette rather than to the one hand-authored one. An art
+ * hint from a newer client must never stop a level loading, and it must not
+ * quietly collapse twenty levels back onto a single look either.
  */
-export function resolvePalette(name: string | undefined): Palette {
-  if (!name) return CONCRETE;
-  return PALETTES[name] ?? CONCRETE;
+export function resolvePalette(name: string | undefined): Palette | null {
+  if (!name) return null;
+  return PALETTES[name] ?? null;
+}
+
+// --- derivation -------------------------------------------------------------
+//
+// THE PROBLEM THIS SOLVES: twenty levels sharing one palette read as twenty
+// screenshots of the same room, which is a bigger readability and identity
+// problem than prop density ever was. Every level therefore gets its own
+// palette, derived from its simHash, so the whole set differs with no
+// hand-authoring and a given level looks the same on every load and every
+// machine.
+//
+// simHash and not contentHash, for the same reason the cracks use it:
+// retitling a level must not repaint it.
+//
+// THE CONSTRAINT THAT MAKES THIS SAFE. A generated palette is a palette nobody
+// looked at, and the one rule the whole art direction exists to serve is that
+// the collision edge is the most legible line on screen. So the generator does
+// not merely usually produce a legible lip — it cannot produce an illegible
+// one. Every lip is lifted until it clears a contrast floor against the
+// BRIGHTEST terrain tone in its own palette, which by construction is the
+// brightest thing it can ever be drawn against inside the solid. palette.test.ts
+// asserts that floor across hundreds of derived palettes.
+
+/** Minimum contrast a lip must have against the brightest terrain tone. */
+export const LIP_MIN_CONTRAST = 3.2;
+/** The lit lip gets more, because it is the one marking rideable ground. */
+export const LIP_TOP_MIN_CONTRAST = 4.6;
+/** Minimum contrast between the solid and the wall it is silhouetted against. */
+export const INVERSION_MIN_CONTRAST = 1.55;
+/**
+ * Luminance ceiling on the underside lip — a preference, not a floor: it is
+ * abandoned rather than allowed to push the lip below LIP_MIN_CONTRAST.
+ */
+export const UNDER_MAX_LUM = 0.36;
+/**
+ * Luminance ceiling on the terrain tones — the lit cel band and the patch
+ * tones. It exists for the lip's sake: they are the brightest things a lip is
+ * ever stroked over, so an unbounded lit band would force the lit lip to
+ * near-white just to clear its floor, and a palette of white lips is a palette
+ * with no edge classes.
+ */
+export const TERRAIN_MAX_LUM = 0.085;
+
+/**
+ * A full palette from a seed.
+ *
+ * Structure rather than sampling is what makes the guarantees hold. The three
+ * lip hues are placed at fixed minimum angular separations, so "the three edge
+ * classes are distinguishable from each other" is true by construction and
+ * needs no rejection loop; the luminance floors are then reached by lifting,
+ * which always terminates because white clears every floor here.
+ */
+export function derivePalette(seed: number): Palette {
+  const r = rng(seed);
+
+  // The lip family anchors the palette: it is the one set of colours the
+  // player is required to read, so everything else is positioned relative to it
+  // rather than the other way round. The three hues are placed at fixed minimum
+  // separations, which is what makes "the three edge classes are
+  // distinguishable" true by construction rather than by rejection sampling.
+  const lipH = r() * 360;
+  const sideSign = r() < 0.5 ? -1 : 1;
+  const sideH = wrapHue(lipH + sideSign * (48 + r() * 38));
+  const underH = wrapHue(lipH + 150 + r() * 62);
+
+  // The wall is usually OPPOSED to the lips — cold room, warm edges, which is
+  // what the shipped concrete palette does and what keeps the edge from
+  // blending into the background at a glance. A quarter of the time it is
+  // merely adjacent, which reads as a single-temperature room.
+  const opposed = r() < 0.75;
+  const wallH = wrapHue(lipH + (opposed ? 140 + r() * 90 : 45 + r() * 45));
+  // SATURATION HAS TO BE HIGH BECAUSE THE WALL IS BRIGHT. Luminance and
+  // saturation trade against each other in sRGB: a hue driven to a high
+  // luminance has to give up chroma to get there, so a lightly saturated wall
+  // at 0.7 luminance comes out as the same near-white whatever hue it started
+  // from. The first twenty-level contact sheet showed exactly that — twenty
+  // different solids behind twenty identical pale walls.
+  const wallS = 0.22 + r() * 0.5;
+
+  // EVERYTHING BELOW IS CHOSEN IN LUMINANCE, NOT IN LIGHTNESS, and that is the
+  // whole trick. The readability rule is a set of contrast ratios, contrast is
+  // a function of luminance, and luminance at a fixed lightness varies by a
+  // factor of five across the hue wheel — a lime at lightness 0.35 is brighter
+  // than a navy at 0.6. Sampling lightness and repairing afterwards produced
+  // palettes whose lit cel band was brighter than anything a saturated lip
+  // could reach. Sampling luminance and solving for lightness makes the floors
+  // arithmetic.
+
+  // The room's luminance range. Sampled independently, so BAND CONTRAST varies
+  // per level as much as hue does: a tight range is a flat overcast room, a wide
+  // one is a shaft with light pouring down it. This is half of why two levels
+  // with different hues still read as different places.
+  // And the top of the ramp is held lower than it was for the same reason: past
+  // about 0.7 there is no colour left to have.
+  const wallTopLum = 0.28 + r() * 0.36;
+  const wallBotLum = 0.085 + r() * 0.13;
+  // How the ramp falls off. Below 1 it stays bright and then drops; above 1 it
+  // darkens immediately. Another axis of room character that owes nothing to
+  // hue.
+  const rampGamma = 0.7 + r() * 1.1;
+  // Hue drifts as the ramp darkens, so the shadowed end of the room is a
+  // slightly different colour from the lit end rather than the same colour
+  // turned down.
+  const wallDrift = (r() - 0.5) * 65;
+  const wall: string[] = [];
+  for (let i = 0; i < 7; i++) {
+    const u = Math.pow(i / 6, rampGamma);
+    wall.push(atLum(wallH + wallDrift * u, wallS * (1 - 0.25 * u), wallTopLum + (wallBotLum - wallTopLum) * u));
+  }
+
+  // The solid is DARK BY LAW — the inversion is the bet the whole look rests on
+  // — and its ceiling is derived from the wall it will be silhouetted against
+  // rather than picked, so the silhouette can never lose against its own
+  // background however dark this particular room came out.
+  const darkestWall = wash(wall[wall.length - 1], HAZE, HAZE_A);
+  // Same two per cent margin as the lips, and for the same reason: atLum lands
+  // on the nearest reachable 8-bit triple, which can be a hair on the wrong
+  // side of an exact ceiling.
+  const solidCeil = (lum(darkestWall) + 0.05) / (INVERSION_MIN_CONTRAST * 1.02) - 0.05;
+  const solidLum = Math.min(0.012 + r() * 0.032, solidCeil);
+  const solidH = wrapHue(wallH + (r() - 0.5) * 90);
+  const solidS = 0.18 + r() * 0.45;
+  const solid = atLum(solidH, solidS, solidLum);
+
+  const ink = atLum(solidH, solidS * 0.7, solidLum * 0.2);
+  const ink2 = atLum(solidH, solidS * 0.8, solidLum * 0.62);
+
+  // Cel bands, again in luminance. `bandContrast` is the second independent
+  // contrast axis: how hard the light is. Capped in absolute luminance because
+  // the lit band is the brightest thing a lip is ever stroked over, and an
+  // unbounded one would force the lit lip to near-white to clear its floor.
+  const bandContrast = 1.8 + r() * 2.2;
+  const bandTopLum = Math.min(TERRAIN_MAX_LUM, solidLum * bandContrast);
+  const bandTop = atLum(wrapHue(solidH + (wallH - solidH) * 0.35), solidS * 0.85, bandTopLum);
+  const bandSide = atLum(solidH, solidS, solidLum * (1.05 + (bandContrast - 1.8) * 0.12));
+  const bandUnder = atLum(solidH, solidS * 1.05, solidLum * 0.42);
+  const patchA = atLum(solidH, solidS * 0.95, Math.min(TERRAIN_MAX_LUM, solidLum * (1.35 + r() * 0.55)));
+  const patchB = atLum(solidH, solidS * 1.05, solidLum * (0.5 + r() * 0.22));
+
+  // The brightest thing a lip of this class can be stroked over, inside the
+  // solid: the terrain fill, either patch tone, and its OWN cel band. Clear
+  // that one colour and the lip is clear of every colour it can actually touch.
+  // (The other classes' bands are excluded because a top band and an under lip
+  // only ever meet at a corner, and the ink sits between them there.)
+  const bandOf = { top: bandTop, side: bandSide, under: bandUnder };
+  const worstLum = (cls: 'top' | 'side' | 'under'): number =>
+    Math.max(solidLum, lum(patchA), lum(patchB), lum(bandOf[cls]));
+  /**
+   * The luminance a lip needs to clear a contrast floor against its worst
+   * neighbour, plus two per cent. The margin is not decoration: `atLum` lands
+   * on the nearest 8-bit triple it can reach, which is sometimes a hair under
+   * the exact target, and a guarantee that is true to three decimals and false
+   * to four is not a guarantee.
+   */
+  const needed = (cls: 'top' | 'side' | 'under', floor: number): number =>
+    floor * 1.02 * (worstLum(cls) + 0.05) - 0.05;
+
+  const lipSide = atLum(sideH, 0.86 + r() * 0.14, needed('side', LIP_MIN_CONTRAST));
+  // The underside lip is held DIM — it is the shadowed face, and a ceiling lip
+  // that out-shines the floor lip is the frame telling the player the wrong
+  // thing about which way a surface points. Its own floor still wins over the
+  // preference, which is why this is a max and not a clamp.
+  const lipUnderLum = Math.max(needed('under', LIP_MIN_CONTRAST), 0);
+  const lipUnder = atLum(underH, 0.4 + r() * 0.34, Math.max(lipUnderLum, Math.min(UNDER_MAX_LUM, lipUnderLum * 1.25)));
+  // The lit lip clears the highest floor, and is then lifted past the underside
+  // one if that came out brighter — which it can, because the two are different
+  // hues with very different luminance ceilings.
+  const lipTopLum = Math.max(needed('top', LIP_TOP_MIN_CONTRAST), lum(lipUnder) * 1.18);
+  const lipTop = atLum(lipH, 0.88 + r() * 0.12, lipTopLum);
+
+  // Accents split in two, and the split is a gameplay decision rather than an
+  // aesthetic one. An apple is red in every level because it is an OBJECT the
+  // player has to recognise instantly; a pipe is whatever colour this room's
+  // pipes are. So the object colours are nudged within their own hue band and
+  // the decor colours follow the palette family wherever it went.
+  const nudge = (base: number, span: number): number => wrapHue(base + (r() - 0.5) * span);
+  const red = hsl(nudge(2, 26), 0.82 + r() * 0.14, 0.55 + r() * 0.07);
+  const lime = hsl(nudge(92, 34), 0.82 + r() * 0.18, 0.54 + r() * 0.1);
+  const yellow = hsl(nudge(51, 22), 0.92 + r() * 0.08, 0.5 + r() * 0.08);
+  const magenta = hsl(nudge(328, 28), 0.88 + r() * 0.12, 0.54 + r() * 0.07);
+  const cream = hsl(wallH + 40, 0.22 + r() * 0.36, 0.93 + r() * 0.04);
+
+  return {
+    ink, ink2, solid, patchA, patchB, bandTop, bandSide, bandUnder,
+    lipTop, lipSide, lipUnder,
+    wall,
+    yellow, orange: hsl(sideH, 0.9, 0.52), magenta,
+    cyan: hsl(wallH - 12, 0.7 + r() * 0.25, 0.52 + r() * 0.08),
+    lime, cream, red,
+    lilac: hsl(underH, 0.38 + r() * 0.3, 0.68 + r() * 0.1),
+    teal: hsl(wallH + 28, 0.6 + r() * 0.25, 0.38 + r() * 0.1),
+    rust: hsl(sideH, 0.55 + r() * 0.2, 0.36 + r() * 0.1),
+    steel: hsl(wallH, 0.1 + r() * 0.1, 0.62 + r() * 0.1),
+    steelD: hsl(wallH, 0.12 + r() * 0.1, 0.38 + r() * 0.08),
+  };
+}
+
+/** Every key a level may override through `style.colors`. */
+const SCALAR_KEYS: (keyof Palette)[] = [
+  'ink', 'ink2', 'solid', 'patchA', 'patchB', 'bandTop', 'bandSide', 'bandUnder',
+  'lipTop', 'lipSide', 'lipUnder',
+  'yellow', 'orange', 'magenta', 'cyan', 'lime', 'cream', 'red', 'lilac', 'teal', 'steel', 'steelD', 'rust',
+];
+
+const HEX = /^#[0-9a-fA-F]{6}$/;
+
+/**
+ * The palette a level is actually drawn in.
+ *
+ * Precedence, and the order is the whole design:
+ *
+ *  1. `style.palette` naming a palette this build ships — an explicit choice.
+ *  2. Otherwise DERIVED from the level's simHash, so a level with no style block
+ *     at all still looks like its own place. This is the part that matters:
+ *     twenty levels differ from each other with zero hand-authoring.
+ *  3. `style.colors` overrides on top of either, per slot.
+ *
+ * Nothing here can reach simHash — `style` is not in it, by construction in
+ * level.ts and by assertion in level.test.ts, which is exactly what lets a level
+ * be recoloured without retiring its leaderboard.
+ */
+export function levelPalette(style: LevelStyle | null | undefined, simHash: string): Palette {
+  const named = resolvePalette(typeof style?.palette === 'string' ? style.palette : undefined);
+  const base = named ?? derivePalette(seedFrom(`palette:${simHash}`));
+  const colors = style?.colors;
+  if (!colors || typeof colors !== 'object') return base;
+
+  const out: Palette = { ...base, wall: [...base.wall] };
+  for (const k of SCALAR_KEYS) {
+    const v = (colors as Record<string, unknown>)[k];
+    // A malformed override is IGNORED rather than fatal. The alternative is a
+    // level that fails to load because somebody typed a colour wrong, and a
+    // cosmetic hint must never be able to do that.
+    if (typeof v === 'string' && HEX.test(v)) (out as unknown as Record<string, string>)[k] = v.toLowerCase();
+  }
+  const w = (colors as Record<string, unknown>).wall;
+  if (Array.isArray(w)) {
+    const ramp = w.filter((x): x is string => typeof x === 'string' && HEX.test(x)).map((x) => x.toLowerCase());
+    if (ramp.length >= 2) out.wall = ramp;
+  }
+  return out;
+}
+
+/**
+ * How far a palette is from meeting the readability guarantee. 0 means it meets
+ * it. Exported so the test can report WHICH slot failed rather than just that
+ * one did, and so a hand-authored override can be audited the same way a
+ * derived palette is.
+ */
+export function paletteFaults(p: Palette): string[] {
+  const faults: string[] = [];
+  const check = (name: string, lip: string, band: string, floor: number): void => {
+    let m = p.solid;
+    for (const c of [p.patchA, p.patchB, band]) if (lum(c) > lum(m)) m = c;
+    const c = contrast(lip, m);
+    if (c < floor) faults.push(`${name} ${c.toFixed(2)} < ${floor} vs terrain`);
+  };
+  check('lipTop', p.lipTop, p.bandTop, LIP_TOP_MIN_CONTRAST);
+  check('lipSide', p.lipSide, p.bandSide, LIP_MIN_CONTRAST);
+  check('lipUnder', p.lipUnder, p.bandUnder, LIP_MIN_CONTRAST);
+  if (lum(p.lipTop) <= lum(p.lipUnder)) {
+    faults.push('the ceiling lip out-shines the floor lip');
+  }
+  const darkestWall = wash(p.wall[p.wall.length - 1], HAZE, HAZE_A);
+  if (lum(p.solid) >= lum(darkestWall)) faults.push('solid is not darker than the wall — the inversion is broken');
+  const inv = contrast(p.solid, darkestWall);
+  if (inv < INVERSION_MIN_CONTRAST) faults.push(`solid/wall ${inv.toFixed(2)} < ${INVERSION_MIN_CONTRAST}`);
+  if (lum(p.wall[0]) <= lum(p.wall[p.wall.length - 1])) faults.push('wall ramp is not lightest-first');
+  return faults;
 }
 
 /** rgba() from a #rrggbb and an alpha. Cheap, and it keeps literals out of the layers. */

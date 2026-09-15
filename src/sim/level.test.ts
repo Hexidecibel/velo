@@ -146,6 +146,56 @@ describe('the two hashes', () => {
     expect(() => parseLevel({ ...TEST_LEVEL, style: null })).toThrow(/level.style/);
   });
 
+  it('provenance is metadata: it moves contentHash and NEVER simHash', () => {
+    // Two runs of a generator that land on identical geometry are the SAME
+    // LEVEL as far as a leaderboard is concerned. If the seed that produced a
+    // level entered simHash, regenerating it — or recording after the fact that
+    // a machine made it — would fork its times, which is the same bug `style`
+    // is guarded against and it would arrive through a field whose entire
+    // purpose is to be written later.
+    const a = parseLevel(TEST_LEVEL);
+    expect(a.provenance).toBeNull();
+
+    const gen = parseLevel({
+      ...TEST_LEVEL,
+      provenance: { source: 'generated', generator: 'velogen 0.3', seed: 918273 },
+    });
+    expect(gen.simHash).toBe(a.simHash);
+    expect(gen.contentHash).not.toBe(a.contentHash);
+    expect(gen.provenance).toEqual({ source: 'generated', generator: 'velogen 0.3', seed: 918273 });
+
+    const reseeded = parseLevel({
+      ...TEST_LEVEL,
+      provenance: { source: 'generated', generator: 'velogen 0.3', seed: 5 },
+    });
+    expect(reseeded.simHash).toBe(a.simHash);
+    expect(reseeded.contentHash).not.toBe(gen.contentHash);
+
+    // Marking an existing level as hand-authored must not retire its times either.
+    const authored = parseLevel({ ...TEST_LEVEL, provenance: { source: 'authored' } });
+    expect(authored.simHash).toBe(a.simHash);
+    expect(authored.contentHash).not.toBe(a.contentHash);
+  });
+
+  it('carries provenance keys it does not understand, and does not police values', () => {
+    // `source` is deliberately not an enum: a generator that does not exist yet
+    // will want a value this build has never heard of, and rejecting it would
+    // let a metadata field stop a level loading.
+    const lv = parseLevel({
+      ...TEST_LEVEL,
+      provenance: { source: 'hand-traced-from-a-photo', model: 'x', prompt: { text: 'hi' }, seed: 'abc' },
+    });
+    expect(lv.provenance?.source).toBe('hand-traced-from-a-photo');
+    expect(lv.provenance?.prompt).toEqual({ text: 'hi' });
+    expect(lv.provenance?.seed).toBe('abc');
+  });
+
+  it('rejects a provenance that is not an object', () => {
+    expect(() => parseLevel({ ...TEST_LEVEL, provenance: 'generated' })).toThrow(/level.provenance/);
+    expect(() => parseLevel({ ...TEST_LEVEL, provenance: ['generated'] })).toThrow(/level.provenance/);
+    expect(() => parseLevel({ ...TEST_LEVEL, provenance: null })).toThrow(/level.provenance/);
+  });
+
   it('simHash ignores decor', () => {
     const a = parseLevel(TEST_LEVEL);
     const b = parseLevel({ ...TEST_LEVEL, polygons: TEST_LEVEL.polygons.filter((p) => p.kind !== 'decor') });

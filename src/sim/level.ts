@@ -95,12 +95,51 @@ export interface DecorPolygon {
  * what keeps a level authored in 2027 loadable by a 2026 client.
  */
 export interface LevelStyle {
-  /** Named palette, e.g. "concrete". Unknown names fall back to the default. */
+  /**
+   * Named palette, e.g. "concrete". A name this build does not know falls back
+   * to the palette DERIVED from the level's simHash — not to the default, which
+   * would quietly collapse a set of levels back onto one look.
+   */
   palette?: string;
   /** Free-form tag for a later placement pass: "industrial", "cave", "neon". */
   theme?: string;
   /** Explicit overrides, keyed by palette slot. */
   colors?: Record<string, string>;
+  /**
+   * Overrides for the non-colour look parameters — panel pitch, hatch, light
+   * wedges, prop density. Same tolerance as everything else here: a field the
+   * renderer does not understand, or one that is not a finite number, is
+   * ignored rather than fatal.
+   */
+  variant?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/**
+ * Where this level came from, and how to make it again.
+ *
+ * Shipped as a SLOT, before there is anything to put in it, for the same reason
+ * the arc primitive and the `style` block were: AI level generation is on the
+ * roadmap, and the moment authored and generated levels mix in one directory,
+ * "which of these did a machine make, and can I regenerate it" becomes
+ * unanswerable unless the field already existed. The information is not
+ * recoverable after the fact — nothing else records it and nothing can
+ * reconstruct it — so the cheap half of the one-way door gets done now.
+ *
+ * Absent means UNKNOWN, which is the honest answer for every level authored
+ * before this field existed. They are deliberately not backfilled.
+ *
+ * `source` is deliberately not an enum. A generator that does not exist yet
+ * will want a value this build has never heard of, and rejecting it would make
+ * a metadata field able to stop a level loading.
+ */
+export interface LevelProvenance {
+  /** "authored", "generated", or whatever a later tool calls itself. */
+  source?: string;
+  /** Name and version of the generator, when there was one. */
+  generator?: string;
+  /** What the generator ran from, so the level can be made again. */
+  seed?: number | string;
   [key: string]: unknown;
 }
 
@@ -115,6 +154,8 @@ export interface RawLevel {
    * community library exists, and this one costs nothing today.
    */
   style?: LevelStyle;
+  /** Optional metadata about how the file came to exist. Never read by the sim. */
+  provenance?: LevelProvenance;
   start: Vec2;
   flower: Vec2;
   apples?: Vec2[];
@@ -210,6 +251,17 @@ export interface Level {
    * bit-identical while moving contentHash.
    */
   style: LevelStyle | null;
+  /**
+   * Where the level came from, or null.
+   *
+   * NOT IN simHash, for exactly the reason `style` is not: two runs of a
+   * generator that produce identical geometry are the SAME LEVEL as far as a
+   * leaderboard is concerned, and recording a different seed beside them must
+   * not fork their times. It is in contentHash, because it is content.
+   *
+   * Parsed and otherwise ignored in this phase. No behaviour hangs off it yet.
+   */
+  provenance: LevelProvenance | null;
 }
 
 export class LevelError extends Error {}
@@ -270,6 +322,18 @@ export function parseLevel(raw: unknown): Level {
       bad('level.style: expected an object');
     }
     style = r.style;
+  }
+
+  // Same tolerance as `style`, and for the same reason: metadata a build does
+  // not understand must never stop a level loading. Shape only — the string
+  // values are not policed, because a generator this build has never heard of
+  // is exactly the case the field exists to serve.
+  let provenance: LevelProvenance | null = null;
+  if (r.provenance !== undefined) {
+    if (r.provenance === null || typeof r.provenance !== 'object' || Array.isArray(r.provenance)) {
+      bad('level.provenance: expected an object');
+    }
+    provenance = r.provenance;
   }
 
   const start = vec(r.start, 'level.start');
@@ -370,6 +434,7 @@ export function parseLevel(raw: unknown): Level {
     simHash: '',
     contentHash: '',
     style,
+    provenance,
   };
   level.simHash = computeSimHash(level);
   level.contentHash = computeContentHash(r);

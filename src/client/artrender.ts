@@ -22,6 +22,8 @@ import type { World } from '@/sim/world.ts';
 import { drawEdgeMarkers, edgeMarkers } from './markers.ts';
 import type { MarkerTarget } from './markers.ts';
 import type { Pose, RenderOpts, View } from './render.ts';
+import { DEFAULT_CAMERA } from './camera.ts';
+import { DEFAULT_SPEC } from '@/sim/spec.ts';
 import type { BakedLevel, BakedPoly } from './art/bake.ts';
 import type { ArtParams } from './art/params.ts';
 import { artStrength } from './art/params.ts';
@@ -31,12 +33,19 @@ import { chunkKey, chunkWindow, viewBounds } from './art/geom.ts';
 import type { ChunkWindow } from './art/geom.ts';
 import { drawStamp } from './art/stencils.ts';
 import { rng } from './art/rng.ts';
+import { solidFraction } from './art/space.ts';
+import { chooseQuality, detailAt, loadOf, newAdapt, observe } from './art/adapt.ts';
+import type { DetailLevels } from './art/adapt.ts';
+import { drawProps } from './art/propdraw.ts';
 
 type Bounds = { minX: number; minY: number; maxX: number; maxY: number };
 
-/** Metres between hatch lines. The mockup's 14 px at 90 px/m, opened up. */
-const HATCH_PITCH = 0.26;
-/** Never finer than this on screen. The pitch doubles out from HATCH_PITCH. */
+/**
+ * Never finer than this on screen. The base pitch is per-level now — it lives
+ * on the StyleVariant, because how coarsely the concrete is worked is one of
+ * the non-colour cues that makes two levels read as two places — and it doubles
+ * out from there until it clears this floor.
+ */
 const HATCH_MIN_PX = 26;
 
 /** Scratch canvases for the bloom pass. Created once; resized as needed. */
@@ -47,6 +56,14 @@ export interface ArtRenderOpts extends RenderOpts {
   /** Seconds since boot. Animation only — the sim never sees it. */
   time: number;
 }
+
+/**
+ * The adaptive detail controller's live state. Module scope for the same reason
+ * the bike's detail latches are: the ghost and the player draw in the same
+ * frame, rendering is outside the deterministic sim, and one controller is
+ * correct for the whole canvas.
+ */
+const adapt = newAdapt();
 
 export function renderArt(
   ctx: CanvasRenderingContext2D,
@@ -61,6 +78,7 @@ export function renderArt(
   art: ArtParams,
   baked: BakedLevel,
 ): void {
+  const t0 = performance.now();
   const P = baked.palette;
   const level = world.level;
   const px = 1 / cam.zoom;
@@ -76,16 +94,45 @@ export function renderArt(
   ctx.translate(-cam.x, -cam.y);
   const b = viewBounds(cam.x, cam.y, cam.zoom, cssW, cssH, 1);
 
+  // ADAPTIVE DETAIL. How much solid is about to be drawn is the cost predictor,
+  // and it is known before anything is drawn — which is the point, because a
+  // controller that only reads measured time is always a frame behind, and a
+  // frame behind is the frame that drops. `art.quality` and the two beside it
+  // are OUTPUTS: the renderer writes them so that `window.velo.art` carries the
+  // diagnosis, and nothing reads them back as input.
+  const frac = solidFraction(baked.field, b);
+  const load = loadOf(frac);
+  const q = art.adaptive > 0 ? chooseQuality(adapt, load, { target: art.adaptTarget, floor: art.adaptFloor }) : 1;
+  const D = detailAt(q);
+  art.quality = q;
+  art.solidFrac = frac;
+  art.artMs = adapt.worst;
+
   const cw = chunkWindow(b);
-  drawWall(ctx, baked, b, cw, art, s, px);
+  drawWall(ctx, baked, b, cw, art, D, s, px, t, frac);
   drawUnderworks(ctx, baked, b, P, art, s, px);
-  drawSolids(ctx, baked, b, cw, P, art, s, px);
+  drawSolids(ctx, baked, b, cw, P, art, D, s, px);
+
+  // PAINT props: road markings and stencilled signage. Drawn after the terrain
+  // because they are pigment ON it, and unclipped because they do not need a
+  // clip — the placement rule already proved every one of them lies entirely
+  // inside solid material. That is the class a corridor too tight for anything
+  // else still gets: pigment in the material cannot be mistaken for an object
+  // in the air, whatever it is drawn like, which is what lets the art dress
+  // 19-low-roof at all.
+  if (art.props > 0 && s > 0 && baked.paint.length) {
+    drawProps(ctx, baked.paint, b, s * art.props * 0.9, px, t, baked.paint.length);
+  }
 
   // Bloom sits between the world and the actors, exactly as in the mockup: it
   // is the AIR getting brighter, not the bike glowing. Pulled out of the world
   // transform because it composites in screen space.
   ctx.restore();
-  if (art.bloom > 0 && s > 0) applyBloom(ctx, cssW, cssH, art.bloom * s, art.bloomRadius);
+  // Bloom goes FIRST when frames run long. It is the most expensive layer Phase
+  // 1 measured, at 2.0-4.4 ms, and the most forgiving to lose — it is
+  // atmosphere, not information.
+  const bloom = art.bloom * D.bloom;
+  if (bloom > 0.002 && s > 0) applyBloom(ctx, cssW, cssH, bloom * s, art.bloomRadius);
 
   ctx.save();
   ctx.translate(cssW / 2, cssH / 2);
@@ -102,7 +149,7 @@ export function renderArt(
   if (!state.dead && !state.finished) drawFX(ctx, pose, state, P, px, t);
   drawBike(ctx, pose, spec, px, P, state.facing, t, 1);
 
-  if (art.motes > 0 && s > 0) drawMotes(ctx, b, P, t, art.motes, s);
+  if (art.motes * D.motes > 0.5 && s > 0) drawMotes(ctx, b, P, t, art.motes * D.motes, s);
   if (opts.overview > 0) drawLocator(ctx, pose, px, opts.overview, P);
 
   // THE DEBUG OVERLAY GOES LAST AND UNDER NO ALPHA. It is the tool that catches
@@ -112,7 +159,7 @@ export function renderArt(
 
   ctx.restore();
 
-  if (art.hud > 0) drawHud(ctx, cssW, cssH, level.name, state, level.apples.length, P);
+  if (art.hud > 0) drawHud(ctx, cssW, cssH, level.name, state, level.apples.length, P, q);
 
   if (opts.markers) {
     const targets: MarkerTarget[] = [];
@@ -124,6 +171,12 @@ export function renderArt(
     const list = edgeMarkers(targets, cam, cssW, cssH, { x: pose.px, y: pose.py }, opts.markers.inset);
     drawEdgeMarkers(ctx, list, opts.markers.alpha);
   }
+
+  // What this frame actually cost, at the load and quality it was drawn at.
+  // Canvas2D rasterises lazily, so this is a floor rather than the whole truth
+  // — but it is measured on the same terms every frame, which is what a
+  // controller needs.
+  observe(adapt, performance.now() - t0, load, q);
 }
 
 // --- background -------------------------------------------------------------
@@ -184,7 +237,7 @@ function mergedTex(bp: BakedPoly, w: ChunkWindow): NonNullable<BakedPoly['merged
 
 function drawWall(
   ctx: CanvasRenderingContext2D, baked: BakedLevel, b: Bounds, cw: ChunkWindow,
-  art: ArtParams, s: number, px: number,
+  art: ArtParams, D: DetailLevels, s: number, px: number, t: number, solidFrac: number,
 ): void {
   const P = baked.palette;
   // Stepped luminance: the light comes from above and it steps rather than
@@ -196,8 +249,10 @@ function drawWall(
     ctx.fill(band.path);
   }
 
-  if (art.wall > 0 && s > 0) {
-    const a = s * art.wall;
+  drawParallax(ctx, baked, b, art, s, solidFrac);
+
+  if (art.wall * D.wall > 0.02 && s > 0) {
+    const a = s * art.wall * D.wall;
     const m = mergedWall(baked, cw);
     ctx.save();
     ctx.globalAlpha = a;
@@ -236,6 +291,77 @@ function drawWall(
   // is a constant wash over a constant colour, so bake.ts composites it into the
   // luminance bands instead — two full-viewport alpha fills a frame, for a
   // result that never changes, was the single cheapest thing to delete.
+
+  // SET DRESSING, in the background pass, behind every solid.
+  //
+  // That draw order is half of what makes a prop visibly non-collidable: the
+  // terrain paints over it, so a prop can never cover a collision edge, and a
+  // lamp that overlaps a ledge on screen plainly reads as being behind it
+  // rather than bolted to the front of it. The clearance rules in props.ts are
+  // the other half. Props are also the FIRST decoration the adaptive detail
+  // system gives up — they are the newest thing in the frame and the least
+  // load-bearing.
+  if (art.props > 0 && s > 0 && baked.props.length) {
+    const limit = Math.ceil(baked.props.length * D.props);
+    if (limit > 0) drawProps(ctx, baked.props, b, s * art.props, px, t, limit);
+  }
+}
+
+/**
+ * Parallax silhouettes of the level's OWN geometry, behind the play space.
+ *
+ * The user asked for backgrounds, and this is the version that earns its place:
+ * it costs one fill per polygon per layer and no bake at all, because the
+ * geometry already exists as a baked ring and the scale-about-centre plus the
+ * parallax offset are a single canvas transform. It is also the only background
+ * that cannot contradict the level, since it IS the level — a hand-drawn
+ * backdrop of a different cave would be a lie about the place you are in.
+ *
+ * Flat, low contrast, no ink: it is depth, not information, and the standing
+ * readability rule says nothing back there may compete with the edge.
+ */
+function drawParallax(
+  ctx: CanvasRenderingContext2D, baked: BakedLevel, b: Bounds, art: ArtParams, s: number,
+  solidFrac: number,
+): void {
+  const n = baked.variant.parallaxLayers;
+  if (art.parallax <= 0 || n <= 0 || s <= 0) return;
+  // A PARALLAX LAYER YOU CANNOT SEE IS NOT WORTH DRAWING. This is a background
+  // pass, so every pixel of it under solid material is painted and then painted
+  // over. On the levels where the solid fills most of the frame — 19 and 20,
+  // the two with no headroom — that is almost all of it. Fading it out as the
+  // frame fills up costs nothing visible and hands the budget back exactly
+  // where it is needed. Measured at 1.4 ms on 20-close-quarters.
+  const seen = Math.max(0, Math.min(1, (0.8 - solidFrac) / 0.35));
+  if (seen <= 0.02) return;
+  const P = baked.palette;
+  const cx = (baked.minX + baked.maxX) / 2;
+  const cy = (baked.minY + baked.maxY) / 2;
+  const camX = (b.minX + b.maxX) / 2;
+  const camY = (b.minY + b.maxY) / 2;
+  for (let i = 1; i <= n; i++) {
+    // Further back is smaller and moves less, which is the whole of parallax.
+    const depth = 1 - (i / (n + 1)) * (1 - baked.variant.parallaxDepth);
+    const k = 1 - depth;
+    ctx.save();
+    // Scale about the level centre, then hold the layer back by the camera's
+    // own offset scaled by its depth.
+    ctx.translate(cx * k + (camX - cx) * k, cy * k + (camY - cy) * k);
+    ctx.scale(depth, depth);
+    // QUIET. This is depth, not information, and the standing readability rule
+    // says nothing back here may compete with the collision edge. The first
+    // version came out at roughly a sixth opacity and read as a pale slab
+    // floating over the room rather than as a space behind it.
+    ctx.globalAlpha = art.parallax * s * seen * (0.2 - i * 0.05);
+    for (const bp of baked.polys) {
+      // A cave's ring is the CAVITY, so filling it reads as another shaft
+      // behind this one; a ground polygon's ring is material, so it reads as a
+      // distant mass. Two different colours, one fill each.
+      ctx.fillStyle = bp.poly.solidInside ? alpha(P.ink, 0.45) : alpha(P.cream, 0.3);
+      ctx.fill(bp.ring);
+    }
+    ctx.restore();
+  }
 }
 
 function drawUnderworks(
@@ -314,8 +440,12 @@ function overlaps(bp: BakedPoly, b: Bounds): boolean {
 
 function drawSolids(
   ctx: CanvasRenderingContext2D, baked: BakedLevel, b: Bounds, cw: ChunkWindow, P: Palette,
-  art: ArtParams, s: number, px: number,
+  art: ArtParams, D: DetailLevels, s: number, px: number,
 ): void {
+  // THE INK SCALE IS NOT TOUCHED BY THE ADAPTIVE SYSTEM, and neither is the lip
+  // or the cel bands below. They are the one thing the whole look exists to
+  // serve and they are nearly free; degrading them to save a millisecond would
+  // be trading the point of the art for the cost of the cheapest part of it.
   const inkScale = Math.max(art.inkMinScale, Math.min(1, 1 / (art.inkFullZoom * px)));
 
   for (const bp of baked.polys) {
@@ -334,10 +464,10 @@ function drawSolids(
     ctx.save();
     ctx.clip(solid, rule);
 
-    if (s * art.detail > 0.04) {
+    if (s * art.detail * D.detail > 0.04) {
       const m = mergedTex(bp, cw);
       ctx.save();
-      ctx.globalAlpha = s * art.detail;
+      ctx.globalAlpha = s * art.detail * D.detail;
       ctx.fillStyle = P.patchA;
       ctx.fill(m.patchA);
       ctx.fillStyle = P.patchB;
@@ -351,8 +481,8 @@ function drawSolids(
       // offscreen, to draw the two hundred that are on it — the one layer where
       // "build it once" loses to "build exactly what is needed". Anchored to a
       // world grid so it does not swim when the camera moves.
-      if (art.hatch > 0) {
-        ctx.globalAlpha = s * art.detail * art.hatch;
+      if (art.hatch * D.hatch > 0.02) {
+        ctx.globalAlpha = s * art.detail * art.hatch * D.hatch;
         ctx.lineWidth = 1.2 * px;
         ctx.strokeStyle = alpha(P.cream, 0.055);
         const h = b.maxY - b.minY;
@@ -361,13 +491,18 @@ function drawSolids(
         // overview, where a screenful is a whole level and the same 0.26 m
         // spacing asks for thousands of lines to draw a five per cent wash.
         // Doubling rather than scaling continuously keeps it from swimming.
-        let pitch = HATCH_PITCH;
+        // Widening the pitch is the real saving when frames run long: it is
+        // the line COUNT that costs, not the opacity.
+        let pitch = baked.variant.hatchPitch * D.hatchPitch;
         while (pitch < HATCH_MIN_PX * px) pitch *= 2;
         ctx.beginPath();
-        const first = Math.ceil((b.minX - h) / pitch) * pitch;
+        // The RUN of the hatch is per-level too: 1 is 45 degrees, flatter
+        // reads as a different material worked in a different direction.
+        const run = h * baked.variant.hatchSlope;
+        const first = Math.ceil((b.minX - Math.max(run, 0)) / pitch) * pitch;
         for (let x = first; x < b.maxX; x += pitch) {
           ctx.moveTo(x, b.minY);
-          ctx.lineTo(x + h, b.maxY);
+          ctx.lineTo(x + run, b.maxY);
         }
         ctx.stroke();
       }
@@ -523,7 +658,7 @@ const HUD_FONT = 'system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
 
 function drawHud(
   ctx: CanvasRenderingContext2D, cssW: number, cssH: number,
-  name: string, state: SimState, appleCount: number, P: Palette,
+  name: string, state: SimState, appleCount: number, P: Palette, quality: number,
 ): void {
   // "10 — Cathedral" is an index and a title. Both are content, so both are
   // read off the level rather than configured.
@@ -598,6 +733,19 @@ function drawHud(
     ctx.strokeStyle = P.ink;
     ctx.stroke();
     ctx.restore();
+  }
+
+  // THE DETAIL READOUT. Shown only when the adaptive system has actually given
+  // something up, because "DETAIL 100%" on every frame of every level is noise.
+  // Its absence is informative too: a dropped-frame report with no chip on
+  // screen means the art was at full detail and the frame was long anyway,
+  // which points somewhere else entirely.
+  if (quality < 0.97) {
+    panel(rx + 196, y0, 92, 34, P.steelD);
+    ctx.fillStyle = P.cream;
+    ctx.font = `700 12px ${HUD_FONT}`;
+    ctx.textAlign = 'right';
+    ctx.fillText(`DETAIL ${Math.round(quality * 100)}%`, rx + 278, y0 + 18);
   }
 
   if (state.dead || state.finished) {
@@ -717,10 +865,12 @@ function drawFlower(
  * helmet and scarf strobed on and off. Reported from play, not from a test:
  * "why does the helmet/scarf disappear and show up?"
  *
- * Two fixes, both needed. The thresholds moved well clear of the resting zoom,
- * and each boundary now latches: fine detail switches ON at 12 px and OFF at 8,
- * the overview blob tier ON at 5 and OFF at 7. Inside a band the tier cannot
- * change, so a camera hovering on a boundary holds whatever it already had.
+ * Two fixes, both needed. Each boundary latches, so a camera hovering on one
+ * holds whatever it already had — and, after the user reported the same symptom
+ * a SECOND time, the bands were moved entirely below the play range and derived
+ * from the camera's own zoom floor. See the note on the constants below: a
+ * latch whose dead band straddles the operating range does not stop strobing,
+ * it gets stuck.
  *
  * The helmet and scarf are worth biasing toward: they are what makes the rider
  * read as a rider rather than as three pale circles, so they should survive far
@@ -730,17 +880,49 @@ function drawFlower(
  * frame at the same zoom, so one latch is correct for both — and rendering is
  * outside the deterministic sim, so carrying state here cannot affect a replay.
  */
+/**
+ * THE THRESHOLDS ARE DERIVED, NOT TYPED IN, and that is the actual fix.
+ *
+ * The first hysteresis attempt latched at ON above 12 px and OFF below 8 px.
+ * The camera's play range is `minZoom` 38 to `maxZoom` 110, and a wheel is
+ * 0.25 m, so riding happens between 9.5 and 27.5 px — which puts 12 px INSIDE
+ * the range, at about 48 px/m. Sequence the user found twice: hold TAB, the
+ * latch drops to OFF in the overview, release, ride fast. The zoom sits between
+ * 38 and 48, the latch cannot re-arm, and the rider has no helmet until they
+ * slow down. Hysteresis turned "strobes" into "can get stuck off".
+ *
+ * THE GENERAL RULE, worth naming because it is easy to get wrong again: a
+ * hysteresis band must sit entirely OUTSIDE the range the value normally
+ * occupies. A band that straddles a boundary of the operating range is not a
+ * latch, it is a trap.
+ *
+ * So the bands come from the camera's own floor rather than from constants: the
+ * fine band sits at a fraction of the smallest wheel the play camera can show,
+ * and the blob band below that again. Raising the readability floor later
+ * cannot silently re-introduce the bug, because the thresholds move with it.
+ */
+const PLAY_MIN_PX = DEFAULT_CAMERA.minZoom * DEFAULT_SPEC.wheel.radius;
+/** Fine detail re-arms at 3/4 of the smallest riding wheel, and drops at half. */
+const FINE_ON = PLAY_MIN_PX * 0.74;
+const FINE_OFF = PLAY_MIN_PX * 0.53;
+/** The blob tier engages well under that: the overview reaches about 1.75 px. */
+const BLOB_ON = PLAY_MIN_PX * 0.42;
+const BLOB_OFF = PLAY_MIN_PX * 0.63;
+
 export let fineLatched = true;
 export function fineTier(detailPx: number): boolean {
-  fineLatched = fineLatched ? detailPx > 8 : detailPx > 12;
+  fineLatched = fineLatched ? detailPx > FINE_OFF : detailPx > FINE_ON;
   return fineLatched;
 }
 
 export let blobLatched = false;
 export function blobTier(detailPx: number): boolean {
-  blobLatched = blobLatched ? detailPx < 7 : detailPx < 5;
+  blobLatched = blobLatched ? detailPx < BLOB_OFF : detailPx < BLOB_ON;
   return blobLatched;
 }
+
+/** Exported so the test can assert the bands sit clear of the play range. */
+export const TIERS = { playMinPx: PLAY_MIN_PX, fineOn: FINE_ON, fineOff: FINE_OFF, blobOn: BLOB_ON, blobOff: BLOB_OFF };
 
 /**
  * Ported from the mockup, and it fits the real spec exactly because the mockup

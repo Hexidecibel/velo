@@ -156,6 +156,41 @@ function ensureBake(): BakedLevel {
 let fps = 0;
 let liveTuneError: string | null = null;
 
+// FRAME TIME, NOT FRAME RATE — and specifically the WORST one.
+//
+// `fps` above is an exponential average with a ~12-frame time constant, which
+// is the wrong statistic for the only question anyone asks it. Reported from
+// play: "it feels choppy a lil bit sometimes", while the HUD read 60. Both were
+// true. A single dropped frame is a visible stutter and barely moves a mean,
+// and the mean recovers within a few frames — averaging is exactly the
+// operation that erases the outliers that choppiness IS.
+//
+// So: the worst frame in a rolling one-second window, plus how many frames in
+// that window blew the 16.7 ms budget. "60 fps, worst 38 ms, 3 over" describes
+// what a player actually feels; "60 fps" does not.
+const FRAME_WINDOW_MS = 1000;
+const BUDGET_MS = 1000 / 60;
+const frameTimes: { t: number; ms: number }[] = [];
+let worstMs = 0;
+let overCount = 0;
+
+function recordFrame(nowMs: number, dtMs: number): void {
+  frameTimes.push({ t: nowMs, ms: dtMs });
+  const cutoff = nowMs - FRAME_WINDOW_MS;
+  while (frameTimes.length > 0 && frameTimes[0].t < cutoff) frameTimes.shift();
+  // Recomputed over the window rather than tracked incrementally, because a
+  // running max cannot forget: one 90 ms hitch on level load would pin the
+  // readout at 90 for the rest of the session and tell you nothing after.
+  let w = 0;
+  let over = 0;
+  for (const f of frameTimes) {
+    if (f.ms > w) w = f.ms;
+    if (f.ms > BUDGET_MS * 1.5) over++;
+  }
+  worstMs = w;
+  overCount = over;
+}
+
 const input = createInput();
 
 // --- run lifecycle ----------------------------------------------------------
@@ -493,6 +528,7 @@ function step(): void {
 
 function draw(alpha: number, dtMs: number): void {
   fps += (1000 / Math.max(dtMs, 1) - fps) * 0.08;
+  recordFrame(performance.now(), dtMs);
   const { cssW, cssH } = resize();
   const dtSec = dtMs / 1000;
   const pose = interpolate(prevState, sim.state, alpha);
@@ -571,7 +607,9 @@ function updateHud(): void {
       (best !== undefined ? `   <span class="k">best</span> ${ticksToSeconds(best).toFixed(3)}s` : ''),
     `<span class="k">speed</span> ${Math.sqrt(s.vx * s.vx + s.vy * s.vy).toFixed(2)} m/s   <span class="k">spin</span> ${s.wspin[0].toFixed(1)} / ${s.wspin[1].toFixed(1)}   <span class="k">ground</span> ${s.grounded === 3 ? 'both' : s.grounded === 1 ? 'rear' : s.grounded === 2 ? 'front' : 'air'}`,
     `<span class="k">keys </span> ${keys}`,
-    `<span class="k">facing</span> ${s.facing > 0 ? '+x' : '-x'}   <span class="k">contacts</span> ${sim.world.contactCount}   <span class="k">zoom</span> ${cam.zoom.toFixed(0)} px/m   <span class="k">fps</span> ${fps.toFixed(0)}`,
+    `<span class="k">facing</span> ${s.facing > 0 ? '+x' : '-x'}   <span class="k">contacts</span> ${sim.world.contactCount}   <span class="k">zoom</span> ${cam.zoom.toFixed(0)} px/m   <span class="k">fps</span> ${fps.toFixed(0)}` +
+    `   <span class="k">worst</span> ${worstMs.toFixed(1)}ms` +
+    (overCount > 0 ? `   <span class="bad">${overCount} dropped</span>` : ''),
     '',
     liveTuneError
       ? `<span class="bad">${liveTuneError}</span>`

@@ -18,11 +18,12 @@
 // Chrome rasterises the canvas on the CPU. A machine with a GPU will be faster,
 // never slower. If it holds 60 fps here it holds 60 fps anywhere.
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
 import { readFile, mkdtemp, rm } from 'node:fs/promises';
 import { join, extname, normalize } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { reapOrphans, spawnChrome } from './_chrome.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DIST = join(ROOT, 'dist');
@@ -34,6 +35,41 @@ const W = Number(process.env.BENCH_W || 1600);
 const H = Number(process.env.BENCH_H || 900);
 /** Metres per second the camera travels. 18 m/s is a fast run, not a cruise. */
 const SPEED = Number(process.env.BENCH_SPEED || 18);
+/**
+ * Art parameter overrides, as JSON, applied before measuring.
+ *
+ * This is what makes a before/after honest on ONE build: running
+ * `BENCH_ART='{"derive":0,"variety":0,"props":0,"parallax":0}'` measures
+ * exactly the Phase 1 look through the Phase 2 code, so the difference reported
+ * is the difference the new layers make and not the difference between two
+ * checkouts of the renderer.
+ */
+const ART = process.env.BENCH_ART ? JSON.parse(process.env.BENCH_ART) : {};
+/**
+ * Where to append results as they land.
+ *
+ * A twenty-level sweep takes half an hour, and a sweep that only writes to
+ * stdout loses everything if the process dies — which has happened. Each level
+ * is appended the moment it finishes, so a killed run costs the levels it had
+ * not reached and nothing else.
+ */
+const OUT = process.env.BENCH_OUT || '';
+/**
+ * Measure ONLY the interleaved Phase 1 / Phase 2 comparison, and skip the
+ * zoom-in pass, the overview pass, the old-renderer pass and the layer
+ * breakdown.
+ *
+ * The full report takes several minutes a level, which is fine on a quiet box
+ * and is two and a half hours across twenty levels on a busy one. The question
+ * "what did Phase 2 add" only needs the interleaved pass, and that pass is also
+ * the only part of the report whose answer survives a busy box — so when the
+ * machine is loaded this is not a degraded run, it is the only honest one.
+ */
+const AB_ONLY = process.env.BENCH_AB === '1';
+const say = (line) => {
+  console.log(line);
+  if (OUT) appendFileSync(OUT, `${line}\n`);
+};
 
 const serve = createServer(async (req, res) => {
   const raw = decodeURIComponent((req.url || '/').split('?')[0]);
@@ -54,13 +90,10 @@ const serve = createServer(async (req, res) => {
 await new Promise((r) => serve.listen(0, '127.0.0.1', r));
 const url = `http://127.0.0.1:${serve.address().port}/`;
 
+reapOrphans();
 const profile = await mkdtemp(join(tmpdir(), 'velo-bench-'));
 const cdpPort = await freePort();
-const chrome = spawn(process.env.CHROME || 'google-chrome', [
-  '--headless=new', '--disable-gpu', '--no-sandbox', '--mute-audio',
-  `--window-size=${W},${H}`, '--hide-scrollbars',
-  `--remote-debugging-port=${cdpPort}`, `--user-data-dir=${profile}`, 'about:blank',
-], { stdio: ['ignore', 'pipe', 'pipe'] });
+const chrome = spawnChrome(profile, cdpPort, W, H);
 
 let failed = false;
 try {
@@ -71,7 +104,7 @@ try {
   for (const lv of levels) {
     await cdp.send('Page.navigate', { url: `${url}?level=${lv}` });
     await settle(cdp);
-    const out = await ev(cdp, BENCH(SPEED));
+    const out = await ev(cdp, BENCH(SPEED, ART, AB_ONLY));
     const net = report(lv, out);
     if (net > 16.7) failed = true;
   }
@@ -99,13 +132,26 @@ if (failed) {
 // Injected verbatim. It runs inside the page because that is the only place the
 // renderer exists, and it returns raw samples so the summarising happens here
 // where it can be read and changed.
-function BENCH(speed) {
+function BENCH(speed, art, abOnly) {
   return `(async () => {
   const v = window.velo;
   const lvl = v.level;
   const bake = v.rebake();
   const raf = () => new Promise((r) => requestAnimationFrame(r));
   const A = v.art;
+  Object.assign(A, ${JSON.stringify(art)});
+  // EVERY TIMED PASS BELOW RUNS AT FULL DETAIL. The adaptive system would
+  // otherwise hold the p95 at its own target and this bench would report
+  // "passes" when what it meant was "turned everything off to get there" —
+  // which is precisely the failure mode a standing check must not have. What
+  // the adaptive system settles at is measured separately, in the live loop,
+  // and printed beside the honest numbers.
+  //
+  // SET IT BEFORE CAPTURING THE BASELINE. The layer breakdown restores the
+  // baseline between variants, so capturing it first put adaptation back on for
+  // every one of them — which is how a run came out claiming that turning bloom
+  // OFF made the frame four milliseconds SLOWER.
+  A.adaptive = 0;
   const base = { ...A };
   // FORCE THE FLUSH, or every number below is a lie.
   //
@@ -155,17 +201,75 @@ function BENCH(speed) {
   const flushOnly = [];
   for (let i = 0; i < 60; i++) { const t0 = performance.now(); flush(); flushOnly.push(performance.now() - t0); await raf(); }
 
-  const art62 = await pass(62, true);
-  const art110 = await pass(110, true);
-  const old62 = await pass(62, false);
-  const artOv = await pass(Math.max(6, Math.min(30, 900 / Math.max(lvl.maxX - lvl.minX, 1))), true);
+  const AB = ${abOnly};
+  const art110 = AB ? [0] : await pass(110, true);
+  const old62 = AB ? [0] : await pass(62, false);
+
+  // PHASE 1 AND PHASE 2, INTERLEAVED ALONG ONE FLIGHT.
+  //
+  // A before/after is only a comparison if the machine was equally busy for
+  // both, and this box is shared. Two consecutive passes were not enough: a
+  // load spike that lands on one of them lands on neither the other nor the
+  // frames either side, and the run then reports a difference that is entirely
+  // somebody else's build. One sweep came out claiming Phase 2 was fifty-nine
+  // milliseconds FASTER than Phase 1, which is the same error with its sign
+  // flipped, and is the reason to fix the method rather than to re-run until
+  // the number looks plausible.
+  //
+  // So the two configurations alternate in blocks along a single flight across
+  // the level. Drift slow enough to matter is shared between them; anything
+  // faster averages out across the blocks.
+  //
+  // Switching derive or variety changes the bake signature, so each switch
+  // costs one rebake. That is why the blocks are long and why the first few
+  // frames after each switch are thrown away.
+  const PHASE1 = { derive: 0, variety: 0, props: 0, parallax: 0 };
+  const BLOCK = 110;
+  const WARM = 6;
+  const p1s = [];
+  const p2s = [];
+  {
+    const dt = 1 / 60;
+    let x = lvl.minX + 4;
+    const end = lvl.maxX - 4;
+    const yy = (lvl.minY + lvl.maxY) / 2;
+    let block = 0;
+    let n = 0;
+    // Wrapped, so a short level still gets enough samples of each
+    // configuration. 07-the-chimney is 52 m — one flight is 160 frames, which
+    // would leave one of the two blocks with forty samples to take a p95 from.
+    while (p1s.length + p2s.length < 1000) {
+      if (x >= end) x = lvl.minX + 4;
+      if (n % BLOCK === 0) {
+        block++;
+        Object.assign(A, base, block % 2 === 0 ? PHASE1 : {});
+        v.renderAt(x, yy, 62, { art: true });
+        flush();
+        await raf();
+      }
+      const t0 = performance.now();
+      v.renderAt(x, yy, 62, { art: true });
+      flush();
+      const ms = performance.now() - t0;
+      if (n % BLOCK >= WARM) (block % 2 === 0 ? p1s : p2s).push(ms);
+      n++;
+      x += ${speed} * dt;
+      await raf();
+    }
+    Object.assign(A, base);
+  }
+  const art62 = p2s;
+  const p1 = p1s;
+  const artOv = AB ? [0] : await pass(Math.max(6, Math.min(30, 900 / Math.max(lvl.maxX - lvl.minX, 1))), true);
 
   // THE END-TO-END NUMBER. Everything above times the render call with an
   // artificial readback to force the raster; this just drives the real game and
   // watches how long real frames take, art on and art off. It is the number a
   // player would feel, and it includes the sim step and the HUD.
-  async function live(useArt) {
+  async function live(useArt, adaptive) {
     A.enabled = useArt ? 1 : 0;
+    A.adaptive = adaptive ? 1 : 0;
+    A.quality = 1;
     v.restart(false);
     window.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowUp', bubbles: true }));
     const d = [];
@@ -179,9 +283,13 @@ function BENCH(speed) {
     window.dispatchEvent(new KeyboardEvent('keyup', { code: 'ArrowUp', bubbles: true }));
     return d;
   }
-  const liveArt = await live(true);
-  const liveOld = await live(false);
+  const liveArt = await live(true, false);
+  const liveOld = AB ? [0] : await live(false, false);
+  // And once more with the adaptive system ON, which is what actually ships.
+  const liveAdapt = await live(true, true);
+  const settled = { q: A.quality, solid: A.solidFrac, worst: A.artMs };
   A.enabled = 1;
+  A.adaptive = 0;
 
   // Layer breakdown: turn ONE thing off and see what the frame gives back.
   // Short passes, because this is for deciding what to cut and not for the
@@ -202,13 +310,17 @@ function BENCH(speed) {
     'no chevrons': { chevrons: 0 },
     'no underworks': { underworks: 0 },
     'no motes': { motes: 0 },
+    'no props': { props: 0 },
+    'no parallax': { parallax: 0 },
     'no cel bands+lip+ink': { inkWidth: 0, lipWidth: 0, bandScale: 0 },
     'flat (all texture off)': { hatch: 0, wall: 0, stamps: 0, detail: 0, bloom: 0, motes: 0 },
     'background only': { hatch: 0, stamps: 0, detail: 0, bloom: 0, motes: 0, chevrons: 0, underworks: 0, inkWidth: 0, lipWidth: 0, bandScale: 0 },
   };
-  for (const [name, over] of Object.entries(variants)) {
-    Object.assign(A, base, over);
-    layers[name] = await pass(62, true, 200);
+  if (!AB) {
+    for (const [name, over] of Object.entries(variants)) {
+      Object.assign(A, base, over);
+      layers[name] = await pass(62, true, 130);
+    }
   }
   Object.assign(A, base);
 
@@ -218,11 +330,16 @@ function BENCH(speed) {
     bakeMs: bake.ms,
     stats: bake.stats,
     firstFrame,
-    art: { warm: art62, zoomIn: art110, overview: artOv },
+    art: { warm: art62, zoomIn: art110, overview: artOv, phase1: p1 },
     old: { warm: old62 },
-    live: { art: liveArt, old: liveOld },
+    live: { art: liveArt, old: liveOld, adapt: liveAdapt },
+    settled,
+    props: bake.stats.props,
+    budget: bake.stats.budget,
+    sites: bake.stats.sites,
     flushOnly,
-    layers,
+    layers: AB ? null : layers,
+    abOnly: AB,
   };
 })()`;
 }
@@ -250,37 +367,63 @@ function report(id, o) {
   const old = stat(o.old.warm);
   o.art.warm = a;
   const f = (n) => n.toFixed(2).padStart(6);
-  console.log('');
-  console.log(`    ${id}  "${o.level}"  ${o.span[0].toFixed(0)}x${o.span[1].toFixed(0)} m  ${W}x${H}`);
-  console.log(`    bake ${o.bakeMs.toFixed(1)} ms once  (${o.stats.subpaths} subpaths, ${o.stats.stamps} stamps, ${o.stats.chevrons} chevrons, ${o.stats.pipes} pipes)`);
-  console.log(`    first frame after a cold bake: ${o.firstFrame.toFixed(1)} ms`);
-  console.log(`    readback overhead included in every sample below: ${stat(o.flushOnly).p50.toFixed(2)} ms`);
-  console.log('');
-  console.log('                                mean    p50    p95    max |  net mean  net p95  % of 16.7 (net p95)');
-  const row = (name, s) => console.log(
+  say('');
+  say(`    ${id}  "${o.level}"  ${o.span[0].toFixed(0)}x${o.span[1].toFixed(0)} m  ${W}x${H}`);
+  say(`    bake ${o.bakeMs.toFixed(1)} ms once  (${o.stats.subpaths} subpaths, ${o.stats.stamps} stamps, ${o.stats.chevrons} chevrons, ${o.stats.pipes} pipes, ${o.props}/${o.budget} props from ${o.sites} sites)`);
+  say(`    first frame after a cold bake: ${o.firstFrame.toFixed(1)} ms`);
+  say(`    readback overhead included in every sample below: ${stat(o.flushOnly).p50.toFixed(2)} ms`);
+  say('');
+  say(o.abOnly
+    ? '    A/B ONLY: Phase 1 and Phase 2 interleaved along one flight, adaptive off'
+    : '    FULL DETAIL (adaptive off, so this is the honest cost, not what it settles for)');
+  say('                                mean    p50    p95    max |  net mean  net p95  % of 16.7 (net p95)');
+  const row = (name, s) => say(
     `    ${name.padEnd(24)}${f(s.mean)} ${f(s.p50)} ${f(s.p95)} ${f(s.max)} |  ` +
     `${f(Math.max(0, s.mean - rb))}   ${f(Math.max(0, s.p95 - rb))}   ${(((s.p95 - rb) / 16.7) * 100).toFixed(0)}%`);
-  row('art, panning @62 px/m', a);
-  row('art, panning @110 px/m', z);
-  row(`art, overview @${(900 / Math.max(o.span[0], 1)).toFixed(0)} px/m`, ov);
-  row('OLD renderer @62 px/m', old);
-  console.log(`    art costs ${(a.p95 - old.p95).toFixed(2)} ms more than the old renderer at p95 — readback-free, so this is the honest delta`);
+  row('PHASE 2 art @62 px/m', a);
+  const p1 = stat(o.art.phase1);
+  row('PHASE 1 art @62 px/m', p1);
+  if (!o.abOnly) {
+    row('art, panning @110 px/m', z);
+    row(`art, overview @${(900 / Math.max(o.span[0], 1)).toFixed(0)} px/m`, ov);
+    row('OLD renderer @62 px/m', old);
+    say(`    art costs ${(a.p95 - old.p95).toFixed(2)} ms more than the old renderer at p95 — readback-free, so this is the honest delta`);
+  }
+  // The number Phase 2 is actually accountable for, measured on the same frames
+  // in the same process, so it cannot be a difference between two machines or
+  // two moments.
+  // Absolute milliseconds on a shared box say more about the box than about the
+  // renderer, so the RATIO is printed beside them: it is the part of this
+  // measurement that survives a busy machine, because both numbers came from
+  // frames interleaved along the same flight.
+  const rn = (x) => Math.max(0.01, x - rb);
+  say(`    PHASE 2 costs ${(a.p95 - p1.p95).toFixed(2)} ms more than PHASE 1 at p95 (${(a.mean - p1.mean).toFixed(2)} at the mean)`);
+  say(`    PHASE 2 / PHASE 1 = ${(rn(a.mean) / rn(p1.mean)).toFixed(2)}x at the mean, ${(rn(a.p95) / rn(p1.p95)).toFixed(2)}x at p95  <- the number that survives a busy box`);
   if (o.live) {
     const la = stat(o.live.art);
     const lo = stat(o.live.old);
-    console.log('');
-    console.log('    REAL LOOP, throttle held, rAF frame-to-frame (sim + render + HUD):');
-    console.log(`    art on      ${f(la.mean)} mean  ${f(la.p50)} p50  ${f(la.p95)} p95  ${f(la.max)} max   ${(1000 / la.p50).toFixed(0)} fps`);
-    console.log(`    art off     ${f(lo.mean)} mean  ${f(lo.p50)} p50  ${f(lo.p95)} p95  ${f(lo.max)} max   ${(1000 / lo.p50).toFixed(0)} fps`);
+    say('');
+    say('    REAL LOOP, throttle held, rAF frame-to-frame (sim + render + HUD):');
+    say(`    art on      ${f(la.mean)} mean  ${f(la.p50)} p50  ${f(la.p95)} p95  ${f(la.max)} max   ${(1000 / la.p50).toFixed(0)} fps`);
+    if (!o.abOnly) say(`    art off     ${f(lo.mean)} mean  ${f(lo.p50)} p50  ${f(lo.p95)} p95  ${f(lo.max)} max   ${(1000 / lo.p50).toFixed(0)} fps`);
+    if (o.live.adapt) {
+      const ld = stat(o.live.adapt);
+      say(`    adaptive    ${f(ld.mean)} mean  ${f(ld.p50)} p50  ${f(ld.p95)} p95  ${f(ld.max)} max   ${(1000 / ld.p50).toFixed(0)} fps`);
+      // WHAT IT SETTLED AT. "It passes" must not be allowed to quietly mean
+      // "it passed by turning everything off", so the number is printed every
+      // time rather than only when it is interesting. 100% means the adaptive
+      // system did nothing at all, which on most levels is the right answer.
+      say(`    adaptive settled at DETAIL ${(o.settled.q * 100).toFixed(0)}%  (viewport ${(o.settled.solid * 100).toFixed(0)}% solid, worst art frame ${o.settled.worst.toFixed(1)} ms)`);
+    }
   }
   if (o.layers) {
-    console.log('');
-    console.log('    what each layer costs (one layer off, same 200 frames @62 px/m):');
+    say('');
+    say('    what each layer costs (one layer off, same 130 frames @62 px/m):');
     const bl = stat(o.layers['ALL ON (baseline)']).mean;
     for (const [name, arr] of Object.entries(o.layers)) {
       const s2 = stat(arr);
       const d = name.startsWith('ALL ON') ? '' : `saves ${(bl - s2.mean).toFixed(2)} ms`;
-      console.log(`    ${name.padEnd(24)}${f(s2.mean)} mean   ${d}`);
+      say(`    ${name.padEnd(24)}${f(s2.mean)} mean   ${d}`);
     }
   }
   return a.p95 - rb;
