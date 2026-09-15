@@ -22,6 +22,7 @@ import type { BikeSpec } from '@/sim/spec.ts';
 import { specHash } from '@/sim/spec.ts';
 import type { CameraParams } from './camera.ts';
 import type { OverviewParams } from './overview.ts';
+import type { ArtParams } from './art/params.ts';
 import { PRESETS, leanAngleOf, leanVectors } from './presets.ts';
 import { loadFlag, saveFlag } from './store.ts';
 
@@ -337,6 +338,107 @@ const OVERVIEW_GROUPS: Group<OverviewParams>[] = [
   },
 ];
 
+
+const ART_GROUPS: Group<ArtParams>[] = [
+  {
+    title: 'Art',
+    why: 'Solids are DARK and air is LIGHT — the inverse of the flat renderer — and every collidable edge carries ink plus a coloured lip: yellow on tops, orange on sides, lilac on undersides. That inversion plus the ink rule is the whole bet, and the acceptance test for it is not "does it look good" but "is the collision boundary still the most legible line in the frame". Leave the first slider here so you can A/B it (V does the same) — that comparison is the only honest way to judge it.',
+    fields: [
+      {
+        label: 'ART ON (0/1)', min: 0, max: 1, step: 1,
+        hint: '0 is the old flat renderer, on the same frame. Kept deliberately: readability is judged by flipping, not by staring.',
+        get: (a) => a.enabled, set: (a, v) => { a.enabled = v; },
+      },
+      {
+        label: 'ink width (px)', min: 0, max: 12, step: 0.5,
+        hint: 'SCREEN pixels, not metres — the readability rule is about what an eye can resolve, so this must not shrink when you zoom out. Centred on the true collision boundary.',
+        get: (a) => a.inkWidth, set: (a, v) => { a.inkWidth = v; },
+      },
+      {
+        label: 'lip width (px)', min: 0, max: 12, step: 0.5,
+        hint: 'Coloured band just INSIDE the edge, and the thing that says which way a surface faces. It is stroked wide enough to survive the ink covering half of it; at 2.5 it came out as one blended pixel.',
+        get: (a) => a.lipWidth, set: (a, v) => { a.lipWidth = v; },
+      },
+      {
+        label: 'ink full-size zoom', min: 10, max: 120, step: 1,
+        hint: 'Above this zoom ink and lip are full width; below it they shrink, because 5 px of ink on every edge of a 330 m level in the overview is a hairball and the overview is about shape.',
+        get: (a) => a.inkFullZoom, set: (a, v) => { a.inkFullZoom = v; },
+      },
+      {
+        label: 'ink min scale', min: 0.1, max: 1, step: 0.05,
+        get: (a) => a.inkMinScale, set: (a, v) => { a.inkMinScale = v; },
+      },
+      {
+        label: 'texture opacity', min: 0, max: 1, step: 0.05,
+        hint: 'Blotches and cracks on the terrain. Opacity rather than density on purpose: density is baked, and rebuilding a level\'s geometry mid-drag would make this slider useless. One of the two most expensive layers.',
+        get: (a) => a.detail, set: (a, v) => { a.detail = v; },
+      },
+      {
+        label: 'hatch', min: 0, max: 1, step: 0.05,
+        hint: 'Diagonal tooth over the terrain. The other expensive layer, and the first thing to turn down on a slow machine — it is a five per cent wash.',
+        get: (a) => a.hatch, set: (a, v) => { a.hatch = v; },
+      },
+      {
+        label: 'wall detail', min: 0, max: 1, step: 0.05,
+        hint: 'Concrete panel grid, seeded panel tones and stains behind the play space.',
+        get: (a) => a.wall, set: (a, v) => { a.wall = v; },
+      },
+      {
+        label: 'stencils', min: 0, max: 1, step: 0.05,
+        hint: 'Stamped marks along long top edges and on wall panels. Kept quiet: these must never compete with the edge.',
+        get: (a) => a.stamps, set: (a, v) => { a.stamps = v; },
+      },
+      {
+        label: 'hazard chevrons', min: 0, max: 1, step: 0.05,
+        hint: 'Striped blocks at every convex top-to-side corner, which is every ledge you can ride off. The cheapest safety feature in the game: it marks the drop-offs of a level nobody has looked at.',
+        get: (a) => a.chevrons, set: (a, v) => { a.chevrons = v; },
+      },
+      {
+        label: 'under-ledge works', min: 0, max: 1, step: 0.05,
+        hint: 'Shadow bands under ceilings, and bracketed pipework under the long ones. Pipework only appears where there is real clearance below — slinging a pipe through a low corridor would look like collidable geometry.',
+        get: (a) => a.underworks, set: (a, v) => { a.underworks = v; },
+      },
+      {
+        label: 'cel band scale', min: 0, max: 2, step: 0.05,
+        hint: 'Width of the lit / mid / dark bands along each edge class. World units, unlike the ink: a band is material catching light.',
+        get: (a) => a.bandScale, set: (a, v) => { a.bandScale = v; },
+      },
+      {
+        label: 'dust motes', min: 0, max: 200, step: 5,
+        get: (a) => a.motes, set: (a, v) => { a.motes = v; },
+      },
+      {
+        label: 'game HUD (0/1)', min: 0, max: 1, step: 1,
+        hint: 'The in-canvas card, clock and apple count. Separate from the developer readout in the top left, which is not the game HUD and never was.',
+        get: (a) => a.hud, set: (a, v) => { a.hud = v; },
+      },
+      {
+        label: 'bloom', min: 0, max: 0.6, step: 0.01,
+        hint: 'Screen-blended, at an eighth resolution. A full-res blur of a 1080p frame is several milliseconds and this is atmosphere.',
+        get: (a) => a.bloom, set: (a, v) => { a.bloom = v; },
+      },
+      {
+        label: 'bloom radius', min: 1, max: 20, step: 0.5,
+        get: (a) => a.bloomRadius, set: (a, v) => { a.bloomRadius = v; },
+      },
+      {
+        label: 'texture off below (px/m)', min: 3, max: 60, step: 1,
+        hint: 'Texture is gone below this and full above the next slider. Both sit under the play camera\'s 38 px/m floor, so this only ever fires in the overview — where the texture is sub-pixel mud AND by far the most expensive thing on screen.',
+        get: (a) => a.artOffZoom, set: (a, v) => { a.artOffZoom = v; },
+      },
+      {
+        label: 'texture full above (px/m)', min: 3, max: 90, step: 1,
+        get: (a) => a.artFadeZoom, set: (a, v) => { a.artFadeZoom = v; },
+      },
+      {
+        label: 'floor/ceiling angle (deg)', min: 20, max: 80, step: 1,
+        hint: 'Degrees off horizontal at which a face stops counting as a floor and starts counting as a wall. It decides the colour of every lip in the level, so it is the one art parameter that REBUILDS the bake when you move it.',
+        get: (a) => a.faceAngle, set: (a, v) => { a.faceAngle = v; },
+      },
+    ],
+  },
+];
+
 export interface PanelHooks {
   /** A spec field moved. The sim is rebuilt around the new spec in place. */
   onSpecChange(spec: BikeSpec): void;
@@ -346,6 +448,8 @@ export interface PanelHooks {
   onCameraChange(cam: CameraParams): void;
   /** An overview field moved. Read every frame, so also nothing to rebuild. */
   onOverviewChange(ov: OverviewParams): void;
+  /** An art field moved. Read every frame; `faceAngle` triggers a rebake. */
+  onArtChange(art: ArtParams): void;
   /** A whole preset was selected; the run restarts. */
   onPreset(spec: BikeSpec, label: string): void;
   /** Throw away the stored tune and go back to the preset as shipped. */
@@ -393,6 +497,7 @@ export function createPanel(
   effective: () => BikeSpec,
   camera: CameraParams,
   overview: OverviewParams,
+  art: ArtParams,
   liveTuneOn: boolean,
   hooks: PanelHooks,
 ): Panel {
@@ -578,6 +683,7 @@ export function createPanel(
   // writes the same object and no row of it ever goes read-only.
   buildGroups(CAMERA_GROUPS, camera, (c) => hooks.onCameraChange(c));
   buildGroups(OVERVIEW_GROUPS, overview, (o) => hooks.onOverviewChange(o));
+  buildGroups(ART_GROUPS, art, (a) => hooks.onArtChange(a));
 
   const keys = document.createElement('div');
   keys.className = 'keys';
@@ -588,7 +694,8 @@ export function createPanel(
     '<b>E</b> export replay &nbsp; <b>L</b> load a replay file (or drop one on the window)<br>' +
     '<b>TAB</b> (hold) see the whole level — the sim and the clock freeze<br>' +
     '<b>[ / ]</b> previous / next level &nbsp; <b>G</b> contacts &amp; normals<br>' +
-    '<b>H</b> hide this panel &nbsp; <b>+ / -</b> zoom &nbsp; <b>P</b> pause' +
+    '<b>H</b> hide this panel &nbsp; <b>+ / -</b> zoom &nbsp; <b>P</b> pause<br>' +
+    '<b>V</b> art on / off — the A/B for readability' +
     '<h2 style="margin-top:18px">Live tune</h2>' +
     'Someone at a terminal can change the bike while you ride:<br>' +
     '<code>bin/spec set gravity 9.2</code><br>' +

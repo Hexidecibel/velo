@@ -1,17 +1,23 @@
 /* Readability rule, borrowed early from milestone 9: the player and the
    collision edge are always the highest-contrast things on screen. Everything
-   here is deliberately drab so that they are not competing with anything. */
+   here is deliberately drab so that they are not competing with anything.
+   That still holds; the colours have simply moved onto the art's palette
+   (src/client/art/palette.ts) so the chrome around the canvas stops looking
+   like a different program from the canvas. Keep these two in step — a value
+   changed here and not there is how a UI starts feeling assembled. */
 :root {
   color-scheme: dark;
-  --bg: #0e1116;
-  --solid: #1b2029;
-  --free: #0b0d11;
-  --edge: #7fd4ff;
-  --ink: #c9d4e3;
-  --dim: #64748b;
-  --accent: #ffd166;
-  --bad: #ff5d5d;
-  --good: #5ddb8a;
+  --bg: #0d0b1a;
+  --solid: #26214d;
+  --free: #1a1630;
+  --edge: #29d9f2;
+  --ink: #e6e1f5;
+  --dim: #8d85ad;
+  --accent: #ffd21f;
+  --bad: #ff3d3d;
+  --good: #9dff3d;
+  --line: #2d2752;
+  --surface: #17132e;
   --panel-w: 344px;
 }
 
@@ -54,8 +60,8 @@ html, body {
   width: var(--panel-w);
   height: 100%;
   overflow-y: auto;
-  background: #11151c;
-  border-left: 1px solid #222a35;
+  background: var(--surface);
+  border-left: 1px solid var(--line);
   padding: 10px 12px 40px;
 }
 #panel.hidden { display: none; }
@@ -74,10 +80,10 @@ html, body {
   text-transform: uppercase;
   color: var(--dim);
   margin: 16px 0 6px;
-  border-bottom: 1px solid #222a35;
+  border-bottom: 1px solid var(--line);
   padding-bottom: 3px;
 }
-#panel h2 .why { display: block; text-transform: none; letter-spacing: 0; color: #4b5666; font-size: 10px; }
+#panel h2 .why { display: block; text-transform: none; letter-spacing: 0; color: #6b6390; font-size: 10px; }
 
 .row { display: grid; grid-template-columns: 1fr auto; gap: 2px 6px; margin: 7px 0; }
 .row label { color: var(--ink); }
@@ -89,28 +95,28 @@ html, body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.row input[type=range] { grid-column: 1 / -1; width: 100%; height: 16px; margin: 0; accent-color: #7fd4ff; }
-.row .hint { grid-column: 1 / -1; color: #4b5666; font-size: 10px; }
+.row input[type=range] { grid-column: 1 / -1; width: 100%; height: 16px; margin: 0; accent-color: var(--edge); }
+.row .hint { grid-column: 1 / -1; color: #6b6390; font-size: 10px; }
 
 .btns { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
 button, select {
   font: inherit;
   color: var(--ink);
-  background: #1a212c;
-  border: 1px solid #2b3542;
+  background: #221c46;
+  border: 1px solid var(--line);
   border-radius: 3px;
   padding: 4px 8px;
   cursor: pointer;
 }
-button:hover, select:hover { background: #222b38; }
-button.primary { border-color: #3b6b8a; color: #cfe9fb; }
+button:hover, select:hover { background: #2c2458; }
+button.primary { border-color: #29d9f2; color: #b9f3fb; }
 select { width: 100%; cursor: pointer; }
 
 .note { color: var(--dim); margin: 8px 0; }
 .note b { color: var(--accent); font-weight: normal; }
 .keys { color: var(--dim); }
 .keys b { color: var(--ink); font-weight: normal; }
-code { color: #9ecbff; }
+code { color: #29d9f2; }
 
 /* --- level bar: navigation, always visible ------------------------------- */
 #levelbar {
@@ -141,8 +147,8 @@ body:has(#panel.hidden) #levelbar { right: 14px; }
   text-shadow: 0 1px 2px #000;
 }
 #legend details {
-  background: #11151cd9;
-  border: 1px solid #222a35;
+  background: #17132ee0;
+  border: 1px solid var(--line);
   border-radius: 3px;
   padding: 4px 8px;
 }
@@ -183,7 +189,7 @@ body:has(#panel.hidden) #levelbar { right: 14px; }
   transform: translate(-50%, -8px);
   max-width: 62vw;
   padding: 6px 12px;
-  background: #11151ceb;
+  background: #17132eeb;
   border: 1px solid #3b6b8a;
   border-radius: 3px;
   color: var(--ink);
@@ -222,7 +228,7 @@ body:has(#panel.hidden) #levelbar { right: 14px; }
   cursor: pointer;
   color: var(--ink);
 }
-#panel .toggle input { accent-color: #7fd4ff; cursor: pointer; }
+#panel .toggle input { accent-color: var(--edge); cursor: pointer; }
 
 /* A row bin/spec is holding. Visibly not yours to drag: a slider that a poll
    overwrites two seconds later is worse than no slider at all. */

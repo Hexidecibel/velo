@@ -28,6 +28,11 @@ import { createLegend, createLevelBar } from './chrome.ts';
 import { downloadReplay, onReplayDropped, pickReplay } from './replayio.ts';
 import { clearStoredSpec, loadBests, loadFlag, loadLastLevel, loadStoredSpec, recordBest, saveFlag, saveLastLevel, saveStoredSpec } from './store.ts';
 import { createLiveTune } from './livetune.ts';
+import { renderArt } from './artrender.ts';
+import { bakeLevel, bakeSignature } from './art/bake.ts';
+import type { BakedLevel } from './art/bake.ts';
+import { cloneArt, DEFAULT_ART } from './art/params.ts';
+import { CONCRETE } from './art/palette.ts';
 
 const canvas = document.getElementById('view') as HTMLCanvasElement;
 const hud = document.getElementById('hud') as HTMLElement;
@@ -123,6 +128,31 @@ const overview = createOverview(cloneOverview(DEFAULT_OVERVIEW));
 overview.startIntro();
 let debug = false;
 let hudCache = '';
+// The art. `enabled` is the A/B switch — V, or the slider on the panel — and it
+// is deliberately kept rather than deleted once the art lands: readability is
+// the acceptance criterion for the whole look, and readability is judged by
+// flipping between two frames of the same moment.
+const artParams = cloneArt(DEFAULT_ART);
+let baked: BakedLevel | null = null;
+let bakeMs = 0;
+const bootTime = performance.now();
+
+/**
+ * Bake the level's art if it is not already baked for this level and these
+ * parameters. Called from the frame rather than from setLevel so that a
+ * parameter that changes the GEOMETRY (the floor/wall angle) rebuilds without
+ * anybody having to remember to call it, and so that a level that never gets
+ * drawn never pays.
+ */
+function ensureBake(): BakedLevel {
+  const want = bakeSignature(level, artParams);
+  if (!baked || baked.signature !== want) {
+    const t0 = performance.now();
+    baked = bakeLevel(level, artParams, CONCRETE);
+    bakeMs = performance.now() - t0;
+  }
+  return baked;
+}
 let fps = 0;
 let liveTuneError: string | null = null;
 
@@ -147,6 +177,7 @@ function setLevel(next: LevelEntry, note = ''): void {
   }
   entry = next;
   level = next.level;
+  baked = null;
   sim = createSim(level, spec);
   lastReplay = null;
   replayNote = note;
@@ -473,7 +504,7 @@ function draw(alpha: number, dtMs: number): void {
   cam.update({ x: pose.px, y: pose.py, vx: sim.state.vx, vy: sim.state.vy }, dtSec, cssW, cssH, ov);
 
   const ghost: Pose | null = null;
-  render(ctx, cssW, cssH, cam, sim.world, sim.state, pose, spec, {
+  const opts = {
     debug,
     ghost,
     overview: overview.blend,
@@ -484,7 +515,14 @@ function draw(alpha: number, dtMs: number): void {
     markers: overview.params.markerAlpha > 0
       ? { inset: overview.params.markerInset, alpha: overview.params.markerAlpha * (1 - overview.blend) }
       : null,
-  });
+  };
+  if (artParams.enabled > 0) {
+    const art = ensureBake();
+    renderArt(ctx, cssW, cssH, cam, sim.world, sim.state, pose, spec,
+      { ...opts, time: (performance.now() - bootTime) / 1000 }, artParams, art);
+  } else {
+    render(ctx, cssW, cssH, cam, sim.world, sim.state, pose, spec, opts);
+  }
   updateHud();
 }
 
@@ -582,11 +620,17 @@ createLegend(legendRoot);
 // somebody playing. Either way the toggle is remembered once touched.
 const liveTuneDefault = loadFlag('livetune', import.meta.env.DEV);
 
-const panel = createPanel(panelRoot, localSpec, () => spec, cam.params, overview.params, liveTuneDefault, {
+const panel = createPanel(panelRoot, localSpec, () => spec, cam.params, overview.params, artParams, liveTuneDefault, {
   onSpecChange: () => onPanelEdit(),
   onCameraChange: () => {
     // Nothing to rebuild: the camera reads its params every frame. It is here
     // so that adding a camera parameter that DOES need work has a place to go.
+  },
+  onArtChange: () => {
+    // Read every frame like the camera's, with one exception: `faceAngle`
+    // decides which edges are floors and therefore what the bake contains.
+    // ensureBake() compares a signature, so moving it rebuilds on the next
+    // frame and moving anything else does not.
   },
   onOverviewChange: () => {
     // Likewise read every frame. Changing `introHold` does not retroactively
@@ -670,6 +714,11 @@ input.onCommand((code) => {
     case 'KeyG':
       debug = !debug;
       break;
+    case 'KeyV':
+      // A/B the art against the old flat renderer, on the same frame.
+      artParams.enabled = artParams.enabled > 0 ? 0 : 1;
+      panel.sync();
+      break;
     case 'KeyH':
       panel.toggle();
       break;
@@ -739,6 +788,88 @@ interface VeloWindow extends Window {
     return attempts.all;
   },
   levels: LEVELS,
+  art: artParams,
+  /** Exposed so bin/shots can stop the loop repainting over a captured frame. */
+  loop,
+  /**
+   * Render ONE frame at an arbitrary camera, bypassing the loop.
+   *
+   * This is the instrument `bin/artbench` and `bin/shots` drive, and it exists
+   * because the question the art has to answer is "what does a frame cost with
+   * the camera MOVING" — which you cannot ask by screenshotting a stationary
+   * bike, and cannot answer honestly by timing a loop that is also stepping the
+   * sim and rewriting the HUD. It renders exactly what the frame renders, at a
+   * camera position the caller chooses.
+   */
+  renderAt(x: number, y: number, zoom: number, o?: { art?: boolean; debug?: boolean; overview?: number }) {
+    const { cssW, cssH } = resize();
+    const pose = interpolate(prevState, sim.state, 1);
+    const view = { x, y, zoom };
+    const opts = {
+      debug: o?.debug ?? false,
+      ghost: null,
+      overview: o?.overview ?? 0,
+      markers: null,
+    };
+    const useArt = o?.art ?? artParams.enabled > 0;
+    if (useArt) {
+      renderArt(ctx, cssW, cssH, view, sim.world, sim.state, pose, spec,
+        { ...opts, time: (performance.now() - bootTime) / 1000 }, artParams, ensureBake());
+    } else {
+      render(ctx, cssW, cssH, view, sim.world, sim.state, pose, spec, opts);
+    }
+  },
+  /**
+   * Where in this level the ceiling comes closest to the floor.
+   *
+   * The framing bin/shots uses to check the one thing the art could genuinely
+   * make WORSE rather than just uglier: a level whose lesson is head clearance
+   * is unfair if the treatment on a ceiling edge hides where the ceiling is.
+   */
+  tightestGap() {
+    let best = { x: level.start.x, y: level.start.y, gap: Infinity };
+    for (const p of level.polys) {
+      const n = p.vx.length;
+      for (let i = 0; i < n; i++) {
+        // Down-facing edge: a ceiling.
+        if (p.ny[i] > -0.6) continue;
+        const j = i + 1 === n ? 0 : i + 1;
+        const cx = (p.vx[i] + p.vx[j]) / 2;
+        const cy = (p.vy[i] + p.vy[j]) / 2;
+        for (const q of level.polys) {
+          const m = q.vx.length;
+          for (let k = 0; k < m; k++) {
+            if (q.ny[k] < 0.6) continue; // up-facing: a floor
+            const l = k + 1 === m ? 0 : k + 1;
+            const lo = Math.min(q.vx[k], q.vx[l]);
+            const hi = Math.max(q.vx[k], q.vx[l]);
+            if (cx < lo || cx > hi) continue;
+            const t = hi - lo < 1e-9 ? 0 : (cx - lo) / (hi - lo);
+            const fy = q.vx[k] <= q.vx[l]
+              ? q.vy[k] + (q.vy[l] - q.vy[k]) * t
+              : q.vy[l] + (q.vy[k] - q.vy[l]) * t;
+            const gap = cy - fy;
+            if (gap <= 0.2 || gap >= best.gap) continue;
+            best = { x: cx, y: (cy + fy) / 2, gap };
+          }
+        }
+      }
+    }
+    return best;
+  },
+  /** Throw the bake away, so the next frame pays the cold cost. */
+  rebake() {
+    baked = null;
+    const t0 = performance.now();
+    const b = ensureBake();
+    return { ms: performance.now() - t0, stats: b.stats };
+  },
+  get baked() {
+    return baked;
+  },
+  get bakeMs() {
+    return bakeMs;
+  },
   restart,
   startPlayback,
   exportReplay,

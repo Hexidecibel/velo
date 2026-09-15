@@ -107,6 +107,45 @@ describe('the two hashes', () => {
     expect(moved.simHash).not.toBe(a.simHash);
   });
 
+  it('style is cosmetic: it moves contentHash and NEVER simHash', () => {
+    // The one field most likely to be edited for reasons that have nothing to
+    // do with how a level plays. If it entered simHash, recolouring a level
+    // would re-identify it and wipe its leaderboard — which is exactly the bug
+    // the two-hash split exists to prevent, arriving through the back door.
+    const a = parseLevel(TEST_LEVEL);
+    expect(a.style).toBeNull();
+
+    const added = parseLevel({ ...TEST_LEVEL, style: { palette: 'concrete', theme: 'industrial' } });
+    expect(added.simHash).toBe(a.simHash);
+    expect(added.contentHash).not.toBe(a.contentHash);
+    expect(added.style).toEqual({ palette: 'concrete', theme: 'industrial' });
+
+    const changed = parseLevel({ ...TEST_LEVEL, style: { palette: 'rust', theme: 'industrial' } });
+    expect(changed.simHash).toBe(a.simHash);
+    expect(changed.contentHash).not.toBe(added.contentHash);
+
+    // And explicit colours, which is the form most likely to be hand-edited.
+    const coloured = parseLevel({ ...TEST_LEVEL, style: { colors: { solid: '#123456' } } });
+    expect(coloured.simHash).toBe(a.simHash);
+    expect(coloured.contentHash).not.toBe(a.contentHash);
+  });
+
+  it('carries style keys it does not understand', () => {
+    // Same tolerance as zones and entities, and for the same reason: an art
+    // hint from a newer client must not make a level unplayable.
+    const lv = parseLevel({ ...TEST_LEVEL, style: { palette: 'concrete', lighting: { shafts: 3 }, mood: 'wet' } });
+    expect(lv.style?.lighting).toEqual({ shafts: 3 });
+    expect(lv.style?.mood).toBe('wet');
+  });
+
+  it('rejects a style that is not an object', () => {
+    // Loose, but not infinitely loose: `"style": "neon"` is a mistake, not a
+    // forward-compatible hint, and saying so costs nothing.
+    expect(() => parseLevel({ ...TEST_LEVEL, style: 'neon' })).toThrow(/level.style/);
+    expect(() => parseLevel({ ...TEST_LEVEL, style: ['neon'] })).toThrow(/level.style/);
+    expect(() => parseLevel({ ...TEST_LEVEL, style: null })).toThrow(/level.style/);
+  });
+
   it('simHash ignores decor', () => {
     const a = parseLevel(TEST_LEVEL);
     const b = parseLevel({ ...TEST_LEVEL, polygons: TEST_LEVEL.polygons.filter((p) => p.kind !== 'decor') });

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Measure the art renderer's frame budget with the camera MOVING.
+#
+# Usage:
+#   bin/artbench                      # 10-cathedral, the level the plan calls worst case
+#   bin/artbench 10-cathedral 16-one-way 20-close-quarters
+#   BENCH_W=1920 BENCH_H=1080 bin/artbench
+#   BENCH_SPEED=25 bin/artbench       # metres per second the camera flies
+#
+# Why: the art direction was proven in a mockup that draws one static frame into
+# cached screen-space layers, and a cache in screen space is worthless the
+# instant a camera pans. This is the check that the port survives motion. Exits
+# 2 if a warm frame's p95 is over the 16.7 ms budget, which is the stop
+# condition for the whole plan.
+#
+# The numbers are a FLOOR: this box has no GPU so Chrome rasterises on the CPU.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+echo "==> build"
+"$ROOT/bin/build" >/dev/null
+echo "==> frame budget"
+exec "$NODE" "$ROOT/bin/_artbench.mjs" "$@"

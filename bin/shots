@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Screenshot the real renderer across levels, for judging READABILITY.
+#
+# Usage:
+#   bin/shots                                  # the four levels that matter most
+#   bin/shots 04-switchback 13-reservoir
+#   SHOTS_OUT=/tmp/x SHOTS_W=1920 SHOTS_H=1080 bin/shots
+#
+# Five shots per level: art at the base camera, art zoomed in, art with the G
+# collision overlay up, the OLD flat renderer at the same camera for an A/B, and
+# the overview. The A/B pair is the point — "is the collision edge still the most
+# legible line" is a comparison, not an opinion.
+#
+# Output goes to shots/ (gitignored).
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+echo "==> build"
+"$ROOT/bin/build" >/dev/null
+echo "==> shots"
+exec "$NODE" "$ROOT/bin/_shots.mjs" "$@"

@@ -85,11 +85,36 @@ export interface DecorPolygon {
   points: RawPoint[];
 }
 
+/**
+ * Cosmetic hints. Read by the renderer, never by the sim, and NEVER part of
+ * simHash — see the note on `Level.style`.
+ *
+ * Open by design: `palette`, `theme` and `colors` are what Phase 1 knows about,
+ * and anything else an author writes is carried through to contentHash
+ * untouched. That is the same tolerance `zones` and `entities` get and it is
+ * what keeps a level authored in 2027 loadable by a 2026 client.
+ */
+export interface LevelStyle {
+  /** Named palette, e.g. "concrete". Unknown names fall back to the default. */
+  palette?: string;
+  /** Free-form tag for a later placement pass: "industrial", "cave", "neon". */
+  theme?: string;
+  /** Explicit overrides, keyed by palette slot. */
+  colors?: Record<string, string>;
+  [key: string]: unknown;
+}
+
 export interface RawLevel {
   format?: string;
   rev?: number;
   name?: string;
   author?: string;
+  /**
+   * Optional and cosmetic. Shipped now rather than later for the same reason
+   * the arc primitive was: a level format gains a migration the moment a
+   * community library exists, and this one costs nothing today.
+   */
+  style?: LevelStyle;
   start: Vec2;
   flower: Vec2;
   apples?: Vec2[];
@@ -170,6 +195,21 @@ export interface Level {
   simHash: string;
   /** Covers the whole file, including name, decor and the reserved arrays. */
   contentHash: string;
+  /**
+   * The level's cosmetic hints, or null.
+   *
+   * IT IS NOT IN simHash, AND THAT IS THE WHOLE POINT. simHash covers only what
+   * the sim reads, so that retitling or RECOLOURING a level preserves its
+   * leaderboard while moving an apple by 1e-12 does not. If `style` entered
+   * simHash, changing a level's palette would re-identify the level and wipe
+   * every time on it — which is exactly the bug the two-hash split exists to
+   * prevent, arriving through the one field most likely to be edited for
+   * reasons that have nothing to do with how the level plays.
+   *
+   * level.test.ts asserts that adding and changing `style` leaves simHash
+   * bit-identical while moving contentHash.
+   */
+  style: LevelStyle | null;
 }
 
 export class LevelError extends Error {}
@@ -218,6 +258,18 @@ export function parseLevel(raw: unknown): Level {
   if (r.sagTolerance !== undefined) {
     sagTolerance = finite(r.sagTolerance, 'level.sagTolerance');
     if (sagTolerance <= 0) bad(`level.sagTolerance: must be > 0, got ${sagTolerance}`);
+  }
+
+  // Validated only for SHAPE, and loosely. It is cosmetic: a style block the
+  // renderer does not understand must never stop a level loading, because the
+  // alternative is a level that becomes unplayable when somebody adds an art
+  // hint from a newer client.
+  let style: LevelStyle | null = null;
+  if (r.style !== undefined) {
+    if (r.style === null || typeof r.style !== 'object' || Array.isArray(r.style)) {
+      bad('level.style: expected an object');
+    }
+    style = r.style;
   }
 
   const start = vec(r.start, 'level.start');
@@ -317,6 +369,7 @@ export function parseLevel(raw: unknown): Level {
     maxY,
     simHash: '',
     contentHash: '',
+    style,
   };
   level.simHash = computeSimHash(level);
   level.contentHash = computeContentHash(r);

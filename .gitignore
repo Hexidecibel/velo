@@ -21,3 +21,6 @@ data/
 # --- editor / OS noise ---
 .DS_Store
 *.swp
+
+# Screenshots from bin/shots. Judged, not committed.
+shots/
