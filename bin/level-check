@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Validate a hand-authored level JSON file and print its two hashes.
+#
+#   bin/level-check levels/test01.json
+#
+# Run this on anything you hand-edit BEFORE loading it. The loader rejects hard
+# — a zero-length edge produces a NaN normal, and one NaN poisons the whole
+# state buffer within a tick — and it is much nicer to see that as a message
+# with a vertex index than as a bike that silently vanishes.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+[[ $# -ge 1 ]] || { echo "usage: bin/level-check <file.json> [more.json ...]" >&2; exit 2; }
+exec "$ROOT/node_modules/.bin/tsx" -e "
+  import { parseLevel } from './src/sim/level.ts';
+  import { readFileSync } from 'node:fs';
+  let bad = 0;
+  for (const f of process.argv.slice(1)) {
+    try {
+      const lvl = parseLevel(JSON.parse(readFileSync(f, 'utf8')));
+      console.log('==> OK   ' + f);
+      console.log('    name        ' + lvl.name);
+      console.log('    simHash     ' + lvl.simHash + '   (leaderboards key on this)');
+      console.log('    contentHash ' + lvl.contentHash);
+      console.log('    ' + lvl.polys.length + ' collidable + ' + lvl.decor.length + ' decor, ' + lvl.apples.length + ' apples');
+      console.log('    bounds      x ' + lvl.minX + '..' + lvl.maxX + '  y ' + lvl.minY + '..' + lvl.maxY);
+    } catch (e) {
+      bad++;
+      console.error('==> BAD  ' + f);
+      console.error('    ' + (e instanceof Error ? e.message : String(e)));
+    }
+  }
+  process.exit(bad ? 1 : 0);
+" "$@"

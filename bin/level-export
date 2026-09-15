@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Write the built-in test level out as JSON, to levels/test01.json.
+#
+#   bin/level-export             -> levels/test01.json
+#   bin/level-export /tmp/x.json -> somewhere else
+#
+# The level lives in src/sim/testlevel.ts as plain data so that the sim's own
+# tests can import it without touching the filesystem — `parseLevel` takes
+# `unknown` and does not care where the object came from. This script exists to
+# prove that claim: the emitted JSON is a worked example of the format, and
+# `bin/level-import` reads it back and checks the simHash is unchanged.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+OUT="${1:-$ROOT/levels/test01.json}"
+mkdir -p "$(dirname "$OUT")"
+echo "==> exporting the built-in test level"
+"$ROOT/node_modules/.bin/tsx" -e "
+  import { TEST_LEVEL } from './src/sim/testlevel.ts';
+  import { parseLevel } from './src/sim/level.ts';
+  import { writeFileSync } from 'node:fs';
+  const lvl = parseLevel(TEST_LEVEL);
+  writeFileSync(process.argv[1], JSON.stringify(TEST_LEVEL, null, 2) + '\n');
+  console.log('    ' + process.argv[1]);
+  console.log('    simHash     ' + lvl.simHash);
+  console.log('    contentHash ' + lvl.contentHash);
+  console.log('    ' + lvl.polys.length + ' collidable polygons, ' + lvl.apples.length + ' apples');
+" "$OUT"

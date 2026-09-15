@@ -1,3 +1,9 @@
+// Copied VERBATIM from ~/local/src/views — it is the only working flat config
+// in this tree, and the other repos' `"lint": "eslint ."` with no config file
+// simply fails. The one addition is the final block, which gives the plain-node
+// scripts under bin/ their globals; the copied blocks above it are untouched.
+//
+// --- begin views/eslint.config.js ---
 // Minimal flat config. There was no house eslint config to copy from the other
 // repos (they all declare `"lint": "eslint ."` with no config file, which fails),
 // so this is deliberately small: type-unaware recommended rules only, no
@@ -21,6 +27,18 @@ export default tseslint.config(
     rules: {
       // Unused args prefixed with _ are intentional (Fastify handlers, catch blocks).
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+    },
+  },
+  // --- end views/eslint.config.js ---
+  //
+  // Addition for this repo: bin/*.mjs are plain Node scripts, not browser or TS
+  // source, and the copied config only attaches globals to **/*.{ts,tsx}.
+  {
+    files: ['bin/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: 'module',
+      globals: { ...globals.node },
     },
   },
 )

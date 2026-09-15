@@ -1,0 +1,109 @@
+/* Readability rule, borrowed early from milestone 9: the player and the
+   collision edge are always the highest-contrast things on screen. Everything
+   here is deliberately drab so that they are not competing with anything. */
+:root {
+  color-scheme: dark;
+  --bg: #0e1116;
+  --solid: #1b2029;
+  --free: #0b0d11;
+  --edge: #7fd4ff;
+  --ink: #c9d4e3;
+  --dim: #64748b;
+  --accent: #ffd166;
+  --bad: #ff5d5d;
+  --good: #5ddb8a;
+  --panel-w: 344px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+#app { display: flex; height: 100%; }
+#view { flex: 1 1 auto; display: block; background: var(--free); cursor: crosshair; }
+
+#hud {
+  position: fixed;
+  top: 10px;
+  left: 12px;
+  pointer-events: none;
+  white-space: pre;
+  text-shadow: 0 1px 2px #000;
+  font-size: 12px;
+  line-height: 1.5;
+}
+#hud .k { color: var(--dim); }
+#hud .v { color: var(--ink); }
+#hud .ok { color: var(--good); }
+#hud .bad { color: var(--bad); }
+#hud .warn { color: var(--accent); }
+
+#panel {
+  flex: 0 0 var(--panel-w);
+  width: var(--panel-w);
+  height: 100%;
+  overflow-y: auto;
+  background: #11151c;
+  border-left: 1px solid #222a35;
+  padding: 10px 12px 40px;
+}
+#panel.hidden { display: none; }
+
+#panel h1 {
+  font-size: 12px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 2px;
+}
+#panel .sub { color: var(--dim); margin-bottom: 10px; }
+#panel h2 {
+  font-size: 11px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin: 16px 0 6px;
+  border-bottom: 1px solid #222a35;
+  padding-bottom: 3px;
+}
+#panel h2 .why { display: block; text-transform: none; letter-spacing: 0; color: #4b5666; font-size: 10px; }
+
+.row { display: grid; grid-template-columns: 1fr auto; gap: 2px 6px; margin: 7px 0; }
+.row label { color: var(--ink); }
+.row .num {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.row input[type=range] { grid-column: 1 / -1; width: 100%; height: 16px; margin: 0; accent-color: #7fd4ff; }
+.row .hint { grid-column: 1 / -1; color: #4b5666; font-size: 10px; }
+
+.btns { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+button, select {
+  font: inherit;
+  color: var(--ink);
+  background: #1a212c;
+  border: 1px solid #2b3542;
+  border-radius: 3px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+button:hover, select:hover { background: #222b38; }
+button.primary { border-color: #3b6b8a; color: #cfe9fb; }
+select { width: 100%; cursor: pointer; }
+
+.note { color: var(--dim); margin: 8px 0; }
+.note b { color: var(--accent); font-weight: normal; }
+.keys { color: var(--dim); }
+.keys b { color: var(--ink); font-weight: normal; }
+code { color: #9ecbff; }
