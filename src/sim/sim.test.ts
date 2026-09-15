@@ -97,6 +97,19 @@ describe('snapshot / restore', () => {
     expect(b.hash()).toBe(straight);
   });
 
+  it('restore is the EXACT inverse of snapshot, to the last bit', () => {
+    // Not "close". A solver that branches from a state must get bit-identical
+    // results to one that replayed to it, and a one-ulp discrepancy from a
+    // defensive renormalise is the hardest kind of bug to ever notice.
+    const sim = createSim(level, DEFAULT_SPEC);
+    for (let f = 0; f < 300; f++) sim.advance(drive(f));
+    const snap = sim.snapshot();
+    const h = sim.hash();
+    for (let f = 0; f < 50; f++) sim.advance(drive(f + 1000));
+    sim.restore(snap);
+    expect(sim.hash()).toBe(h);
+  });
+
   it('a snapshot is a copy, not a view', () => {
     const sim = createSim(level, DEFAULT_SPEC);
     for (let f = 0; f < 100; f++) sim.advance(IN_THROTTLE);

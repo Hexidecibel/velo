@@ -103,15 +103,32 @@ plan's geometry.
   drive torque 450 → 140, chassis inertia 11 → 8, angular damping 0.15 → 0.5,
   lean angle 40° → 60°. The plan's spec is one click away in the preset menu for
   comparison.
-- With the candidate: ~14 m/s top speed on the flat, a 0.1 s volt tap gives a
-  35° wheelie and a 30 cm hop, a 0.2 s hold backflips the bike, and holding gas
-  with lean-back loops it. That shape is right. Whether it *feels* right is a
-  question only hands on the keys can answer.
+- With the candidate, measured on flat ground: 16 m/s top speed; **holding left
+  rotates the bike counter-clockwise at roughly 60–100°/s** and holding right
+  rotates it clockwise, so a tap is a wheelie and a hold is a backflip; a 0.1 s
+  volt tap gives a 35° pitch and a 30 cm hop. That is an Elma-shaped control set.
+  Whether it *feels* right is a question only hands on the keys can answer.
+- **The throttle has no pitch authority of its own, and the margin is one
+  newton-metre wide.** Swept on flat ground: at 145 N·m the bike holds 5° of
+  pitch under full gas; at 150 N·m it backflips. There is no drive torque at
+  which it holds a wheelie, because a wheelie is an unstable equilibrium — the
+  restoring moment falls as the nose rises while the driving moment does not.
+  That is true of real bikes too, but a real rider modulates continuously and a
+  binary key cannot. Consequence: every bit of rotation comes from the lean
+  keys, and the gas feels planted. Nudging drive torque to 145–148 buys a bike
+  that lifts under power at the cost of sitting one notch from a loop; that
+  trade is the user's to make, and it is the first slider to reach for.
 - The **lean angle is the sharpest knob on the panel** and its behaviour is not
-  monotonic. Below about 50° the servo's reaction torque dominates and a volt
-  pitches the bike the *wrong* way; above it the rider's weight transfer wins
-  and leaning back lifts the front, which is what a player expects. If the volt
-  ever feels inverted, that slider is why.
+  monotonic. Below about 50° the servo's transient reaction torque dominates and
+  a volt pitches the bike the *wrong* way; above it the rider's weight transfer
+  wins and leaning back lifts the front, which is what a player expects. If the
+  volt ever feels inverted, that slider is why.
+- **Throttle held through airtime rotates the bike backwards**, hard — drive
+  torque is reacted on the chassis and an airborne wheel gives the reaction
+  nothing to push against. That is a real Elma technique rather than a bug, but
+  it also means holding gas through a spawn drop or a crest commits you to a
+  loop. The test level's start was lowered to a 5 cm settle for exactly this
+  reason.
 
 ## Determinism
 
@@ -188,12 +205,12 @@ TypeScript literal.
 ```json
 {
   "format": "velo-level",
-  "start":  { "x": -3, "y": 0.6 },
+  "start":  { "x": -5, "y": 0.42 },
   "flower": { "x": 59, "y": 4.6 },
   "apples": [{ "x": 9, "y": 2.2 }],
   "polygons": [
-    { "kind": "cave",   "points": [[-6, 0], [60, 0], [60, 14], [-6, 14]] },
-    { "kind": "ground", "points": [[19, -4], [20.5, -1.5], [22, -4]] },
+    { "kind": "cave",   "points": [[-8, 0], [60, 0], [60, 14], [-8, 14]] },
+    { "kind": "ground", "points": [[18.5, -4], [19.5, -1.8], [20.5, -4]] },
     { "kind": "decor",  "points": [[1, 6], [3, 8], [5, 6]] }
   ],
   "zones": [],

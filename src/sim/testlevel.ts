@@ -18,13 +18,21 @@ export const TEST_LEVEL: RawLevel = {
   author: 'm1',
 
   // Chassis origin. The wheels hang 0.15 below it and have a 0.25 radius, so
-  // 0.6 above a floor at y=0 drops the bike 0.2 m onto its suspension.
-  start: { x: -3, y: 0.6 },
+  // the bike's resting height over a floor at y=0 is about 0.37. Starting at
+  // 0.42 is a 5 cm settle rather than a drop.
+  //
+  // This is not cosmetic. Drive torque is reacted on the CHASSIS, and while a
+  // wheel is unloaded there is nothing for that reaction to push against — so
+  // holding the throttle through even a 0.2 m spawn drop builds enough backward
+  // rotation to commit to a backflip. That is correct physics and it is the
+  // same mechanism that lets you rotate the bike with the throttle in mid-air,
+  // which is a real technique. It just should not happen on the start line.
+  start: { x: -5, y: 0.42 },
   flower: { x: 59, y: 4.6 },
 
   apples: [
-    { x: 9, y: 2.2 },
-    { x: 20.5, y: -0.8 },
+    { x: 9, y: 1.5 },
+    { x: 20, y: -0.9 },
     { x: 29, y: 2.9 },
     { x: 47, y: 1.6 },
     { x: 57, y: 5.0 },
@@ -35,19 +43,27 @@ export const TEST_LEVEL: RawLevel = {
       // The cave. Playable space is INSIDE the ring; everything outside it is
       // solid. Written floor left-to-right, then ceiling right-to-left. Winding
       // is normalised on load, so this order is a convenience, not a contract.
+      //
+      // The first 12 m are deliberately flat and the first feature is a gentle
+      // roller, because the point of this level is to FEEL the bike. An opening
+      // bump steep enough to launch you two metres means a tuning session spent
+      // watching the restart screen.
       kind: 'cave',
       points: [
-        [-6, 0],
-        [4, 0],
-        [6, 0.2],
-        [8, 1.2],
-        [10, 1.2],
+        [-8, 0],
+        [6, 0],
+        [8, 0.45],
+        [10, 0.45],
         [12, 0],
         [16, 0],
-        [17, -0.2],
+        // A kicker at the pit lip. Without it the gap is a trap rather than a
+        // jump: the landing ramp is 4.5 m away, and a flat launch at 14 m/s
+        // drops far enough over that distance to hit the face of it.
+        [17.2, 0.55],
+        [17.45, 0.45],
         [18, -4],
-        [22, -4],
-        [23, -0.5],
+        [21, -4],
+        [22, -0.3],
         [24, 0],
         [26, 2],
         [32, 2],
@@ -68,6 +84,10 @@ export const TEST_LEVEL: RawLevel = {
         [60, 14],
         [36, 14],
         [34, 12],
+        // The low ceiling. There is 1.6 m of clearance over the shelf, and an
+        // upright rider needs 1.11 of it — so you can ride under this, but you
+        // cannot volt under it. Knowing when you cannot afford to volt is the
+        // skill a fixed-offset head would have deleted invisibly.
         [32, 3.6],
         [26, 3.6],
         [24, 12],
@@ -75,7 +95,7 @@ export const TEST_LEVEL: RawLevel = {
         [18, 10],
         [10, 10],
         [6, 12],
-        [-6, 12],
+        [-8, 12],
       ],
     },
     {
@@ -84,9 +104,9 @@ export const TEST_LEVEL: RawLevel = {
       // explicitly instead of leaning on an invisible winding convention.
       kind: 'ground',
       points: [
-        [19, -4],
-        [20.5, -1.5],
-        [22, -4],
+        [18.5, -4],
+        [19.5, -1.8],
+        [20.5, -4],
       ],
     },
     {

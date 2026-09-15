@@ -15,7 +15,7 @@ import { IN_FLIP, IN_MASK, TICKS_PER_FRAME } from './consts.ts';
 import type { Level } from './level.ts';
 import type { BikeSpec } from './spec.ts';
 import { specHash } from './spec.ts';
-import { assignState, copyState, createState, hashState, normalizeStateRotors, stepTick } from './step.ts';
+import { assignState, copyState, createState, hashState, stepTick } from './step.ts';
 import type { SimState } from './step.ts';
 import { createWorld } from './world.ts';
 import type { World } from './world.ts';
@@ -64,8 +64,15 @@ export function createSim(level: Level, spec: BikeSpec): Sim {
     },
 
     restore(s: SimState): void {
+      // NOT renormalised. `restore` must be the exact inverse of `snapshot`, or
+      // a solver that branches from a state gets a different answer than one
+      // that replayed to it — and the discrepancy is one ulp, which is the
+      // hardest kind to ever notice. (Renormalising a rotor whose magnitude is
+      // 1 + 1ulp does change its last bit.) A rotor arriving from outside the
+      // sim — hand-built, or round-tripped through JSON — is handled by
+      // `normalizeStateRotors`, which the caller applies explicitly; and every
+      // tick renormalises anyway, so a slightly-off rotor self-corrects.
       assignState(state, s);
-      normalizeStateRotors(state);
     },
 
     hash(): string {
