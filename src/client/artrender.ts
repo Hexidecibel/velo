@@ -909,7 +909,27 @@ const FINE_OFF = PLAY_MIN_PX * 0.53;
 const BLOB_ON = PLAY_MIN_PX * 0.42;
 const BLOB_OFF = PLAY_MIN_PX * 0.63;
 
-export let fineLatched = true;
+export /**
+ * The exhaust tip, in chassis-local metres, and the pipe's thickness.
+ *
+ * SHARED BY THE DRAWING AND THE FX EMITTER, deliberately. They were two
+ * hardcoded copies of `-0.9`, which is the same shape of mistake that already
+ * put the exhaust smoke on the wrong end of the bike when it was flipped: two
+ * places holding one fact, and only one of them getting fixed.
+ *
+ * Reported from play: "why does the bike have a weird long muffler?" The tip
+ * used to sit at x = -0.90 while the rear tyre's back edge is at -0.85 (wheel
+ * centre -0.60, radius 0.25) — so the pipe stuck out BEHIND the wheel, and it
+ * was the only part of the bike that did. At 0.92 m it was also over half the
+ * bike's 1.7 m length, drawn 0.10 m thick, which is 40% of a wheel radius.
+ *
+ * Now it tucks just inside the tyre's silhouette and is slimmer, so it reads as
+ * a muffler behind the wheel rather than as the bike's largest feature.
+ */
+const PIPE_TIP: readonly [number, number] = [-0.82, -0.14];
+const PIPE_W = 0.075;
+
+let fineLatched = true;
 export function fineTier(detailPx: number): boolean {
   fineLatched = fineLatched ? detailPx > FINE_OFF : detailPx > FINE_ON;
   return fineLatched;
@@ -1006,20 +1026,20 @@ function drawBike(
   local();
   ctx.beginPath();
   ctx.moveTo(0.02, -0.1);
-  ctx.quadraticCurveTo(-0.12, -0.3, -0.4, -0.27);
-  ctx.lineTo(-0.9, -0.14);
-  ctx.lineWidth = 0.1 + 6 * px;
+  ctx.quadraticCurveTo(-0.14, -0.28, -0.42, -0.25);
+  ctx.lineTo(PIPE_TIP[0], PIPE_TIP[1]);
+  ctx.lineWidth = PIPE_W + 6 * px;
   ctx.strokeStyle = P.ink;
   ctx.stroke();
-  ctx.lineWidth = 0.1;
+  ctx.lineWidth = PIPE_W;
   ctx.strokeStyle = '#d9d4e8';
   ctx.stroke();
   ctx.beginPath();
-  ctx.arc(-0.9, -0.14, 0.065, 0, Math.PI * 2);
+  ctx.arc(PIPE_TIP[0], PIPE_TIP[1], 0.052, 0, Math.PI * 2);
   ctx.fillStyle = P.ink;
   ctx.fill();
   ctx.beginPath();
-  ctx.arc(-0.9, -0.14, 0.032, 0, Math.PI * 2);
+  ctx.arc(PIPE_TIP[0], PIPE_TIP[1], 0.026, 0, Math.PI * 2);
   ctx.fillStyle = P.orange;
   ctx.fill();
   ink(0.07, '#3a3560', [[-0.1, -0.04], [-0.6, -0.15]]);
@@ -1248,8 +1268,8 @@ function drawFX(
   const f = state.facing;
 
   // Exhaust from the pipe tip, chassis-local (-0.9, -0.14) — the x mirrors.
-  const lx = -0.9 * f;
-  const ly = -0.14;
+  const lx = PIPE_TIP[0] * f;
+  const ly = PIPE_TIP[1];
   const tipX = p.px + p.ox * lx - p.oy * ly;
   const tipY = p.py + p.oy * lx + p.ox * ly;
   for (let k = 0; k < 4; k++) {
