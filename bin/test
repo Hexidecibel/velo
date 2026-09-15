@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Run the unit tests (vitest, colocated, plain node — no jsdom, no DOM).
+#
+#   bin/test                     everything, once
+#   bin/test src/sim/rot.test.ts  one file
+#   bin/test --watch             re-run on change
+#
+# The two tests that matter most are the ones with no physics constants in them
+# at all: purity.test.ts (no banned Math.* reachable from the sim) and
+# isolation.test.ts (src/sim imports nothing outside src/sim). They never churn
+# while tuning, which is exactly why they were written first.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+if [[ "${1:-}" == "--watch" ]]; then
+  shift
+  exec "$NPM" run test:watch -- "$@"
+fi
+exec "$NPM" run test -- "$@"

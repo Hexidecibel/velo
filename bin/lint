@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Typecheck + eslint. Both, in that order, because eslint here is
+# type-unaware and will not catch what tsc catches.
+#
+# The eslint config is copied verbatim from ~/local/src/views — it is the only
+# working flat config in this tree. Do not ship a `lint` script without one.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+echo "==> tsc -b"
+"$NPM" run typecheck
+echo "==> eslint"
+exec "$NPM" run lint

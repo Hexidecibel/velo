@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Run the Vite dev server and open the game.
+#
+#   bin/dev              127.0.0.1:5173
+#   bin/dev --port 5200  another port
+#
+# This is the milestone-1 entry point and, for now, the only way to play. The
+# whole point of M1 is the tuning panel on the right of the canvas: drive, drag
+# sliders, and when it feels right press "Copy spec JSON" and paste the result
+# into src/sim/spec.ts. Sliders emit doubles like 0.30000000000000004 and the
+# exact doubles you tuned with must be the exact doubles that ship, so nobody
+# retypes a spec by hand.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+echo "==> vite dev server"
+echo "    open http://127.0.0.1:${PORT:-5173}/"
+exec "$NPM" run dev -- "$@"

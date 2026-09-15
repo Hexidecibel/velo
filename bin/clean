@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Remove build output and caches. Never touches data/ or node_modules unless
+# asked, because re-installing deps on a metered/offline box is not free.
+#
+#   bin/clean           dist/ + tsbuildinfo
+#   bin/clean --all     also node_modules/
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+cd "$ROOT"
+echo "==> removing dist/ and tsconfig.tsbuildinfo"
+rm -rf "$ROOT/dist" "$ROOT/tsconfig.tsbuildinfo"
+if [[ "${1:-}" == "--all" ]]; then
+  echo "    also node_modules/"
+  rm -rf "$ROOT/node_modules"
+fi
+echo "==> done"

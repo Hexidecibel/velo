@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Typecheck, then bundle the client into dist/.
+#
+# `tsc -b` is a SEPARATE, mandatory, serial step — Vite transpiles without type
+# checking, so a bundler-only build will happily ship code that does not compile.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+echo "==> typecheck"
+"$NPM" run typecheck
+echo "==> bundle"
+exec "$NPM" run build

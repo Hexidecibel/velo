@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Serve the built dist/ so you can sanity-check a production bundle.
+# Not a deployment. Deployment (systemd, port 9422, HAProxy, cush-auth) arrives
+# with the server milestone and deliberately does not exist yet.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+[[ -d "$ROOT/dist" ]] || { echo "==> no dist/, building first"; "$ROOT/bin/build"; }
+exec "$NPM" run preview -- "$@"

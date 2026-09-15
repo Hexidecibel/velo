@@ -1,0 +1,23 @@
+# --- build output ---
+dist/
+# tsc -b writes this at the repo ROOT (not under dist), and it is a machine-
+# local incremental cache. Committing it makes `tsc -b` silently skip work on
+# another machine.
+tsconfig.tsbuildinfo
+
+# --- deps ---
+node_modules/
+
+# --- runtime state (NVMe, never mergerfs; see the SQLite rule) ---
+# Levels, replays and leaderboards live here once the server milestone lands.
+data/
+
+# --- machine-local config ---
+# Absolute path to the node binary, written by bin/install for systemd, which
+# has no nvm in its environment. Machine-specific by definition.
+.node-path
+.env
+
+# --- editor / OS noise ---
+.DS_Store
+*.swp
