@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# What velo is doing right now: process state, the listening socket, and a live
+# health probe.
+#
+#   bin/status
+#
+# Three separate questions on purpose, because they fail independently and the
+# difference tells you where to look. systemd can report `active` while the
+# process is wedged before bind; a socket can be listening while the app 500s;
+# and a health 200 from a socket bound to 0.0.0.0 is a working app with a
+# security hole, which is why the bind address is printed rather than assumed.
+#
+# `set -u` but NOT `set -e`: a status command must survive every probe failing
+# and still print the rest. _common.sh sets -e, so it is turned back off here.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+set +e
+
+PORT="${PORT:-9422}"
+PIDFILE="$ROOT/.velo.pid"
+
+unit_is_ours() {
+  systemctl cat "$SERVICE_NAME" >/dev/null 2>&1 || return 1
+  local d; d="$(systemctl show "$SERVICE_NAME" -p WorkingDirectory --value 2>/dev/null)"
+  [[ -n "$d" && "$(cd "$d" 2>/dev/null && pwd)" == "$ROOT" ]]
+}
+
+echo "==> velo"
+echo "    repo  $ROOT"
+echo "    port  $PORT"
+
+if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+  echo "    mode  background process (bin/start), pid $(cat "$PIDFILE")"
+  ps -o etime=,rss=,cmd= -p "$(cat "$PIDFILE")" 2>/dev/null | sed 's/^/          /'
+elif unit_is_ours; then
+  echo "    mode  systemd (${SERVICE_NAME}.service)"
+  systemctl --no-pager status "$SERVICE_NAME" 2>/dev/null | head -8 | sed 's/^/          /'
+else
+  echo "    mode  NOT RUNNING — no pidfile, and no systemd unit serving this directory"
+  echo "          start it with bin/deploy"
+fi
+
+echo "==> unit"
+"$ROOT/bin/install-units" --status 2>/dev/null || echo "  (could not read unit state)"
+
+echo "==> listener"
+# The BIND ADDRESS is the point of this block, not the fact that something is
+# listening. velo has no authentication of its own — HAProxy fronts it and
+# cush-auth gates it — so a 0.0.0.0 bind silently hands every machine on the LAN
+# an ungated copy. That is a real wart on another app in this box's registry,
+# and it is cheap to notice here rather than never.
+listeners="$(ss -ltn "sport = :${PORT}" 2>/dev/null | tail -n +2)"
+if [[ -z "$listeners" ]]; then
+  echo "    nothing listening on ${PORT}"
+else
+  printf '%s\n' "$listeners" | awk '{print "    " $4}'
+  if printf '%s\n' "$listeners" | awk '{print $4}' | grep -qE '^(0\.0\.0\.0|\*|\[::\]):'; then
+    echo "    !! bound beyond loopback — this bypasses the cush-auth gate for LAN clients"
+  fi
+fi
+
+echo "==> health"
+curl -sS -o /dev/null -w '    http %{http_code} in %{time_total}s\n' \
+  --max-time 5 "http://127.0.0.1:${PORT}/api/health" || echo "    UNREACHABLE"
+
+echo "==> public"
+# Unauthenticated, so a 302 to auth.cush.rocks is the CORRECT answer and a 200
+# would mean the device gate is not in front of it. Reported, not judged —
+# --max-time keeps a DNS or WAN problem from hanging a status command.
+curl -sS -o /dev/null -m 10 -w '    https://velo.cush.rocks/ -> %{http_code} %{redirect_url}\n' \
+  https://velo.cush.rocks/ 2>/dev/null || echo "    velo.cush.rocks UNREACHABLE"
+
+exit 0

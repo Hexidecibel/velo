@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# =============================================================================
+# velo — deploy: install deps, build, precompress, reconcile the unit, restart,
+# and do not claim success until the thing answers.
+# =============================================================================
+#
+#   bin/deploy
+#
+# Idempotent and safe to re-run. The order is the whole content of this script,
+# and each step is where it is for a reason:
+#
+#   1. deps      — before the build, obviously, but with --include=dev EXPLICITLY
+#                  (see below, this box bites here)
+#   2. build     — bin/build, which typechecks and then bundles. Owned by the
+#                  client/sim workstream; deploy calls it and does not reimplement
+#                  it, so a change to how velo builds lands here for free.
+#   3. precompress — .br/.gz siblings for the server's `precompressed: true`.
+#                  A deploy step rather than a build step: bin/dev and
+#                  bin/preview neither produce nor want them.
+#   4. units     — /etc reconciled with deploy/ BEFORE the restart, or the
+#                  restart applies the old unit and the change appears to have
+#                  done nothing.
+#   5. restart
+#   6. health    — poll until it answers. systemctl returns when the unit is
+#                  *started*, not when the app has *bound*, and reporting
+#                  success at that moment is how a deploy "succeeds" against a
+#                  process that crashed two seconds later.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+cd "$ROOT"
+
+# Port read from .env (sourced by _common.sh) with a literal fallback — the same
+# line as bin/status and bin/restart. A literal here is a recorded incident:
+# the probe then tests a port the service is not on and fails a good deploy.
+PORT="${PORT:-9422}"
+
+echo "==> Installing dependencies (--include=dev)"
+# --include=dev is NOT redundant. This box has a global npm `omit=dev`, so a
+# bare `npm install` here silently PRUNES 155 packages — vite, tsx, typescript,
+# vitest — and the build then fails with a module-not-found that looks like a
+# corrupt checkout. Learned the hard way while writing this script.
+"$NPM" install --include=dev --no-audit --no-fund
+
+echo "==> Building client"
+# bin/build typechecks with `tsc -b` first and then bundles. The typecheck is a
+# separate serial step because Vite transpiles without checking types, so a
+# bundler-only build ships code that does not compile.
+"$ROOT/bin/build"
+
+echo "==> Precompressing static assets"
+"$ROOT/node_modules/.bin/tsx" src/server/precompress.ts dist
+
+echo "==> Reconciling systemd unit with deploy/"
+"$ROOT/bin/install-units"
+
+echo "==> Restarting service"
+sudo systemctl restart "$SERVICE_NAME"
+
+echo "==> Waiting for health"
+healthy=0
+for i in $(seq 1 30); do
+  if curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null; then
+    echo "    ready after ${i}s"
+    healthy=1
+    break
+  fi
+  sleep 1
+done
+if [[ "$healthy" -ne 1 ]]; then
+  echo "!! not healthy on 127.0.0.1:${PORT} after 30s — last log lines follow" >&2
+  "$ROOT/bin/logs" -n 30 --no-follow >&2 || true
+  exit 1
+fi
+
+# A 200 on / with a bundle that 404s is a blank page, and a blank page is the
+# single most likely way this deploy is wrong while every check above passes.
+# So fetch the script tag index.html actually references and insist it has
+# bytes in it. Parsed out of the built HTML rather than hardcoded, because Vite
+# content-hashes the filename on every build.
+echo "==> Verifying the built bundle is actually served"
+asset="$(grep -oE 'src="/assets/[^"]+\.js"' dist/index.html | head -1 | sed 's/^src="//; s/"$//')"
+if [[ -z "$asset" ]]; then
+  echo "!! could not find a script tag in dist/index.html — is the build complete?" >&2
+  exit 1
+fi
+bytes="$(curl -fsS -o /dev/null -w '%{size_download}' "http://127.0.0.1:${PORT}${asset}" 2>/dev/null || echo 0)"
+if [[ "$bytes" -lt 1000 ]]; then
+  echo "!! ${asset} served ${bytes} bytes — the page would render blank" >&2
+  exit 1
+fi
+echo "    ${asset} — ${bytes} bytes"
+
+echo
+exec "$ROOT/bin/status"

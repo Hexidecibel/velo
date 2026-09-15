@@ -1,0 +1,79 @@
+## =============================================================================
+## TEMPLATE — not a unit you can install by hand.
+## =============================================================================
+## `bin/install-units` renders this file for the machine it runs on and installs
+## the RESULT into /etc/systemd/system. Lines beginning `##` are notes to
+## whoever edits this template and are stripped on the way out; ordinary `#`
+## comments survive, because some of them record why a line is there.
+##
+## Writing a unit with absolute paths straight into /etc is the thing this
+## pattern exists to prevent. A hand-installed unit carries one machine's repo
+## path, one machine's username and one machine's nvm directory; the repo then
+## has no record of what is actually running, the committed copy and the live
+## copy drift silently, and a second checkout — or a moved repo — is three
+## broken units. So the machine-specific values are placeholders, filled in from
+## exactly the sources the rest of bin/ already uses:
+##
+##   @VELO_REPO@      the repo root, derived from the installing script's own
+##                    location — never typed. A hardcoded root is a recorded
+##                    incident in this tree.
+##   @VELO_USER@      whoever ran bin/install-units (SUDO_USER first, so
+##                    `sudo bin/install-units` still yields the real user and
+##                    not `root`). Nothing here needs privilege: the port is
+##                    above 1024 and the only files touched are in the repo.
+##   @VELO_NODE_BIN@  the bin/ directory of the node that bin/_common.sh
+##                    resolves. systemd has no nvm and no login shell, so a unit
+##                    that merely says `node` finds whatever /usr/bin happens to
+##                    hold, or nothing at all.
+##
+## HOST-LOCAL CONFIGURATION DOES NOT BELONG IN THIS FILE. Use a drop-in —
+## /etc/systemd/system/velo.service.d/*.conf — which systemd merges over the
+## unit and which bin/install-units never reads, writes or removes.
+[Unit]
+Description=velo (Elasto Mania-like physics game — Hono serving the built Vite client)
+Documentation=file://@VELO_REPO@/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@VELO_USER@
+WorkingDirectory=@VELO_REPO@
+# serveStatic's root is './dist', resolved against WorkingDirectory above. That
+# is the whole reason WorkingDirectory is not optional here.
+
+# EnvironmentFile is optional (`-`) on purpose. velo needs no secrets — there is
+# no .cush-secrets manifest and therefore nothing materializes a .env — so a
+# required EnvironmentFile would make the unit fail to start on a clean checkout
+# for the sake of a file that is allowed not to exist. When one IS present it
+# supplies PORT, and the Environment= lines below are the fallbacks.
+EnvironmentFile=-@VELO_REPO@/.env
+Environment=HOST=127.0.0.1
+Environment=PORT=9422
+Environment=NODE_ENV=production
+Environment=PATH=@VELO_NODE_BIN@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# HOST=127.0.0.1 is a security control, not a default. This app has no
+# authentication of its own; HAProxy fronts it and the cush-auth device gate
+# decides who gets in. A 0.0.0.0 bind hands every machine on the LAN an ungated
+# copy, straight past the gate. If a drop-in ever overrides HOST, that is what
+# it is doing.
+
+# node_modules/.bin/tsx rather than `npx tsx`: same binary, one less process in
+# the chain, and no network lookup if the package is somehow missing.
+ExecStart=@VELO_NODE_BIN@/node @VELO_REPO@/node_modules/.bin/tsx src/server/index.ts
+Restart=always
+RestartSec=5
+
+# Modest hardening. Nothing here needs to write outside the repo, and the repo
+# is not on the mergerfs pool (see the SQLite rule) — it is on NVMe, so
+# ReadWritePaths is a real path and not a FUSE mount that these directives
+# interact badly with.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=@VELO_REPO@
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Tail velo's log, whichever of the two it has.
+#
+#   bin/logs                # follow the last 200 lines
+#   bin/logs -n 50          # a different backlog
+#   bin/logs --no-follow    # one-shot, then exit
+#
+# TWO WAYS TO RUN THIS APP means two places the logs can be. `journalctl -u velo`
+# on a machine that started the app with bin/start prints "no entries", which
+# reads as "this app has no logs" when in fact it has been writing them to a
+# file the whole time. So detect in the same order bin/status detects: a live
+# pidfile belongs to THIS checkout, a systemd unit may not.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+set +e
+
+PIDFILE="$ROOT/.velo.pid"
+LOGFILE="$ROOT/.velo.log"
+LINES=200
+FOLLOW=1
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -n)          LINES="${2:?-n needs a number}"; shift 2 ;;
+    -n*)         LINES="${1#-n}"; shift ;;
+    --no-follow) FOLLOW=0; shift ;;
+    -h|--help)   sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *)           echo "bin/logs: unknown argument $1" >&2; exit 2 ;;
+  esac
+done
+
+unit_is_ours() {
+  systemctl cat "$SERVICE_NAME" >/dev/null 2>&1 || return 1
+  local d; d="$(systemctl show "$SERVICE_NAME" -p WorkingDirectory --value 2>/dev/null)"
+  [[ -n "$d" && "$(cd "$d" 2>/dev/null && pwd)" == "$ROOT" ]]
+}
+
+if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+  echo "==> $LOGFILE" >&2
+  [[ "$FOLLOW" -eq 1 ]] && exec tail -n "$LINES" -f "$LOGFILE"
+  exec tail -n "$LINES" "$LOGFILE"
+fi
+
+if unit_is_ours; then
+  ARGS=(-u "$SERVICE_NAME" -n "$LINES")
+  [[ "$FOLLOW" -eq 1 ]] && ARGS+=(-f)
+  exec journalctl "${ARGS[@]}"
+fi
+
+# Not running, but it may have run: the last thing it said is usually why it
+# stopped, so a stale logfile beats an error message here.
+if [[ -f "$LOGFILE" ]]; then
+  echo "==> $LOGFILE (not currently running)" >&2
+  exec tail -n "$LINES" "$LOGFILE"
+fi
+
+echo "no logs: nothing running from $ROOT, no systemd unit for it, and no $LOGFILE" >&2
+exit 1

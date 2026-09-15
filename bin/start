@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Start velo and wait until it actually answers.
+#
+#   bin/start            # start, wait for health, report
+#   bin/start --quiet    # same, but only speak on failure
+#
+# TWO WAYS TO RUN THIS APP, and this picks whichever one is in front of it. On
+# this box velo is a system service (deploy/velo.service, installed by
+# bin/install-units) and starting it means `systemctl start`. A fresh clone has
+# no unit, no root and maybe no systemd at all, so it gets a plain background
+# process with a pidfile instead — the point being that `bin/start` works on a
+# machine that has never run bin/install-units.
+#
+# The choice is made by comparing the unit's WorkingDirectory with THIS repo,
+# not by the unit merely existing: a scratch checkout beside the deployed one is
+# a legitimate thing to start, and a guard that only matched the name `velo`
+# would refuse it.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+
+QUIET=0
+[[ "${1:-}" == "--quiet" ]] && QUIET=1
+say() { [[ "$QUIET" -eq 1 ]] || printf '%s\n' "$1"; }
+
+# PORT from .env (sourced by _common.sh) with a literal fallback. Never a bare
+# literal in a health probe: an instance moved to another port would otherwise
+# start fine and then be reported as dead, which is a recorded incident.
+PORT="${PORT:-9422}"
+HOST="${HOST:-127.0.0.1}"
+export PORT HOST
+PIDFILE="$ROOT/.velo.pid"
+LOGFILE="$ROOT/.velo.log"
+
+# Is the installed unit serving THIS checkout?
+unit_is_ours() {
+  systemctl cat "$SERVICE_NAME" >/dev/null 2>&1 || return 1
+  local d; d="$(systemctl show "$SERVICE_NAME" -p WorkingDirectory --value 2>/dev/null)"
+  [[ -n "$d" && "$(cd "$d" 2>/dev/null && pwd)" == "$ROOT" ]]
+}
+
+ensure_deps
+if [[ ! -f "$ROOT/dist/index.html" ]]; then
+  echo "dist/ is missing — run bin/build first (bin/deploy does it for you)." >&2
+  exit 1
+fi
+
+if unit_is_ours; then
+  say "==> systemctl start $SERVICE_NAME"
+  sudo systemctl start "$SERVICE_NAME"
+else
+  if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+    say "already running (pid $(cat "$PIDFILE")) on http://127.0.0.1:${PORT}"
+    exit 0
+  fi
+  cd "$ROOT"
+  # setsid so the server outlives this shell AND becomes a process-group leader.
+  # The group is the half that matters for bin/stop: tsx runs the server in a
+  # CHILD process, and signalling only the pid in the pidfile leaves that child
+  # holding the port — a "stopped" server that is still listening.
+  say "==> starting a background process (no systemd unit for this checkout)"
+  setsid nohup "$ROOT/node_modules/.bin/tsx" src/server/index.ts >>"$LOGFILE" 2>&1 &
+  printf '%s' "$!" > "$PIDFILE"
+fi
+
+# Started is not listening: tsx has to compile the entry point first. Polling
+# here is what stops bin/status reporting a false UNREACHABLE one second later.
+for i in $(seq 1 30); do
+  if curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null; then
+    say "==> velo is up on http://127.0.0.1:${PORT} (ready after ${i}s)"
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "velo did not answer on port ${PORT} within 30s — see bin/logs" >&2
+exit 1

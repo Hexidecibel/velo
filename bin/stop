@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Stop velo — the systemd unit if one serves this checkout, otherwise the
+# background process bin/start left behind.
+#
+#   bin/stop
+#
+# The same WorkingDirectory test bin/start uses, for the same reason: a scratch
+# checkout beside the deployed one must not be able to stop the deployed one by
+# accident, and a name match alone would let it.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+
+PIDFILE="$ROOT/.velo.pid"
+
+unit_is_ours() {
+  systemctl cat "$SERVICE_NAME" >/dev/null 2>&1 || return 1
+  local d; d="$(systemctl show "$SERVICE_NAME" -p WorkingDirectory --value 2>/dev/null)"
+  [[ -n "$d" && "$(cd "$d" 2>/dev/null && pwd)" == "$ROOT" ]]
+}
+
+if unit_is_ours; then
+  echo "==> systemctl stop $SERVICE_NAME"
+  sudo systemctl stop "$SERVICE_NAME"
+  exit 0
+fi
+
+if [[ ! -f "$PIDFILE" ]]; then
+  echo "not running (no $PIDFILE, and no systemd unit serving this directory)"
+  exit 0
+fi
+
+PID="$(cat "$PIDFILE")"
+if ! kill -0 "$PID" 2>/dev/null; then
+  echo "not running (stale pidfile removed)"
+  rm -f "$PIDFILE"
+  exit 0
+fi
+
+# THE WHOLE PROCESS GROUP, not just the pid — see bin/start for why. TERM first
+# so the process gets to close its listener cleanly, KILL only if it will not go.
+signal_tree() { kill "-${1}" -- "-${PID}" 2>/dev/null || kill "-${1}" "$PID" 2>/dev/null; }
+signal_tree TERM
+for _ in $(seq 1 20); do kill -0 "$PID" 2>/dev/null || break; sleep 0.5; done
+if kill -0 "$PID" 2>/dev/null; then
+  signal_tree KILL
+  echo "==> stopped (pid $PID, forced)"
+else
+  echo "==> stopped (pid $PID)"
+fi
+rm -f "$PIDFILE"
