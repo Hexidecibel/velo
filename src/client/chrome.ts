@@ -84,7 +84,8 @@ export function createLegend(root: HTMLElement): void {
     '<b>R</b> restart &nbsp; <b>T</b> replay &nbsp; <b>E</b> export replay<br>' +
     '<b>B</b> leaderboard and ghost &nbsp; <b>[ / ]</b> level<br>' +
     '<b>+ / -</b> zoom &nbsp; <b>H</b> tuning sliders<br>' +
-    '<b>G</b> show the true collision edge &nbsp; <b>V</b> art on / off';
+    '<b>G</b> show the true collision edge &nbsp; <b>V</b> art on / off<br>' +
+    '<b>M</b> mute — sound starts on your first click or key';
   d.append(body);
   d.addEventListener('toggle', () => saveFlag('legend', d.open));
   root.append(d);

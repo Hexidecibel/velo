@@ -29,9 +29,26 @@ function liveTuneApi(): Plugin {
   }
 }
 
-// Client-only for milestone 1 apart from the live-tune endpoint above. The
-// leaderboard API lands with the server milestone and goes in as a proxy
-// stanza exactly like codegrind's, with `changeOrigin: false`.
+// The leaderboard API is PROXIED to the real Hono server rather than
+// reimplemented here, and the two halves of that split are deliberate.
+//
+// `/api/spec` is a middleware because live tune has to work with `bin/dev`
+// alone: it is the tuning loop, one process, and a proxy stanza would mean
+// remembering to run `bin/start` alongside it — the failure mode of forgetting
+// being a poll that 404s forever while the game looks fine.
+//
+// The leaderboard is the opposite. It writes files, re-simulates submissions
+// and holds a queue; a second implementation of any of that inside a Vite
+// plugin is a second implementation of the anti-cheat. So `bin/dev` talks to
+// the same server production talks to, and if it is not running the board
+// simply reports itself offline — which the client is built to do anyway,
+// because the device gate can sign you out mid-session.
+//
+// The route list is explicit rather than a bare `/api` prefix, so that the
+// `/api/spec` middleware above is not shadowed by the proxy.
+const API_PORT = process.env.PORT || '9422'
+const LEADERBOARD_ROUTES = '^/api/(runs|leaderboard|replays|players|levels|rules|health)'
+
 export default defineConfig({
   plugins: [liveTuneApi()],
   resolve: {
@@ -47,6 +64,14 @@ export default defineConfig({
     // sends `velo.tunnel.cush.rocks` and Vite answers 403 before any of our code
     // runs. Still bound to loopback above, so the only route in is the tunnel.
     allowedHosts: true,
+    proxy: {
+      [LEADERBOARD_ROUTES]: {
+        target: `http://127.0.0.1:${API_PORT}`,
+        // `changeOrigin: false` — the server does not care about Host and
+        // rewriting it would only make a proxied request differ from a real one.
+        changeOrigin: false,
+      },
+    },
   },
   build: {
     target: 'es2022',

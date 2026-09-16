@@ -134,6 +134,37 @@ try {
   const boot = await evalIn(cdp, `!!(window.velo && window.velo.sim)`);
   if (boot !== true) throw new Error('page loaded but window.velo never appeared — the bundle did not run');
 
+  // --- audio starts, on a REAL gesture -------------------------------------
+  //
+  // Before the gesture the game must be silent and complaint-free: no context,
+  // no console error, no throw. Browsers refuse to start audio without a user
+  // gesture and the only acceptable response to that is to wait for one.
+  const preGesture = await evalIn(cdp, `JSON.stringify(window.velo.audio)`);
+  const pre = JSON.parse(preGesture);
+  if (pre.started !== false || pre.state !== 'idle') {
+    throw new Error(`audio started before any gesture (${pre.state}) — browsers forbid this and log about it`);
+  }
+  if (pre.error) throw new Error(`audio reported an error before it was even started: ${pre.error}`);
+
+  // A TRUSTED click, through the CDP input domain. `dispatchEvent(new
+  // MouseEvent(...))` from page script is untrusted and does not satisfy the
+  // gesture requirement, so it would test the wrong thing — the page would stay
+  // silent and this check would pass for the wrong reason.
+  await click(cdp, 640, 700);
+  const audioDeadline = Date.now() + 5000;
+  let au = null;
+  for (;;) {
+    au = JSON.parse(await evalIn(cdp, `JSON.stringify(window.velo.audio)`));
+    if (au.started && au.state !== 'starting') break;
+    if (Date.now() > audioDeadline) throw new Error(`audio never started after a gesture (${JSON.stringify(au)})`);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  console.log('    audio: ' + JSON.stringify({ state: au.state, muted: au.muted, error: au.error }));
+  if (au.error) throw new Error(`audio failed to initialise: ${au.error}`);
+  if (au.state !== 'running') {
+    throw new Error(`audio did not reach 'running' after a gesture (${au.state})`);
+  }
+
   // Hold the throttle for three seconds of wall clock through the real input
   // path, not by poking the sim.
   await evalIn(cdp, `
@@ -231,6 +262,86 @@ try {
     );
   }
   console.log(`    cross-engine: chrome === node over ${a.frames} frames / ${a.ticks} ticks / ${a.runs + 1} runs, final ${a.final}`);
+
+  // --- muted and unmuted are the SAME RUN ---------------------------------
+  //
+  // The contract audio has to keep: it reads sim state and never writes it, so
+  // a replay is bit-identical whether the tab was silent or loud. A leaderboard
+  // where the volume slider can move a time is not a leaderboard.
+  //
+  // Driven through `velo.scriptRun`, which feeds a FIXED mask stream through
+  // the real frame loop — the real recorder, the real draw, the real audio
+  // sampling. Two runs driven by a wall-clock timer could not answer this: the
+  // number of input frames would depend on how long the browser took, and two
+  // runs of different lengths differ for reasons that have nothing to do with
+  // sound.
+  const ab = await evalIn(cdp, `
+    (async () => {
+      const masks = [];
+      for (let i = 0; i < 800; i++) {
+        masks.push((i % 7 < 5 ? 1 : 0) | (i % 13 < 4 ? 4 : 0) | (i % 29 < 3 ? 8 : 0) | (i % 61 === 0 ? 16 : 0));
+      }
+      window.velo.setMuted(false);
+      const c0 = window.velo.audio.cues;
+      const loud = await window.velo.scriptRun(masks);
+      const loudCues = window.velo.audio.cues - c0;
+      const loudMs = window.velo.audio.lastMs;
+      window.velo.setMuted(true);
+      const c1 = window.velo.audio.cues;
+      const quiet = await window.velo.scriptRun(masks);
+      const quietCues = window.velo.audio.cues - c1;
+      window.velo.setMuted(false);
+      return {
+        loud: JSON.stringify(loud),
+        quiet: JSON.stringify(quiet),
+        frames: loud && loud.frames,
+        loudCues, quietCues, loudMs,
+        state: window.velo.audio.state,
+        error: window.velo.audio.error,
+      };
+    })()
+  `);
+  console.log('    audio a/b: ' + JSON.stringify({
+    frames: ab.frames, loudCues: ab.loudCues, quietCues: ab.quietCues,
+    updateMs: Number(ab.loudMs.toFixed(3)), bytes: ab.loud.length, state: ab.state,
+  }));
+  if (ab.error) throw new Error(`audio errored during the a/b: ${ab.error}`);
+  if (!ab.loud || ab.frames < 100) throw new Error(`the scripted run recorded nothing (${ab.frames} frames)`);
+  if (ab.loud !== ab.quiet) {
+    throw new Error('MUTED AND UNMUTED RUNS DIFFER — audio is reaching the sim.\n      ' +
+      `loud  ${ab.loud.slice(0, 200)}\n      quiet ${ab.quiet.slice(0, 200)}`);
+  }
+  // And the comparison was not vacuous: the loud run really did make sounds,
+  // and the muted one really did make none.
+  if (ab.loudCues < 1) throw new Error('the unmuted scripted run fired no cues at all — nothing was being compared');
+  if (ab.quietCues !== 0) throw new Error(`a muted run still fired ${ab.quietCues} cues`);
+  if (ab.loudMs > 1.5) throw new Error(`the audio frame update cost ${ab.loudMs.toFixed(2)} ms — it is meant to be a rounding error`);
+
+  // Hiding the tab must SUSPEND the context, not merely turn it down: a
+  // backgrounded game should cost nothing at all.
+  //
+  // `document.hidden` is overridden and `visibilitychange` dispatched by hand
+  // rather than driven through the CDP — `Emulation.setPageVisibilityOverride`
+  // is gone from current Chrome and a headless tab is never backgrounded
+  // anyway. What is under test is OUR handler, which is the only part of this
+  // that is ours; the browser firing the event is not in question.
+  const visibility = async (hidden) => {
+    await evalIn(cdp, `
+      (() => {
+        Object.defineProperty(document, 'hidden', { configurable: true, get: () => ${hidden} });
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => '${hidden ? 'hidden' : 'visible'}' });
+        document.dispatchEvent(new Event('visibilitychange'));
+        return true;
+      })()
+    `);
+    await new Promise((r) => setTimeout(r, 400));
+    return JSON.parse(await evalIn(cdp, `JSON.stringify(window.velo.audio)`)).state;
+  };
+  const hiddenState = await visibility(true);
+  const shownState = await visibility(false);
+  console.log(`    audio visibility: hidden -> ${hiddenState}, shown -> ${shownState}`);
+  if (hiddenState !== 'suspended') throw new Error(`a hidden tab left audio ${hiddenState}, not suspended`);
+  if (shownState !== 'running') throw new Error(`a re-shown tab left audio ${shownState}, not running`);
 
   // Live tune, end to end. LAST, because applying an override restarts the
   // attempt and would throw away the banked replay the checks above need.
@@ -525,6 +636,13 @@ function connect(wsUrl) {
       }
     });
   });
+}
+
+/** A TRUSTED click. Page-dispatched MouseEvents do not satisfy a gesture gate. */
+async function click(cdp, x, y) {
+  const base = { x, y, button: 'left', clickCount: 1, buttons: 1 };
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...base });
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base });
 }
 
 async function evalIn(cdp, expression) {

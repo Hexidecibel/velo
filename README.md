@@ -29,8 +29,7 @@ behind the cush-auth device gate.
 
 ## What this is not
 
-- **It is not a game yet.** There are no audio and no menus beyond a level
-  picker. `test01` is ugly on purpose, so that you can see what the collision is
+- **It is not a game yet.** There are no menus beyond a level picker. `test01` is ugly on purpose, so that you can see what the collision is
   doing; `test02` exercises the level format's curve primitive.
 - **The leaderboard is not authenticated, and does not pretend to be.**
   Re-simulation means a *time* cannot be faked. *Whose* time it is can be —
@@ -62,7 +61,7 @@ add a script rather than running an ad-hoc command.
 | `bin/build` | `tsc -b` typecheck (a separate, mandatory step) then `vite build` into `dist/`. |
 | `bin/test` | vitest, colocated, plain node. `--watch` to re-run on change. |
 | `bin/lint` | `tsc -b` plus eslint. Both, in that order — eslint here is type-unaware. |
-| `bin/smoke` | Builds, then drives the real page in headless Chrome over CDP: asserts nothing threw, nothing went NaN, the replay verifies, the **cross-engine hash chain from Chrome's V8 matches Node's V8**, live tune applies end to end, and **holding TAB advances neither the clock nor the recording**. It then starts a **real velo server** on a scratch data directory, posts a real replay to it, and asserts the built page fetches that board, builds a ghost from it and steps that ghost one frame for one input frame. |
+| `bin/smoke` | Builds, then drives the real page in headless Chrome over CDP: asserts nothing threw, nothing went NaN, the replay verifies, the **cross-engine hash chain from Chrome's V8 matches Node's V8**, live tune applies end to end, and **holding TAB advances neither the clock nor the recording**. It asserts audio stays asleep until a **trusted** gesture and then initialises without throwing, that a hidden tab suspends the context, and — the one that matters — that **the same fixed input stream driven muted and driven loud records byte-identical replays**, with the loud pass firing cues and the muted pass firing none so the comparison cannot pass vacuously. It then starts a **real velo server** on a scratch data directory, posts a real replay to it, and asserts the built page fetches that board, builds a ghost from it and steps that ghost one frame for one input frame. |
 | `bin/preview` | Serves the built `dist/`. A production-bundle sanity check, not a deployment. |
 | `bin/level-export` | Writes the built-in levels out to `levels/test01.json` and `levels/test02-bowl.json`. |
 | `bin/level-check` | Validates a hand-authored level JSON, prints its two hashes, and **warns about straight runs too coarse to ride smoothly**. |
@@ -72,6 +71,7 @@ add a script rather than running an ad-hoc command.
 | `bin/air` | Measures jump height and airtime off a fixed synthetic feature, per bike, in metres. Turns "it should catch more air" into a number. |
 | `bin/dive` | Measures chassis pitch under braking and under throttle, in degrees. Turns "braking should slam the front down like gassing lifts it" into a symmetry you can check. |
 | `bin/slope-sweep` | Sweeps a synthetic ramp across slope angle, entry speed, input strategy and transition sharpness, and prints what the bike does. |
+| `bin/audiobench` | **Measures what the sound costs a frame.** Drives a fixed input stream through the real frame loop twice — loud, and muted, which *suspends* the audio context and so really is the cost of no audio at all — interleaved so a busy box biases both equally, and reports the per-frame audio update alongside whole-frame times. `BENCH_FRAMES` and `BENCH_PASSES` lengthen it. |
 | `bin/artbench` | **Measures the art renderer's frame budget with the camera moving.** Flies the camera across a level at play speed, times the render call against the old flat renderer on the same frames, breaks the cost down layer by layer, and then drives the real game and watches real frame times. Exits 2 if a warm frame's p95 goes over 16.7 ms. Every timed pass runs at FULL detail with the adaptive system off, so "it passes" can never quietly mean "it passed by turning everything off"; what the adaptive system settles at is printed separately. `BENCH_OUT=<file>` appends each level as it finishes, so a killed sweep costs only what it had not reached. `BENCH_ART='{"props":0,...}'` overrides art parameters before measuring, which is how a before/after stays honest on one build. |
 | `bin/shots` | Screenshots several levels at the three zooms the camera reaches, with the art on, the art off, the `G` overlay up, and framed on the level's tightest ceiling. Output to `shots/` (gitignored). The A/B pair is the point: "is the collision edge still the most legible line" is a comparison, not an opinion. `SHOTS_ONLY=art-62` takes one shot per level, which is how you judge twenty levels as a SET; `SHOTS_AT=x,y,zoom` frames one exact place, which is how you find out what a prop that looked wrong in an overview actually is. |
 | `bin/board` | **Inspect, check, rebuild and prune the leaderboard store.** No arguments lists every level with its entry counts; a level id shows one board; `player <id>` shows one player's PBs; `check` is an integrity pass; `rebuild [--verify]` regenerates the boards and player files from the submission log, re-simulating every replay if asked; `prune [--apply]` removes replay blobs nothing references, and is a dry run unless you say so. |
@@ -102,6 +102,7 @@ reap any Chrome holding one of their own profile directories before they start.
 | G | **draw the true collision boundary**, its normals and the live contacts, over everything else |
 | V | art renderer on / off — the A/B for readability |
 | B | show/hide the **leaderboard and ghost picker** — open by default |
+| M | **mute** — remembered. Sound starts on your first click or key press, because browsers will not let a page make noise before one. |
 | H | show/hide the tuning panel — **closed by default**, remembered once you open it |
 | `+` / `-` | zoom bias |
 | P | pause |
@@ -1032,7 +1033,164 @@ visible.
   is still a hook nothing reads, and a hand pass per level is still possible but
   is not something any level needs.
 - **No prop animation beyond the fan.** The blades turn; nothing else moves.
-- **No sound, no particles beyond the existing dust, exhaust and motes.**
+- **No particles beyond the existing dust, exhaust and motes.** There IS
+  sound now — see *The sound* — and it is synthesised for the same reason the
+  art is drawn in code.
+
+## The sound
+
+**Everything is synthesised. There are no audio files and there never will be.**
+Oscillators, one two-second buffer of noise, and filters — for the same reason
+the art is drawn in code: it has to work on any level including generated ones,
+and a sample pack is megabytes of liability nobody asked for. It also means
+"how hard was that landing" is a continuous parameter rather than a choice
+between `thud_soft.wav` and `thud_hard.wav`.
+
+The taste is the art's: Jet Set Radio Future. Synthetic and characterful, not a
+recording of a motor.
+
+### The engine is bound to wheel spin, not to ground speed
+
+This is the whole bet, and it is one line of the mapping. Pitch follows the
+**driven wheel's angular velocity**, normalised against `spec.drive.maxWheelSpin`
+— the spin at which `step.ts` has tapered drive torque to zero.
+
+Spin and ground speed agree while the tyre grips and diverge exactly where it is
+interesting:
+
+| | ground speed | wheel spin | what you hear |
+| --- | --- | --- | --- |
+| pulling away cleanly | rising | rising | a pull |
+| wheelspin off the line | ~0 | high | a scream, and the tyre scrubbing over it |
+| throttle held mid-air | irrelevant | climbing to the limit | free revs, thinning out |
+| landing on a spun-up wheel | jumps | drops as it bites | the note bends down as the bike surges |
+
+A speed-bound engine gets the middle two exactly backwards, and those are the
+two that are fun.
+
+**Brightness tracks pull, pitch tracks spin,** and they are deliberately
+different quantities. `step.ts` scales drive torque by `1 - spin/maxWheelSpin`,
+so that fraction is literally how much torque the engine still has; it drives
+the lowpass cutoff. At max wheelspin the engine is at full pitch with the filter
+closing — screaming with nothing behind it, which is what wheelspin *is*.
+
+Two detuned saws and a square sub an octave down, split either side of the
+fundamental so the detune slider is not also a tuning slider, through one
+lowpass with a slow wobble on its cutoff. The wobble is why the idle reads as a
+machine running rather than as a test tone.
+
+### Everything else
+
+| Sound | What it reads | Notes |
+| --- | --- | --- |
+| landing | fall speed of each wheel, **and** how far that wheel's suspension compressed | Per wheel, not per bike: the common case is the front touching first and the rear then slamming down, and the slam is the one with weight in it. Two wheels inside one frame coalesce to one cue at the harder of the two — two envelopes 4 ms apart is a flam, not a thump. |
+| tyre scrub | contact-patch slip, `v·t − spin·R`, the exact quantity `step.ts` solves friction against | Deadbanded, or the tyre hisses continuously and you stop hearing the case that matters. Silent airborne however fast the wheel is turning. |
+| suspension | compression **rate**, not compression | A parked bike is fully compressed and silent; a bike crossing a ridge is barely compressed and creaks. This is also why there is no separate "bump" cue — it covers every bump that never leaves the ground. |
+| wind | speed, loudest airborne | |
+| apple | `applesLeft` dropping | Climbs a pentatonic ladder **within a run**, so a clean sweep is a rising phrase and not the same blip eight times. Resets with the run. |
+| flower | `finished` | Three notes and a tail. The only thing it has to say that the apple does not is *resolution*. |
+| death | `dead`, scaled by speed, with a floor | Pitch collapse under a filtered crunch. Half a second, dull, low. |
+| flip | `facing` changing | A short air whoosh. Space is free and legal mid-air, so this is one of the most-repeated sounds in the game; keep it quiet or turn it off. |
+
+### The rules it has to keep
+
+**The sim never learns about audio.** Audio reads sim state and never writes it,
+exactly like the renderer, so a replay is bit-identical whether the tab was
+muted, loud, or had no output device. A leaderboard where the volume slider can
+move a time is not a leaderboard. Three checks rather than three sentences:
+`src/sim/` may not contain the word *audio*; the sampler runs against a
+`SimState` and `World` wrapped in Proxies that **throw on any write**, one level
+down into the typed arrays where a write would actually land; and a real run
+sampled every frame produces the same hash chain as the identical run with no
+audio in it. `bin/smoke` then does the end-to-end version in the browser —
+**the same fixed input stream driven muted and loud must record byte-identical
+replays**, with the loud pass actually firing cues and the muted pass firing
+none, so the comparison cannot pass vacuously.
+
+**Audio is per rendered frame, not per tick.** The sim runs at 512 Hz; emitting
+an event per tick would be 512 scheduled envelopes a second for a game with
+maybe three audible things happening at once. The only thing that costs is the
+transients you can miss between two frames, and those are handled by tracking a
+per-wheel extremum across the airborne window — the fall speed that makes a
+landing loud is gone by the time the contact exists, so it is caught on the way
+down rather than by sampling faster.
+
+**The graph is built once and never grows.** Twenty-eight nodes, all started
+when the context opens and all still running when the tab closes; a cue is an
+envelope scheduled onto an AudioParam of a node that already exists. Creating a
+node per event is the normal way to do this and it is the wrong way here — node
+churn costs main-thread time and GC pressure exactly when the frame is busiest,
+which is exactly when the sounds happen. Continuous voices are deadbanded, so an
+unchanged voice costs a compare rather than a scheduling call; most frames move
+two of the nine.
+
+**Nothing fires on a restart.** The clock going backwards resets the model and
+suppresses every cue on that frame — not the death that caused it, not a landing
+from the bike dropping onto its wheels, not the apple count resetting — and the
+engine comes up from silence rather than snapping to idle. This is a
+die-and-retry game: a player hears the start of a run hundreds of times in a
+session and anything that fires there is hated long before they get good at the
+level. It is the most important test in `model.test.ts`.
+
+### The browser's rules, handled rather than logged about
+
+- **A gesture is required.** The AudioContext is not *constructed* until the
+  first pointer or key event — not constructed and then resumed, because merely
+  constructing one on a gestureless page puts a warning in the console, and a
+  warning that reappears on every load forever is how a console stops being
+  worth reading. Until then `update` is a no-op and the HUD says what it is
+  waiting for, because every failure mode of browser audio is silent by design
+  and "I hear nothing" with nothing on screen to explain it is
+  indistinguishable from broken.
+- **A hidden tab is suspended,** not turned down: `visibilitychange` suspends
+  the context outright, so a backgrounded game costs nothing rather than
+  rendering silence through nine voices.
+- **Mute suspends it too,** for the same reason, and is remembered in
+  `localStorage`. `M`, or the switch at the top of the Sound group on the panel.
+- **Everything is wrapped.** A locked-down browser, no output device, a context
+  that refuses to resume: every entry point catches, `error` is set **once**,
+  and audio disables itself for the session. Nothing about this feature can stop
+  the game running, and nothing about it writes sixty lines a second into the
+  console.
+
+Resume and suspend are **serialised**, which is not defensive plumbing — it is a
+bug `bin/smoke` caught. Both are async and both decide what to do from
+`ctx.state`, so an unmute immediately followed by the tab being hidden read a
+context that was still `suspended`, concluded there was nothing to suspend, and
+then the resume landed and left a hidden tab making noise.
+
+### What it costs
+
+`bin/audiobench` drives a fixed input stream through the real frame loop twice
+— loud, and muted (which suspends the context, so it really is the cost of no
+audio at all) — interleaved, and times both the audio update itself and the
+whole frame.
+
+Measured on this box (no GPU, so Chrome rasterises the canvas on the CPU and the
+frame is dominated by drawing), 1600x900, 1600 input frames x 3 passes each way:
+
+| | `20-close-quarters` | `10-cathedral` |
+| --- | --- | --- |
+| audio update, mean | **0.026 ms** | **0.027 ms** |
+| audio update, p95 / max | 0.100 / 0.200 ms | 0.100 / 0.200 ms |
+| frame time, loud (mean) | 16.848 ms | 16.711 ms |
+| frame time, muted (mean) | 16.867 ms | 16.726 ms |
+| frames over 16.7 ms | 1.1% loud / 1.2% muted | 0.3% loud / 0.4% muted |
+| cues fired | 70 loud / 0 muted | 93 loud / 0 muted |
+
+**About 0.03 ms a frame, which is 0.16% of a 60 fps budget** — and the whole-
+frame A/B cannot see it at all: the delta is slightly *negative* on both levels,
+which is noise, and `performance.now()` is coarsened to 0.1 ms in Chrome so the
+p50 of the update reads as a flat zero. That is the honest reading of this
+table: the audio update is below the resolution of the frame clock, and the
+synthesis itself never touches the main thread — it runs on the audio thread,
+which is the entire reason the graph is long-lived nodes with modulated
+parameters rather than nodes built per event.
+
+Nothing here was expensive enough to be worth cutting. The most expensive single
+sound is the death cue, which schedules six envelopes across four voices in one
+call — and it is still well under a tenth of a millisecond, and it happens once
+per run by definition.
 
 ## The camera
 
@@ -1092,6 +1250,14 @@ hand-tune and a field held by `bin/spec` — are reported on the HUD whenever th
 panel is closed. A bike that is not the preset as shipped, with nothing on
 screen saying so, is how somebody spends an afternoon debugging their own
 leftover slider.
+
+The camera, the overview, the art and the **sound** live on the same panel and
+use the same slider machinery, because anything with feel belongs here. None of
+them is in the `BikeSpec` and none of them may ever be — a time that depended on
+how somebody framed their screen or how loud their speakers were would not be a
+time. The Sound group's advice is worth repeating outside it: **tune by ear
+against a restart loop, not a single play.** The launch is the sound you hear
+hundreds of times in a session.
 
 Not the renderer, and not a debug tool. "Ride it until it feels good" means
 changing the `BikeSpec` dozens of times in a sitting, and doing that by editing
@@ -1864,6 +2030,13 @@ src/server/         Hono, the published bundle, and the leaderboard.
                     verification off the request handler with a budget;
                     limits.ts is every cap in one screen; runs.ts is the
                     submission pipeline; api.ts is the routes.
+src/client/audio/   the sound. params.ts is the panel's knobs; model.ts is the
+                    whole of the feel as PURE numbers (sim state -> synth
+                    parameters) and tests in plain node; engine.ts is the
+                    WebAudio graph and the only browser-only file; sample.ts is
+                    the one place that touches the sim, and it only reads;
+                    index.ts is the lifecycle — the gesture gate, mute, and
+                    suspending a hidden tab.
 src/client/art/     the art direction. geom.ts (edge classification and hazard
                     corners), palette.ts, params.ts, rng.ts and stencils.ts are
                     DOM-free and tested in plain node; bake.ts builds the
@@ -1875,7 +2048,7 @@ levels/             exported level JSON
 
 `bin/` also holds underscore-prefixed modules that are imported rather than run:
 `_board.ts` and `_submit.ts` (the leaderboard tools),
-`_smoke.mjs` (the headless Chrome driver), `_sag.ts` (the coarse-run metric,
+`_smoke.mjs` (the headless Chrome driver), `_audiobench.mjs`, `_sag.ts` (the coarse-run metric,
 shared by `bin/level-check` and `src/sim/curvelevel.test.ts`), `_pilot.ts` (the
 scripted rider), `_slope.ts`, `_air.ts` and `_dive.ts` (the measurement rigs),
 and `_replay.ts`. The rigs build their own synthetic levels rather than using

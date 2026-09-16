@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# What the sound costs a frame.
+#
+# Usage:
+#   bin/audiobench                          # 20-close-quarters and 10-cathedral
+#   bin/audiobench 01-first-light
+#   BENCH_W=1920 BENCH_H=1080 bin/audiobench
+#   BENCH_FRAMES=3000 BENCH_PASSES=5 bin/audiobench
+#
+# Why: level 20 is already near the frame budget on a software rasteriser and
+# the user can feel it, so audio has to be a rounding error or it does not ship.
+# It drives a FIXED input stream through the real frame loop twice — loud, and
+# muted (which SUSPENDS the context, so it really is the cost of no audio at
+# all) — interleaved, and reports the delta. It also times the per-frame audio
+# update itself, which is the only part of this that runs on the main thread;
+# the synthesis is on the audio thread and does not touch the frame.
+#
+# The numbers are a FLOOR, like bin/artbench's: this box has no GPU, so Chrome
+# rasterises on the CPU and the frame is dominated by drawing.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+echo "==> build"
+"$ROOT/bin/build" >/dev/null
+echo "==> audio frame cost"
+exec "$NODE" "$ROOT/bin/_audiobench.mjs" "$@"

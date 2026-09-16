@@ -23,6 +23,7 @@ import { specHash } from '@/sim/spec.ts';
 import type { CameraParams } from './camera.ts';
 import type { OverviewParams } from './overview.ts';
 import type { ArtParams } from './art/params.ts';
+import type { AudioParams } from './audio/params.ts';
 import { PRESETS, leanAngleOf, leanVectors } from './presets.ts';
 import { loadFlag, saveFlag } from './store.ts';
 
@@ -344,6 +345,107 @@ const OVERVIEW_GROUPS: Group<OverviewParams>[] = [
 ];
 
 
+const AUDIO_GROUPS: Group<AudioParams>[] = [
+  {
+    title: 'Sound',
+    why: 'Everything is synthesised — oscillators and one buffer of noise, no samples, no files — so every one of these is a real continuous parameter rather than a choice between two recordings. The engine is the one that matters: its pitch is bound to WHEEL ANGULAR VELOCITY, not to ground speed, which is why wheelspin and mid-air throttle sound like something is happening. Tune it by ear against a RESTART LOOP rather than a single play: the launch is the sound you will hear hundreds of times in a session, and anything sharp there is hated by attempt fifty.',
+    fields: [
+      {
+        label: 'MUTE (0/1)', min: 0, max: 1, step: 1,
+        hint: 'Also the M key, and remembered. Muting SUSPENDS the audio context rather than turning a gain down, so a muted game costs nothing at all — same as a backgrounded tab.',
+        get: (a) => a.muted, set: (a, v) => { a.muted = v; },
+      },
+      {
+        label: 'master volume', min: 0, max: 1, step: 0.01,
+        get: (a) => a.master, set: (a, v) => { a.master = v; },
+      },
+      {
+        label: 'engine idle (Hz)', min: 20, max: 160, step: 1,
+        hint: 'Pitch at a stopped wheel. THE most-heard sound in the game, so it is deliberately low and dull — every restart starts here.',
+        get: (a) => a.engineIdleHz, set: (a, v) => { a.engineIdleHz = v; },
+      },
+      {
+        label: 'engine max (Hz)', min: 80, max: 900, step: 5,
+        hint: 'Pitch at spec.drive.maxWheelSpin, where drive torque has tapered to zero. Above that spin the sound stops climbing, because the bike has stopped being able to push.',
+        get: (a) => a.engineRevHz, set: (a, v) => { a.engineRevHz = v; },
+      },
+      {
+        label: 'engine pitch curve', min: 0.2, max: 2, step: 0.02,
+        hint: 'Exponent on normalised wheel spin. Below 1 spreads the bottom of the range, where the riding actually happens; at 1 the whole audible change is in the top third and pulling away sounds like nothing.',
+        get: (a) => a.engineCurve, set: (a, v) => { a.engineCurve = v; },
+      },
+      {
+        label: 'engine level', min: 0, max: 1, step: 0.01,
+        get: (a) => a.engineLevel, set: (a, v) => { a.engineLevel = v; },
+      },
+      {
+        label: 'engine detune (cents)', min: 0, max: 60, step: 1,
+        hint: 'Between the two saw layers, split either side of the fundamental so this is not also a tuning slider. The "synthetic" in the tone — 0 is a clean single saw and reads as a test signal.',
+        get: (a) => a.engineDetune, set: (a, v) => { a.engineDetune = v; },
+      },
+      {
+        label: 'engine sub', min: 0, max: 1, step: 0.01,
+        hint: 'Square wave an octave down. Body, not pitch. On a laptop speaker most of this is inaudible and it costs nothing to leave in for headphones.',
+        get: (a) => a.engineSub, set: (a, v) => { a.engineSub = v; },
+      },
+      {
+        label: 'impact sensitivity', min: 0, max: 2, step: 0.02,
+        hint: 'Landing thump. Strength comes from the speed the wheel was falling at AND how far the suspension compressed — a drop onto a flat and the same speed into a berm are different landings and the springs already know it.',
+        get: (a) => a.impact, set: (a, v) => { a.impact = v; },
+      },
+      {
+        label: 'impact floor (m/s)', min: 0, max: 8, step: 0.1,
+        hint: 'Fall speed below which a touchdown is silent. Raise it if ordinary riding is thumping.',
+        get: (a) => a.impactFrom, set: (a, v) => { a.impactFrom = v; },
+      },
+      {
+        label: 'impact full (m/s over floor)', min: 2, max: 25, step: 0.5,
+        hint: 'How much more fall speed takes a landing from just-audible to full strength.',
+        get: (a) => a.impactSpan, set: (a, v) => { a.impactSpan = v; },
+      },
+      {
+        label: 'tyre scrub', min: 0, max: 1, step: 0.01,
+        hint: 'Wheelspin and lockup, from the contact-patch slip the sim solves friction against. Zero while the tyre grips.',
+        get: (a) => a.scrub, set: (a, v) => { a.scrub = v; },
+      },
+      {
+        label: 'scrub deadband (m/s)', min: 0, max: 3, step: 0.05,
+        hint: 'Slip below this counts as grip. Without a deadband the tyre hisses continuously and you stop hearing the one case that matters.',
+        get: (a) => a.scrubFloor, set: (a, v) => { a.scrubFloor = v; },
+      },
+      {
+        label: 'suspension creak', min: 0, max: 1, step: 0.01,
+        hint: 'Tracks compression RATE, so a parked bike is silent and a bike crossing a ridge is not. This is also what covers every bump that never leaves the ground.',
+        get: (a) => a.suspension, set: (a, v) => { a.suspension = v; },
+      },
+      {
+        label: 'wind', min: 0, max: 1, step: 0.01,
+        hint: 'Air noise rising with speed, loudest airborne.',
+        get: (a) => a.wind, set: (a, v) => { a.wind = v; },
+      },
+      {
+        label: 'flip whoosh', min: 0, max: 1, step: 0.01,
+        hint: 'Space is free and legal mid-air, so this is one of the most-repeated sounds in the game. Keep it short and quiet or turn it off.',
+        get: (a) => a.flip, set: (a, v) => { a.flip = v; },
+      },
+      {
+        label: 'apple pickup', min: 0, max: 1, step: 0.01,
+        hint: 'Climbs a pentatonic ladder within a run, so a clean sweep of a level is a rising phrase and not the same blip eight times.',
+        get: (a) => a.pickup, set: (a, v) => { a.pickup = v; },
+      },
+      {
+        label: 'flower / finish', min: 0, max: 1, step: 0.01,
+        get: (a) => a.finish, set: (a, v) => { a.finish = v; },
+      },
+      {
+        label: 'death', min: 0, max: 1, step: 0.01,
+        hint: 'Your head hitting terrain is the core tension of the game and this is the one sound allowed any weight. It is still half a second of dull crunch, because it is also the sound of the loop restarting.',
+        get: (a) => a.death, set: (a, v) => { a.death = v; },
+      },
+    ],
+  },
+];
+
 const ART_GROUPS: Group<ArtParams>[] = [
   {
     title: 'Art',
@@ -502,6 +604,8 @@ export interface PanelHooks {
   onOverviewChange(ov: OverviewParams): void;
   /** An art field moved. Read every frame; `faceAngle` triggers a rebake. */
   onArtChange(art: ArtParams): void;
+  /** An audio field moved. Read every frame, except mute, which is lifecycle. */
+  onAudioChange(audio: AudioParams): void;
   /** A whole preset was selected; the run restarts. */
   onPreset(spec: BikeSpec, label: string): void;
   /** Throw away the stored tune and go back to the preset as shipped. */
@@ -550,6 +654,7 @@ export function createPanel(
   camera: CameraParams,
   overview: OverviewParams,
   art: ArtParams,
+  audio: AudioParams,
   liveTuneOn: boolean,
   hooks: PanelHooks,
 ): Panel {
@@ -736,6 +841,7 @@ export function createPanel(
   buildGroups(CAMERA_GROUPS, camera, (c) => hooks.onCameraChange(c));
   buildGroups(OVERVIEW_GROUPS, overview, (o) => hooks.onOverviewChange(o));
   buildGroups(ART_GROUPS, art, (a) => hooks.onArtChange(a));
+  buildGroups(AUDIO_GROUPS, audio, (a) => hooks.onAudioChange(a));
 
   const keys = document.createElement('div');
   keys.className = 'keys';
@@ -747,7 +853,7 @@ export function createPanel(
     '<b>TAB</b> (hold) see the whole level — the sim and the clock freeze<br>' +
     '<b>[ / ]</b> previous / next level &nbsp; <b>G</b> contacts &amp; normals<br>' +
     '<b>H</b> hide this panel &nbsp; <b>+ / -</b> zoom &nbsp; <b>P</b> pause<br>' +
-    '<b>V</b> art on / off — the A/B for readability' +
+    '<b>V</b> art on / off — the A/B for readability &nbsp; <b>M</b> mute' +
     '<h2 style="margin-top:18px">Live tune</h2>' +
     'Someone at a terminal can change the bike while you ride:<br>' +
     '<code>bin/spec set gravity 9.2</code><br>' +

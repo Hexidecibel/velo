@@ -39,6 +39,9 @@ import { renderArt } from './artrender.ts';
 import { bakeLevel, bakeSignature } from './art/bake.ts';
 import type { BakedLevel } from './art/bake.ts';
 import { cloneArt, DEFAULT_ART } from './art/params.ts';
+import { createAudio } from './audio/index.ts';
+import { cloneAudio, DEFAULT_AUDIO } from './audio/params.ts';
+import { sampleRide } from './audio/sample.ts';
 import { CONCRETE } from './art/palette.ts';
 
 const canvas = document.getElementById('view') as HTMLCanvasElement;
@@ -175,6 +178,15 @@ let hudCache = '';
 // the acceptance criterion for the whole look, and readability is judged by
 // flipping between two frames of the same moment.
 const artParams = cloneArt(DEFAULT_ART);
+// The audio. It reads sim state once a rendered frame and never writes it —
+// audio/audio.test.ts asserts that with a Proxy that throws — so a replay is
+// bit-identical whether the tab is muted, loud, or has no output device.
+//
+// The context is not constructed until the first gesture, which is the
+// browser's rule and also the reason nothing here can fail on the boot path.
+const audioParams = cloneAudio(DEFAULT_AUDIO);
+audioParams.muted = loadFlag('mute', false) ? 1 : 0;
+const audio = createAudio(() => audioParams);
 let baked: BakedLevel | null = null;
 let bakeMs = 0;
 const bootTime = performance.now();
@@ -239,6 +251,10 @@ const input = createInput();
 
 function restart(keepReplay = true): void {
   if (!keepReplay) lastReplay = null;
+  // Every tail cut, and the model's idea of the run forgotten, BEFORE the sim
+  // moves. A death crunch still ringing over the first second of the next
+  // attempt is exactly the sound a die-and-retry loop cannot afford.
+  audio.reset();
   sim.reset();
   prevState = sim.snapshot();
   recorder.reset();
@@ -266,6 +282,7 @@ function setLevel(next: LevelEntry, note = ''): void {
   entry = next;
   level = next.level;
   baked = null;
+  audio.reset();
   sim = createSim(level, spec);
   lastReplay = null;
   replayNote = note;
@@ -428,6 +445,7 @@ function startPlayback(): void {
   replayNote = v.result.ok
     ? `replay verified: ${lastReplay.frames} frames, hash ${v.result.finalHash}`
     : `REPLAY DESYNC: ${v.result.reason ?? '?'}${v.result.atFrame !== undefined ? ` at frame ${v.result.atFrame}` : ''}`;
+  audio.reset();
   sim.reset();
   prevState = sim.snapshot();
   recorder.reset();
@@ -769,6 +787,41 @@ function importReplay(): void {
 // --- the frame --------------------------------------------------------------
 
 let wasOver = false;
+/**
+ * The mask the sim last ran on — the live keyboard, or a replay's. Audio reads
+ * it rather than the keyboard so that a replay sounds like the run it is.
+ */
+let appliedMask = 0;
+
+/**
+ * A fixed input stream, driven through the real frame loop.
+ *
+ * This exists for `bin/smoke`, and specifically for the one assertion that
+ * cannot be made any other way: that a MUTED run records a byte-identical
+ * replay to an unmuted one. Driving with keyboard events and a wall-clock timer
+ * cannot answer that, because the number of input frames then depends on how
+ * long the browser took, and two runs of different lengths are trivially
+ * different for reasons that have nothing to do with audio.
+ *
+ * It feeds masks instead of the keyboard and leaves everything else — the loop,
+ * the recorder, the draw, the audio sampling — exactly as it is in play.
+ */
+let scripted: { masks: number[]; at: number; done: (r: Replay | null) => void } | null = null;
+
+function scriptRun(masks: number[]): Promise<Replay | null> {
+  // The opening peek freezes the sim until any input, and a scripted run is not
+  // input. Skipping it explicitly keeps the harness from waiting forever on a
+  // level it has just switched to.
+  overview.skipIntro();
+  // A second call while one is still running would orphan the first promise and
+  // hang whatever was awaiting it. Resolve it instead: the run it described did
+  // not finish, and saying so is better than never answering.
+  scripted?.done(null);
+  restart(false);
+  return new Promise((resolve) => {
+    scripted = { masks, at: 0, done: resolve };
+  });
+}
 
 function step(): void {
   prevState = copyState(sim.state);
@@ -794,7 +847,24 @@ function step(): void {
       playback = null;
       return;
     }
+    appliedMask = playback.masks[playback.at];
     sim.advance(playback.masks[playback.at++]);
+    ghost?.advance();
+    return;
+  }
+
+  if (scripted) {
+    if (scripted.at >= scripted.masks.length || sim.state.dead || sim.state.finished) {
+      const s = scripted;
+      scripted = null;
+      lastReplay = recorder.build(level, spec, sim);
+      s.done(lastReplay);
+      return;
+    }
+    const m = scripted.masks[scripted.at++];
+    appliedMask = m;
+    sim.advance(m);
+    recorder.capture(m, sim);
     ghost?.advance();
     return;
   }
@@ -811,6 +881,7 @@ function step(): void {
     return;
   }
   wasOver = false;
+  appliedMask = mask;
   sim.advance(mask);
   recorder.capture(mask, sim);
   // ONE GHOST FRAME FOR ONE PLAYER FRAME, and strictly after the player's own
@@ -859,6 +930,23 @@ function draw(alpha: number, dtMs: number): void {
   } else {
     render(ctx, cssW, cssH, cam, sim.world, sim.state, pose, spec, opts);
   }
+
+  // AUDIO IS PER FRAME, NOT PER TICK. The sim runs at 512 Hz; sampling it once
+  // a frame is the same discipline the renderer follows, and for the same
+  // reason — nothing downstream of either is verified, so neither may drive the
+  // rate at which the sim is asked anything.
+  //
+  // It goes after the draw so that a frame which is already over budget pays
+  // the drawing first; the audio thread has its own buffer and does not care
+  // about a millisecond of jitter in when its parameters arrive.
+  //
+  // Ducked under the overview, because the overview FREEZES the sim: every
+  // reading audio has is held constant for as long as TAB is down, and a
+  // engine note held dead flat for a second is the one case where being
+  // perfectly faithful to the state sounds like a bug.
+  audio.setDuck(1 - overview.blend * 0.85);
+  audio.update(sampleRide(sim.world, sim.state, spec, appliedMask), dtSec);
+
   updateHud();
 }
 
@@ -876,6 +964,35 @@ function resize(): { cssW: number; cssH: number } {
   }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   return { cssW, cssH };
+}
+
+/**
+ * One line of HUD for the sound. It is here rather than left invisible because
+ * every failure mode of browser audio is silent by design — no gesture yet, a
+ * context the OS refused to start, a muted tab — and "I hear nothing" with
+ * nothing on screen to explain it is indistinguishable from "it is broken".
+ */
+function audioLine(): string {
+  if (audio.error) return `<span class="bad">off — ${audio.error}</span>`;
+  if (audio.muted) return '<span class="warn">MUTED</span> — M unmutes';
+  switch (audio.state) {
+    case 'idle':
+    case 'starting':
+      return '<span class="warn">waiting for a click or a key</span> — browsers will not start sound before one';
+    case 'suspended':
+      return '<span class="warn">suspended</span> (tab hidden)';
+    case 'running':
+      return `on, ${audioParams.engineHz.toFixed(0)} Hz, ${audio.lastMs.toFixed(2)} ms/frame — M mutes`;
+    default:
+      return 'off';
+  }
+}
+
+function setMuted(on: boolean): void {
+  audio.setMuted(on);
+  saveFlag('mute', on);
+  panel.sync();
+  toast(on ? 'sound off' : 'sound on', 'M');
 }
 
 function updateHud(): void {
@@ -911,6 +1028,7 @@ function updateHud(): void {
     `   <span class="k">worst</span> ${worstMs.toFixed(1)}ms` +
     (overCount > 0 ? `   <span class="bad">${overCount} dropped</span>` : ''),
     '',
+    `<span class="k">audio</span> ${audioLine()}`,
     liveTuneError
       ? `<span class="bad">${liveTuneError}</span>`
       : liveTune.enabled
@@ -982,7 +1100,7 @@ const boardUi = createBoardUi(boardRoot, {
 // somebody playing. Either way the toggle is remembered once touched.
 const liveTuneDefault = loadFlag('livetune', import.meta.env.DEV);
 
-const panel = createPanel(panelRoot, localSpec, () => spec, cam.params, overview.params, artParams, liveTuneDefault, {
+const panel = createPanel(panelRoot, localSpec, () => spec, cam.params, overview.params, artParams, audioParams, liveTuneDefault, {
   onSpecChange: () => onPanelEdit(),
   onCameraChange: () => {
     // Nothing to rebuild: the camera reads its params every frame. It is here
@@ -993,6 +1111,17 @@ const panel = createPanel(panelRoot, localSpec, () => spec, cam.params, overview
     // decides which edges are floors and therefore what the bake contains.
     // ensureBake() compares a signature, so moving it rebuilds on the next
     // frame and moving anything else does not.
+  },
+  onAudioChange: () => {
+    // Read every frame like the camera's and the art's, with one exception:
+    // mute is a piece of browser lifecycle as well as a number, because a muted
+    // game SUSPENDS the context rather than turning a gain down. So the slider
+    // is routed through the same path the M key uses.
+    const want = audioParams.muted > 0;
+    if (want !== audio.muted) {
+      audio.setMuted(want);
+      saveFlag('mute', want);
+    }
   },
   onOverviewChange: () => {
     // Likewise read every frame. Changing `introHold` does not retroactively
@@ -1083,6 +1212,9 @@ input.onCommand((code) => {
       break;
     case 'KeyH':
       panel.toggle();
+      break;
+    case 'KeyM':
+      setMuted(audio.toggleMuted());
       break;
     case 'KeyB':
       boardVisible = !boardVisible;
@@ -1187,6 +1319,22 @@ interface VeloWindow extends Window {
   setGhostKind,
   levels: LEVELS,
   art: artParams,
+  // The audio, for bin/smoke: it asserts the context initialises without
+  // throwing, and that a MUTED run records a byte-identical replay to a loud
+  // one. `scriptRun` is what makes the second of those answerable — see it.
+  get audio() {
+    return {
+      state: audio.state,
+      started: audio.started,
+      muted: audio.muted,
+      error: audio.error,
+      lastMs: audio.lastMs,
+      cues: audio.cueCount,
+      params: audioParams,
+    };
+  },
+  setMuted,
+  scriptRun,
   /** Exposed so bin/shots can stop the loop repainting over a captured frame. */
   loop,
   /**
