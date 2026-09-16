@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Search for a run that completes a level, prove it, and score how hard it was.
+#
+#   bin/solve levels/13-reservoir.json
+#   bin/solve levels/*.json --jobs 6 --time 300 --json /tmp/solved.json
+#   bin/solve levels/08-needle.json --save /tmp/          # writes a replay file
+#   bin/solve levels/08-needle.json --time 900 --effort 4        # try much harder
+#
+# WHY THIS EXISTS. bin/level-drive is a scripted rider — throttle when a wheel
+# is down, lean into the face — and the plan calls it "a lower bound, not a
+# proof". It duly reported 13-reservoir, 15-feather and 17-backswing as
+# uncompletable, which nobody believed, because the pass/fail pattern across
+# levels looked like the pilot's brittleness rather than a physics wall. This is
+# the real answer: a search over the deterministic sim, through `advance(mask)`
+# so that anything it finds is expressible as a replay, and it either hands you
+# a watchable run or tells you exactly where it got stuck.
+#
+# It produces four things and all four have downstream users:
+#   completability   the gate for AI level generation and the 100-level target
+#   a replay file    standard envelope, verified, `bin/replay` or L in the client
+#   a difficulty score  measured from the search, not from level statistics
+#   the winning apple order   route choice is where this game's depth lives
+#
+# COST. This is not a CI tool. The two tutorial levels take two and four
+# seconds; a typical level takes one to four minutes on one core and the worst
+# of the twenty takes fourteen. The whole set is about an hour of CPU, which is
+# ~22 minutes of wall clock at --jobs 7, and peaks around 600 MB of nodes on a
+# hard level. --time caps each level; a level that hits the cap is reported
+# UNSOLVED with the point it stalled at, which is an honest "could not" and
+# never a "cannot" — the solver has been wrong in that direction twice already.
+#
+# Exit status: 0 every level solved, 1 at least one did not, 2 bad usage.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+[[ $# -ge 1 ]] || { echo "usage: bin/solve <level.json> [more.json ...] [--save <dir|file>] [--jobs N] [--time SECONDS]" >&2; exit 2; }
+exec "$ROOT/node_modules/.bin/tsx" "$ROOT/bin/_solve.ts" "$@"

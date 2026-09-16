@@ -66,6 +66,7 @@ add a script rather than running an ad-hoc command.
 | `bin/level-export` | Writes the built-in levels out to `levels/test01.json` and `levels/test02-bowl.json`. |
 | `bin/level-check` | Validates a hand-authored level JSON, prints its two hashes, and **warns about straight runs too coarse to ride smoothly**. |
 | `bin/level-drive` | Drives a level headlessly with a scripted rider and reports whether every apple and the flower can actually be reached. `--save <path>` writes the pilot's best run as a standard replay file — a trailing `/` writes one per level into a directory. The saved file is re-verified before it is written, and loads in the client with `L`. |
+| `bin/solve` | **Searches for a run that completes a level, proves it, and scores how hard it was.** A best-first search over macro-actions — held input masks for tenths of a second — through `advance(mask)`, so anything it finds is expressible as a replay. Reports completability, the winning apple order, a difficulty score measured from the search rather than from level statistics, and with `--save` a verified replay file you can watch. `--jobs N` solves several levels at once on worker threads. Not a CI tool: minutes per hard level. See *The solver* below. |
 | `bin/spec` | **Changes the bike from a terminal while somebody rides it.** Writes `data/spec.json`; the client picks it up within ~2 s and says what moved. |
 | `bin/replay` | **Re-simulates an exported replay file** and reports identity, hash-chain verification and a diagnostic pass. This is what turns "sometimes it gets weird" into a reproducible artifact. |
 | `bin/air` | Measures jump height and airtime off a fixed synthetic feature, per bike, in metres. Turns "it should catch more air" into a number. |
@@ -1773,6 +1774,287 @@ the frame it diverges. Goldens land when the spec stops moving.
 
 Both rates are baked into every replay ever recorded.
 
+## The solver
+
+`bin/level-drive` is a scripted rider — throttle while a wheel is down, lean into
+the face — and the plan calls it *"a lower bound, not a proof"*. It duly reported
+**13-reservoir, 15-feather and 17-backswing as uncompletable**, which nobody
+believed: the pass/fail pattern across the set looked like the pilot's
+brittleness rather than a physics wall.
+
+`bin/solve` is the real answer. It searches the deterministic sim for a run that
+collects every apple and reaches the flower, and it either hands you a verified
+replay you can watch or tells you exactly where it got stuck.
+
+```
+bin/solve levels/13-reservoir.json --save /tmp/
+bin/solve levels/*.json --jobs 7 --time 1500 --json /tmp/solved.json
+```
+
+All three turned out to be fine and the pilot was simply too weak — 13-reservoir
+is two jumps of 8 m and 12 m over pits with overhanging lips, 15-feather wants
+14.6 m/s carried through a fast section, and 17-backswing is a 909 m route that
+doubles back twice. The solver rides all three and the replays are in `replays/`.
+
+### What it searches over
+
+**Macro-actions, not per-frame masks.** Five buttons at 128 Hz is 32 branches per
+input frame and hopeless. People hold inputs for tenths of a second, so the
+search branches over *(held mask, duration)* pairs: nine held combinations —
+lean-left and lean-right together are a no-op in the sim, so that pair is absent
+rather than wasted — four of them with a flip on the first frame, each held for
+2, 6, 16 or 40 input frames. The durations are **nested**, so one rollout of the
+longest emits all four children at its checkpoints: four nodes for the price of
+one.
+
+Both ends of that list are load-bearing and they pull against each other. The
+short end decides what can be **timed**: with a 3-frame floor the search could
+not clear the 8 m gap on 13-reservoir and would have agreed with
+`bin/level-drive`; with a 2-frame floor it clears it. The long end decides how
+far a node **reaches**: capping at 24 frames made the search cover ground so
+slowly that 09-runaway — a 285 m level it solves in eight seconds — stopped
+finishing at all inside two and a half minutes.
+
+**`advance(mask)` is the only way time moves.** `stepTick` is never reached past
+the sim's own door. That is what structurally guarantees every trajectory the
+search can find is expressible as a replay — give a solver raw ticks and it
+eventually finds a run no human input stream can reproduce, and you discover
+that when you try to save it. `search.test.ts` asserts the property rather than
+trusting the comment: the mask stream reconstructed from a node, re-simulated
+from scratch, reproduces that node's state hash exactly.
+
+### Why there is no beam
+
+Two earlier attempts at this are on the record and both failed the same way:
+
+- *"A coarse dedupe grid collapsed the frontier onto 'do nothing' and it never
+  left the start line."*
+- *"A top-N-by-x beam filled with the fastest states, which all crashed into the
+  same wall and made passable terrain look impassable."*
+
+Both are one mistake: **selection pressure on a single scalar destroys the
+diversity a search needs.** So there is no beam here and no truncation at all.
+The frontier is a priority queue, and the only thing ever discarded is a node
+another node already dominates *in the same state cell* — where a cell is
+position, velocity, chassis attitude, rider-arm attitude, contact state, facing
+and the set of apples collected. Two states share a cell only when they are
+genuinely the same situation; a slow one and a fast one never do.
+
+The key is one integer rather than a string because the search computes millions
+of them, and the product of the ranges is checked against 2^52 at setup so the
+arithmetic stays exact.
+
+### Progress is not x-position
+
+It is distance along a *route*, and the route is a choice.
+
+**The map.** `field.ts` builds a uniform occupancy grid over the level with a
+clearance value per cell, and a geodesic distance field per apple and for the
+flower. Straight-line distance is worse than useless in a cave: an apple three
+metres away through a metre of rock reads as nearly reached, and a heuristic
+that says so drives the search into the rock and keeps it there.
+
+**Apple order** is a depth-first search over "which apple next", nearest-geodesic
+first, with backtracking and with failures memoised on the arrival node — without
+that memo the backtracking walks straight back into work it has already done, and
+on 13-reservoir it spent the same 45 000 expansions failing at the same apple
+three times over.
+
+**How hard to try** is a ladder of strategies, and the ladder is a record of what
+was measured rather than a design:
+
+| | what it does | why |
+|---|---|---|
+| `whole` | one search over the leg, greedy (h×1.7) | cheap, and enough for most legs |
+| `carry` | h×1.2 plus **momentum credit** | the one that clears gaps |
+| `patient` | h×1.08, big budget | for legs where greed threw away the run-up |
+| `segmented` | the leg cut into 14 m pieces | precision at one specific obstacle |
+
+**Momentum credit is the interesting one.** A gap that has to be cleared at a
+particular speed is a question about the *run-up*, and both of the obvious
+priorities get it wrong: a greedy weight prefers the state nearer the far lip to
+the state that will still be moving when it arrives, and plain Dijkstra explores
+every way of being slow first. Crediting closing speed — how fast a node is
+eating route distance, measured against its own parent — says "keep carrying
+speed" in the only currency a frontier understands. Measured on 13-reservoir,
+whose two pits are 8 m and 12 m across:
+
+| | first pit | second pit |
+|---|---|---|
+| greedy (h×1.7) | 117 000 expansions | never |
+| Dijkstra-ish (h×1.08) | 13 500 expansions | never |
+| **momentum (h×1.2, +20)** | **8 600 expansions** | **20 700 expansions** |
+
+Segmenting a leg into fixed distance thresholds was the *first* thing tried and
+it was a mistake as a default. It does what it promises — the hard bit gets a
+fresh dedupe archive and a full budget instead of arriving at a saturated one —
+but every segment boundary is a place the search stops, and a bike handed
+forward through six of them has been asked six times to arrive rather than to
+keep going. Across the set it cost more levels than it won: 03-mind-your-head
+solves whole and does not solve segmented at all. It stays last on the ladder
+because the thing it is good at is exactly what the first three are bad at.
+
+### Reaching an apple is not the same as still riding
+
+The first version reported a level uncompletable for a reason worth writing
+down. Pickup tests the head, the chassis and both wheels, so the fastest way to
+touch an apple a metre off the floor turns out to be **the rider's head on the
+way round a backflip**. The search duly "reached" it, handed the next leg four
+arrival states that were each a tenth of a second from planting the head, and
+every one died within two expansions. The frontier emptied and the level was
+declared impossible.
+
+So a goal only counts if some simple continuation survives it — any single held
+mask, for 40 input frames. It does not have to be the continuation that gets
+used; this is a viability filter, not a plan. It is also a **preference and not a
+veto**: a search that finds only goals nothing simple survives returns those
+rather than reporting failure, because a veto here is how a low-ceiling level
+becomes unsolvable — every arrival under a roof fails a probe that does not know
+the one input that gets you out.
+
+### When the map is wrong, stop believing it
+
+The occupancy grid is deliberately optimistic. It answers "does a disc fit
+here", which is the right question for a bike that can be anywhere in the air
+and the wrong one for "can a bike *get* here" — so it will happily route
+straight up a three-metre wall, because there is air above the wall.
+
+On 17-backswing that costs the level. A 3 m block two metres wide sits at the
+end of the start platform; the apple behind it is 31 m away through the block
+and 200 m away the long way round, so every strategy spends its whole budget
+failing to climb it. No amount of searching finds the real route while the
+heuristic is pointing at the wall.
+
+So when every strategy stalls in the same place, the solver walks *downhill on
+the distance field* from the stall point — which is exactly the route the
+heuristic was pointing at — blocks a corridor along it, recomputes that target's
+field and tries again. It is the search correcting the map with what it learned.
+Blocking the stall point alone does not work, and the failure is instructive: the
+bike stalls standing on the platform *next to* the wall, so blocking where the
+bike is blocks the platform, the field re-routes half a metre over, and aims at
+the same wall again. What has to stop being a route is the route.
+
+A re-route is refused if it would make the target unreachable, which is the
+failure mode that would turn an honest "could not" into a false "cannot".
+
+### The answer on the twenty levels
+
+**19 of 20, and all three of the levels `bin/level-drive` called uncompletable
+are completable.** The pilot was simply too weak. Every run below is a real
+input stream that re-simulates from scratch to a finished, living bike, and is
+saved beside this README in `replays/` as `<level>.solve.replay.json` — watch
+one with `bin/replay replays/13-reservoir.solve.replay.json` or load it in the
+client with `L`.
+
+Measured on one box, seven workers, a 20-minute cap per level; `search` is that
+level's own wall clock, not the wall clock of the set.
+
+| level | | time | score | precision | clearance | effort | lethality | head clearance | search |
+|---|---|---|---|---|---|---|---|---|---|
+| 03 Mind Your Head | ok | 35.0 s | **56** | 0.07 | 0.98 | 0.76 | 1.00 | 0.014 m | 113 s |
+| 08 Needle | ok | 27.7 s | **55** | 0.20 | 1.00 | 0.54 | 0.89 | 0.001 m | 48 s |
+| 07 The Chimney | ok | 47.1 s | **51** | 0.04 | 0.94 | 1.00 | 0.41 | 0.041 m | 841 s |
+| 06 Two Doors | ok | 68.3 s | **48** | 0.04 | 0.93 | 0.56 | 0.90 | 0.049 m | 58 s |
+| 12 Whoops | ok | 62.6 s | **48** | 0.03 | 0.94 | 0.69 | 0.73 | 0.040 m | 156 s |
+| 20 Close Quarters | ok | 108.9 s | **43** | 0.07 | 0.95 | 0.57 | 0.50 | 0.037 m | 155 s |
+| 10 Cathedral | ok | 96.3 s | **42** | 0.01 | 0.87 | 0.70 | 0.41 | 0.089 m | 296 s |
+| 05 Airtime | ok | 25.5 s | **41** | 0.01 | 0.91 | 0.30 | 1.00 | 0.061 m | 5 s |
+| 14 Kicker | ok | 73.0 s | **39** | 0.02 | 0.81 | 0.63 | 0.44 | 0.133 m | 184 s |
+| 18 Double | ok | 38.3 s | **39** | 0.03 | 0.77 | 0.45 | 0.74 | 0.162 m | 17 s |
+| 19 Low Roof | ok | 93.7 s | **39** | 0.03 | 0.86 | 0.37 | 0.80 | 0.097 m | 23 s |
+| 04 Switchback | ok | 72.6 s | **36** | 0.04 | 0.52 | 0.62 | 0.58 | 0.333 m | 109 s |
+| 17 Backswing | ok | 113.3 s | **36** | 0.01 | 0.96 | 0.61 | 0.11 | 0.029 m | 164 s |
+| 09 Runaway | ok | 45.3 s | **35** | 0.03 | 0.51 | 0.50 | 0.73 | 0.346 m | 63 s |
+| 13 Reservoir | ok | 53.1 s | **35** | 0.02 | 0.61 | 0.66 | 0.35 | 0.270 m | 119 s |
+| 11 Downhill | ok | 27.2 s | **33** | 0.00 | 0.61 | 0.35 | 0.77 | 0.274 m | 9 s |
+| 15 Feather | ok | 44.6 s | **31** | 0.00 | 0.71 | 0.44 | 0.38 | 0.204 m | 27 s |
+| 01 First Light | ok | 13.7 s | **20** | 0.01 | 0.08 | 0.34 | 0.65 | 0.645 m | 4 s |
+| 02 The Long Climb | ok | 17.6 s | **8** | 0.00 | 0.15 | 0.15 | 0.10 | 0.593 m | 2 s |
+| 16 One Way | **unsolved** | — | — | | | | | | 1200 s |
+
+The ordering reads right. The two tutorials are at the bottom with room to
+spare; the top of the table is the low-roof set — 03, 08, 07 — where the head
+passes within a centimetre or two of rock and a one-frame slip kills you a fifth
+of the time on 08-needle. 02-the-long-climb scoring 8 is honest rather than
+flattering: it is a wide corridor with a gentle climb and the solver walks it in
+593 expansions.
+
+**Times are not competitive times.** The solver finds *a* run, not a fast one —
+a weighted A* on frames stops at the first thing that works. 17-backswing's
+113 s is a lap of a level a person would ride in well under a minute. Optimising
+the found line is a separate job and a much easier one, because it starts from a
+solution.
+
+**16-one-way is the one it cannot do.** It gets within 8 m of apple 6, having
+collected five. The level's name is the diagnosis: apples 3 and 4 sit six metres
+apart vertically at the same x, and the drop between them is one-way, so the
+route has to commit to the right hole on the way past and the solver keeps
+arriving at the wrong one. That is a "could not", not a "cannot" — `bin/level-drive`'s
+scripted navigator completes it, so a run certainly exists.
+
+### Where it is weak
+
+- **Failure is never proof.** Every unsolved report is "this search, with this
+  budget, could not". The tool has been wrong in that direction twice already
+  in its own short history — once for a three-frame minimum macro duration, once
+  for an apple order that stranded an apple on an upper shelf — and both times
+  the level was fine.
+- **It is sensitive to the macro alphabet.** One entry in `DURATIONS` is the
+  difference between 13-reservoir being completable and not. A level needing a
+  take-off timed finer than 16 ms would be reported uncompletable and the report
+  would be wrong.
+- **The map does not know about gravity.** The occupancy grid answers "does a
+  disc fit", so it routes up walls. The re-route mechanism repairs that when the
+  search proves it wrong, but it repairs it *slowly*, a corridor at a time, and
+  each round costs a search.
+- **Apple order is a greedy DFS with a tier rule, not a solver.** It tries three
+  targets per step, prefers apples at or above the bike's own height, and
+  memoises failures. That is enough for these twenty and it is not a route
+  optimiser; a level with a genuinely non-obvious order could defeat it.
+- **Cost is real.** One to four minutes for a typical level on one core, 14
+  minutes for the worst of these twenty, ~60 minutes of CPU for the set. This is
+  a tool you run over a level set or a generator batch, not one you put in CI.
+- **Memory grows with the search.** A hard level holds 300-600 MB of nodes by
+  the end, and nothing is reclaimed within a level, because the mask chain back
+  to the start has to stay walkable.
+
+### Difficulty, measured from the search
+
+A difficulty number must come from what the search *experienced*. Apple count,
+level length and polygon count are properties of a file; they say nothing about
+whether a level is hard, and a generator optimising against them would learn to
+make long boring levels.
+
+| component | weight | what it measures |
+|---|---|---|
+| **precision** | 0.40 | of 200 one-frame nudges to the winning stream, the fraction that **kill** within 1.5 s |
+| **effort** | 0.25 | node expansions per metre of route, logged |
+| **clearance** | 0.20 | the smallest gap between the rider's head and rock anywhere on the line |
+| **lethality** | 0.15 | deaths per expansion during the search |
+
+The precision measure is the one worth arguing about, because the obvious
+version of it is wrong. "Does the perturbed stream still finish the level" was
+tried first and is not a difficulty measure at all: a deterministic bike is
+chaotic, so nudging one boundary near the start makes everything downstream a
+different run, and the finish rate mostly reports how *long* the stream is. On
+that measure 01-first-light scored 0.89, above levels nobody finds hard. Death
+within a bounded horizon of the nudge is local, is comparable between a
+14-second level and a 100-second one, and is what a player actually feels: on a
+hard level a slip kills you, on an easy one it just means you come up short and
+go round again. The whole-run finish rate is still reported, because it is
+interesting, but it is not weighted.
+
+**What this is not.** It is not a claim about how hard a *human* finds a level —
+nothing here models learning, reading a level, or nerve. It measures how narrow
+the successful corridor is and how much work it took to find, which is what a
+generator needs to filter on and what an editor can show live. A level whose
+solution only a solver would find scores high and may simply be bad; the number
+is a flag to go and look, not a verdict.
+
+The `effort` component also depends on the solver's own parameters, so scores
+are comparable **within a run** and not across solver versions. `precision`,
+`clearance` and the raw measurements behind them do not have that problem.
+
 ## Level format
 
 JSON, hand-writable, **y-up** (gravity is `-y`; the renderer flips). See
@@ -2011,6 +2293,15 @@ leaderboard *forks* by rev rather than resetting.
 ```
 index.html          Vite entry at the repo root
 src/sim/            the deterministic core — imports NOTHING
+src/solver/         the headless solver. field.ts is the level as a MAP
+                    (occupancy grid, clearance, geodesic distance fields);
+                    search.ts is the macro-action best-first search and its
+                    dedupe archive; solve.ts is the apple order and the
+                    route-progress segmentation; difficulty.ts turns what the
+                    search experienced into a number; pack.ts is a SimState as
+                    flat doubles. It imports src/sim and nothing imports it, so
+                    the sim's isolation rule is untouched and no search ever
+                    reaches the client bundle.
 src/client/         canvas renderer, input, tuning panel, record-and-replay
                     camera.ts is the play framing; overview.ts is the wide view,
                     the freeze and the opening peek; markers.ts is the off-screen
@@ -2050,8 +2341,10 @@ levels/             exported level JSON
 `_board.ts` and `_submit.ts` (the leaderboard tools),
 `_smoke.mjs` (the headless Chrome driver), `_audiobench.mjs`, `_sag.ts` (the coarse-run metric,
 shared by `bin/level-check` and `src/sim/curvelevel.test.ts`), `_pilot.ts` (the
-scripted rider), `_slope.ts`, `_air.ts` and `_dive.ts` (the measurement rigs),
-and `_replay.ts`. The rigs build their own synthetic levels rather than using
+scripted rider), `_solve.ts`, `_solve-run.ts` and `_solve-worker.ts` (the
+solver's CLI, the one-level-and-score routine both the in-process and worker
+paths call, and the worker itself), `_slope.ts`, `_air.ts` and `_dive.ts` (the
+measurement rigs), and `_replay.ts`. The rigs build their own synthetic levels rather than using
 anything in `levels/`: a measuring instrument needs one feature at a known place
 with known dimensions, which is the opposite of what a level is for.
 
