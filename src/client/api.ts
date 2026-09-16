@@ -60,9 +60,17 @@ export interface SubmitErr {
   reason: string;
 }
 
-export type ApiResult<T> = { ok: true; value: T } | { ok: false; error: string; offline: boolean };
+/**
+ * `code` is the server's own `RejectCode` when it refused — see
+ * src/server/runs.ts. It is carried separately from `error` rather than folded
+ * into it because the results panel maps the code to plain words AND to what to
+ * do about it, and matching on the prose would break the day somebody rewords a
+ * refusal. It is absent for a network failure, which is what `offline` is for.
+ */
+export type ApiError = { ok: false; error: string; offline: boolean; code?: string };
+export type ApiResult<T> = { ok: true; value: T } | ApiError;
 
-const offline = (e: unknown): { ok: false; error: string; offline: boolean } => ({
+const offline = (e: unknown): ApiError => ({
   ok: false,
   error: e instanceof Error ? e.message : String(e),
   offline: true,
@@ -97,8 +105,13 @@ async function call<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> 
     }
   }
   if (!res.ok) {
-    const r = body as { reason?: string; error?: string } | null;
-    return { ok: false, error: r?.reason ?? r?.error ?? `${path} answered ${res.status}`, offline: false };
+    const r = body as { reason?: string; error?: string; code?: string } | null;
+    return {
+      ok: false,
+      error: r?.reason ?? r?.error ?? `${path} answered ${res.status}`,
+      offline: false,
+      ...(typeof r?.code === 'string' ? { code: r.code } : {}),
+    };
   }
   return { ok: true, value: body as T };
 }

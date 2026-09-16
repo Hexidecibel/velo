@@ -29,10 +29,13 @@ import { downloadReplay, onReplayDropped, pickReplay } from './replayio.ts';
 import { clearStoredSpec, loadBests, loadChoice, loadFlag, loadLastLevel, loadStoredSpec, recordBest, saveChoice, saveFlag, saveLastLevel, saveStoredSpec } from './store.ts';
 import { fetchBoard, fetchReplay, submitRun } from './api.ts';
 import type { BoardEntry, BoardPayload, Category } from './api.ts';
-import { chooseGhost, createGhost, ghostCompat, GHOST_KINDS, GHOST_LABELS } from './ghost.ts';
-import type { Ghost, GhostKind } from './ghost.ts';
+import { canWatchLine, chooseGhost, createGhost, ghostCompat, ghostNoteFor, GHOST_KINDS, GHOST_LABELS } from './ghost.ts';
+import type { Ghost, GhostKind, Standing } from './ghost.ts';
 import { hasName, loadIdentity, setName } from './identity.ts';
 import { createBoardUi } from './boardui.ts';
+import { createResultsUi } from './resultsui.ts';
+import { actionForKey, buildResults } from './results.ts';
+import type { ActionId, ResultsModel, SubmitState } from './results.ts';
 import { parseReplayFile } from '@/sim/replay.ts';
 import { createLiveTune } from './livetune.ts';
 import { renderArt } from './artrender.ts';
@@ -51,6 +54,7 @@ const levelbarRoot = document.getElementById('levelbar') as HTMLElement;
 const toastRoot = document.getElementById('toast') as HTMLElement;
 const legendRoot = document.getElementById('legend') as HTMLElement;
 const boardRoot = document.getElementById('board') as HTMLElement;
+const resultsRoot = document.getElementById('results') as HTMLElement;
 const ctx = canvas.getContext('2d', { alpha: false }) as CanvasRenderingContext2D;
 
 // --- which level ------------------------------------------------------------
@@ -142,7 +146,23 @@ let boardCategory = loadChoice<Category>('boardCategory', ['human', 'tas'], 'hum
 // makes you ride harder, and it degrades to your own PB when nobody is ahead.
 let ghostKind = loadChoice<GhostKind>('ghost', GHOST_KINDS, 'above');
 let boardVisible = loadFlag('board', true);
+/** The board on SCREEN — whichever category the player has selected. */
 let board: BoardPayload | null = null;
+/**
+ * The HUMAN board, always fetched and never optional.
+ *
+ * Kept separately from `board` because the two answer different questions and
+ * conflating them is exactly the bug this split fixes: the board on screen is
+ * whatever category you asked to look at, and the ghost is ALWAYS human. Before
+ * this, opening the TAS category quietly changed which line rode beside you.
+ */
+let humanBoard: BoardPayload | null = null;
+/**
+ * The TAS board. Its TIMES are shown; its LINES are gated on having finished the
+ * level yourself. See the note above `chooseGhost` for why those are different
+ * things.
+ */
+let tasBoard: BoardPayload | null = null;
 let boardStatus = '';
 let boardStatusKind: 'ok' | 'warn' | 'bad' | '' = '';
 let ghostNote = '';
@@ -163,6 +183,35 @@ let pendingSubmit: Replay | null = null;
 let refusedSpec = '';
 /** Guards against a slow fetch for level A landing after you switched to B. */
 let boardToken = 0;
+
+/**
+ * The end-of-level screen's state. Non-null exactly while the panel is up, and
+ * it goes up on a FINISH and never on a death — dying is the common case, it
+ * already has instant restart, and putting a panel in front of that would ruin
+ * the loop this whole game is.
+ */
+interface ResultsState {
+  replay: Replay;
+  levelName: string;
+  simHash: string;
+  applesTotal: number;
+  /**
+   * The local best that stood BEFORE this run. Captured in `finishRun` ahead of
+   * `recordBest`, which overwrites in place — read after it, every run compares
+   * against itself and looks like a tie.
+   */
+  previousBestTicks: number | null;
+  submit: SubmitState;
+}
+let results: ResultsState | null = null;
+/**
+ * The model the panel last drew.
+ *
+ * Kept so the key handler matches on exactly the actions that are PRINTED — an
+ * action list computed twice is an action list that can disagree with itself,
+ * and "C did nothing and there was no C on screen" is the shape that bug takes.
+ */
+let resultsModel: ResultsModel | null = null;
 
 const cam = createCamera(cloneCamera(DEFAULT_CAMERA));
 cam.snap({ x: level.start.x, y: level.start.y, vx: 0, vy: 0 });
@@ -251,6 +300,10 @@ const input = createInput();
 
 function restart(keepReplay = true): void {
   if (!keepReplay) lastReplay = null;
+  // Instant, and first. R is the key this game is played with and the results
+  // screen must never be felt as something standing between the line and the
+  // next attempt.
+  closeResults();
   // Every tail cut, and the model's idea of the run forgotten, BEFORE the sim
   // moves. A death crunch still ringing over the first second of the next
   // attempt is exactly the sound a die-and-retry loop cannot afford.
@@ -302,6 +355,8 @@ function setLevel(next: LevelEntry, note = ''): void {
   // there is never a frame where last level's ghost is drawn on this one.
   dropGhost('');
   board = null;
+  humanBoard = null;
+  tasBoard = null;
   refreshBoard();
 }
 
@@ -423,6 +478,9 @@ function finishRun(): void {
   if (!r) return;
   lastReplay = r;
   attempts.add(r);
+  // READ BEFORE `recordBest` WRITES. It overwrites the stored best in place, so
+  // a comparison taken afterwards is a run against itself.
+  const previousBestTicks = bests[level.simHash] ?? null;
   if (r.finished && recordBest(level.simHash, r.timeTicks)) {
     bests = loadBests();
     levelBar.update(entry.id, bests);
@@ -430,6 +488,23 @@ function finishRun(): void {
   } else {
     replayNote = 'run banked — T replays it, E exports it as a file';
   }
+  // THE RESULTS SCREEN, ON A FINISH AND NOTHING ELSE.
+  //
+  // Opened before the submission is attempted, not after, because the summary is
+  // complete without the network and the network must never be something the
+  // player waits through. Posting fills its own line in afterwards.
+  if (r.finished) {
+    results = {
+      replay: r,
+      levelName: level.name,
+      simHash: level.simHash,
+      applesTotal: level.apples.length,
+      previousBestTicks,
+      submit: { kind: 'posting' },
+    };
+    syncResults();
+  }
+
   // Post it. Only a finish goes on a board, and `submitRunIfPossible` is the
   // one that decides that — not this line — so that "what gets posted" lives in
   // one place beside the reasons it might not.
@@ -461,6 +536,20 @@ function boardStatusSet(text: string, kind: 'ok' | 'warn' | 'bad' | '' = 'warn')
   syncBoardUi();
 }
 
+/**
+ * Have you finished THIS level on THIS rev?
+ *
+ * Two independent witnesses, either of which is sufficient: a local best (which
+ * `store.ts` keys by rev, so a rev bump retires it automatically) or a human
+ * board entry of your own. The local one is what makes the gate work with no
+ * server at all; the board one is what makes it survive clearing site data.
+ *
+ * It gates one thing: whether a TAS LINE may be watched. Never a time.
+ */
+function completedThisLevel(): boolean {
+  return bests[level.simHash] !== undefined || humanBoard?.you != null;
+}
+
 function syncBoardUi(): void {
   boardUi.update({
     visible: boardVisible,
@@ -472,6 +561,7 @@ function syncBoardUi(): void {
     status: boardStatus,
     statusKind: boardStatusKind,
     ghostNote,
+    completed: completedThisLevel(),
   });
 }
 
@@ -492,22 +582,55 @@ function dropGhost(note: string): void {
 function refreshBoard(): void {
   const token = ++boardToken;
   const forLevel = level.simHash;
-  fetchBoard(forLevel, { category: boardCategory, playerId: identity.playerId }).then((r) => {
+  const want = boardCategory;
+  // BOTH boards, always, and the human one is not optional.
+  //
+  // The ghost is chosen from the human board no matter which board is on screen,
+  // so the human board has to be in hand even while somebody is looking at the
+  // TAS times. Two small GETs against a loopback server; the alternative is a
+  // ghost that changes because you glanced at another tab of the same panel.
+  Promise.all([
+    fetchBoard(forLevel, { category: 'human', playerId: identity.playerId }),
+    want === 'human'
+      ? Promise.resolve(null)
+      : fetchBoard(forLevel, { category: want, playerId: identity.playerId }),
+    // The TAS board is fetched for its TIMES — shown on the results screen and
+    // in its own category — never for its lines.
+    want === 'tas' ? Promise.resolve(null) : fetchBoard(forLevel, { category: 'tas', playerId: identity.playerId }),
+  ]).then(([h, other, tas]) => {
     if (token !== boardToken || forLevel !== level.simHash) return;
-    if (!r.ok) {
+    if (!h.ok) {
       board = null;
+      humanBoard = null;
+      tasBoard = null;
       boardStatusSet(
-        r.offline
+        h.offline
           ? 'leaderboard offline — the game works fine without it; times are banked locally'
-          : r.error,
-        r.offline ? 'warn' : 'bad',
+          : h.error,
+        h.offline ? 'warn' : 'bad',
       );
+      // The panel still says everything it can say without a server.
+      syncResults();
       return;
     }
-    board = r.value;
-    if (boardStatusKind !== 'ok') boardStatusSet('', '');
+    humanBoard = h.value;
+    const shown = want === 'human' ? h : other;
+    board = shown && shown.ok ? shown.value : null;
+    if (want === 'tas') tasBoard = board;
+    else if (tas && tas.ok) tasBoard = tas.value;
+    // The human half landing while the SHOWN half did not is rare and it is
+    // also the one combination that would otherwise sit on "loading…" forever,
+    // because the panel reads emptiness as not-yet-arrived.
+    if (!board && shown && !shown.ok) boardStatusSet(shown.error, shown.offline ? 'warn' : 'bad');
+    else if (boardStatusKind !== 'ok') boardStatusSet('', '');
     ensureGhost();
+    syncResults();
   });
+}
+
+/** The human board reduced to what `chooseGhost` reads. */
+function standingOf(b: BoardPayload | null): Standing | null {
+  return b ? { above: b.above, you: b.you, best: b.best, rank: b.rank, total: b.total } : null;
 }
 
 /**
@@ -517,21 +640,15 @@ function refreshBoard(): void {
  * being rebuilt (and therefore restarted) under a player mid-run.
  */
 function ensureGhost(): void {
-  if (!board) return;
-  const pick = chooseGhost(ghostKind, {
-    above: board.above,
-    you: board.you,
-    best: board.best,
-    rank: board.rank,
-  });
+  if (!humanBoard) return;
+  // THE HUMAN BOARD, WHATEVER IS ON SCREEN. `chooseGhost` is handed the TAS
+  // standing too and pointedly never reads it — the parameter is there so the
+  // rule is stated where it is enforced and so a test can assert that a level
+  // with a TAS entry and no human entry produces NO ghost.
+  const boards = { human: standingOf(humanBoard), tas: standingOf(tasBoard) };
+  const pick = chooseGhost(ghostKind, boards);
   if (!pick.entry) {
-    dropGhost(
-      ghostKind === 'off'
-        ? ''
-        : board.total === 0
-          ? 'no ghost yet — nobody has finished this level'
-          : `no ${GHOST_LABELS[ghostKind]} to race yet`,
-    );
+    dropGhost(ghostNoteFor(ghostKind, pick, boards));
     syncBoardUi();
     return;
   }
@@ -620,19 +737,30 @@ function setCategory(c: Category): void {
 function submitRunIfPossible(r: Replay): void {
   if (!r.finished) return;
   if (r.specHash === refusedSpec) {
+    setSubmitState(r, { kind: 'not-posted' });
     boardStatusSet('not posted: this bike is not the shipped one (live tune or the tuning panel)', 'warn');
     return;
   }
   if (!hasName(identity)) {
     pendingSubmit = r;
+    setSubmitState(r, { kind: 'needs-name' });
     boardStatusSet('pick a name above and this run gets posted', 'warn');
     return;
   }
   pendingSubmit = null;
+  setSubmitState(r, { kind: 'posting' });
   boardStatusSet('posting…', '');
   submitRun({ playerId: identity.playerId, name: identity.name, category: 'human', replay: r }).then((res) => {
     if (!res.ok) {
-      if (res.error.includes('shipped bike')) refusedSpec = r.specHash;
+      // Latch on the CODE now that the wire carries one. Matching on the prose
+      // worked only for as long as nobody reworded the refusal.
+      if (res.code === 'unknown-bike' || res.error.includes('shipped bike')) refusedSpec = r.specHash;
+      setSubmitState(
+        r,
+        res.offline
+          ? { kind: 'offline', reason: res.error }
+          : { kind: 'refused', code: res.code, reason: res.error },
+      );
       boardStatusSet(
         res.offline ? 'leaderboard offline — the time is yours locally, it just did not post' : res.error,
         res.offline ? 'warn' : 'bad',
@@ -640,6 +768,12 @@ function submitRunIfPossible(r: Replay): void {
       return;
     }
     const v = res.value;
+    setSubmitState(r, {
+      kind: 'posted',
+      rank: v.placement.rank,
+      total: v.placement.total,
+      pb: v.placement.pb,
+    });
     boardStatusSet(
       v.placement.pb
         ? `posted: #${v.placement.rank} of ${v.placement.total} at ${v.timeSeconds.toFixed(3)}s` +
@@ -653,6 +787,19 @@ function submitRunIfPossible(r: Replay): void {
   });
 }
 
+/**
+ * Record where the submission got to, for the results panel.
+ *
+ * Guarded on the replay's identity rather than applied blindly: a slow POST for
+ * the run you just did must not overwrite the panel of the NEXT run, which on a
+ * die-and-retry loop can be seconds later.
+ */
+function setSubmitState(forReplay: Replay, state: SubmitState): void {
+  if (!results || results.replay !== forReplay) return;
+  results.submit = state;
+  syncResults();
+}
+
 function onNameChosen(raw: string): void {
   const clean = setName(raw);
   identity.name = clean;
@@ -664,8 +811,22 @@ function onNameChosen(raw: string): void {
   }
 }
 
-/** Watch one board entry's run from the start, with the normal playback path. */
+/**
+ * Watch one board entry's run from the start, with the normal playback path.
+ *
+ * The category gate is enforced HERE as well as in the panel that offers the
+ * button, because "the UI does not show it" is a presentation fact and this is
+ * the function that actually fetches somebody's route.
+ */
 function watchEntry(e: BoardEntry): void {
+  if (!canWatchLine(e.category, completedThisLevel())) {
+    boardStatusSet(
+      'that is a machine run. Its time is on the board; its line stays hidden until you finish this ' +
+        'level yourself — a solver picked the apple order by searching for it, and route choice is the level.',
+      'warn',
+    );
+    return;
+  }
   fetchReplay(e.replayId, level.simHash).then((r) => {
     if (!r.ok) {
       boardStatusSet(`could not load that run: ${r.error}`, 'bad');
@@ -677,6 +838,135 @@ function watchEntry(e: BoardEntry): void {
       boardStatusSet(`that run did not parse: ${err instanceof Error ? err.message : String(err)}`, 'bad');
     }
   });
+}
+
+// --- the end-of-level screen -------------------------------------------------
+//
+// THE RULE IT EXISTS UNDER: the fastest path back into the game is the default,
+// and dismissal is instant. Enter goes onward, R retries exactly as R does
+// everywhere else in this game, Escape closes. Nothing here animates in and
+// nothing here is waited on — the summary is complete on the frame the run ends,
+// with or without a server, and the posting line fills itself in afterwards.
+//
+// It is shown on a FINISH and never on a death. That is decided in `finishRun`.
+
+/** How many board rows the panel prints before it starts eliding. */
+const RESULTS_ROWS = 5;
+
+/** The level Enter goes to. Wraps, because a twenty-level list should. */
+function nextLevelEntry(): LevelEntry | null {
+  const playable = LEVELS.filter((l) => l.level !== null);
+  if (playable.length < 2) return null;
+  const i = playable.findIndex((l) => l.id === entry.id);
+  return playable[((i < 0 ? 0 : i) + 1) % playable.length];
+}
+
+/**
+ * The human entry whose line the panel offers to play — the one you are racing.
+ *
+ * It follows the ghost selector rather than inventing a second policy, so "watch
+ * the ghost" on this screen is the same run that was riding beside you.
+ */
+function resultsGhostEntry(): BoardEntry | null {
+  if (!humanBoard) return null;
+  const pick = chooseGhost(ghostKind === 'off' ? 'above' : ghostKind, {
+    human: standingOf(humanBoard),
+    tas: standingOf(tasBoard),
+  });
+  if (!pick.entry) return null;
+  return humanBoard.top.find((e) => e.replayId === pick.entry?.replayId)
+    ?? (humanBoard.above?.replayId === pick.entry.replayId ? humanBoard.above : null)
+    ?? (humanBoard.you?.replayId === pick.entry.replayId ? humanBoard.you : null)
+    ?? (humanBoard.best?.replayId === pick.entry.replayId ? humanBoard.best : null);
+}
+
+function syncResults(): void {
+  if (!results) return;
+  const next = nextLevelEntry();
+  const ghostEntry = resultsGhostEntry();
+  const tasTicks = tasBoard?.top[0]?.timeTicks ?? null;
+  resultsModel = buildResults({
+    levelName: results.levelName,
+    timeTicks: results.replay.timeTicks,
+    // A finish is only possible with `applesLeft === 0` (step.ts gates the
+    // flower on it), so a finished run took all of them by construction.
+    applesTaken: results.applesTotal,
+    applesTotal: results.applesTotal,
+    previousBestTicks: results.previousBestTicks,
+    submit: results.submit,
+    board: humanBoard,
+    tasTimeTicks: tasTicks,
+    // Always true in practice on this screen — you are reading it because you
+    // just finished — but computed rather than assumed, so the rule stays one
+    // rule and not a special case that drifts.
+    tasUnlocked: canWatchLine('tas', completedThisLevel()),
+    playerId: identity.playerId,
+    rowLimit: RESULTS_ROWS,
+    actions: {
+      nextLabel: next?.label ?? null,
+      canWatchRun: lastReplay !== null,
+      ghostName: ghostEntry?.name ?? null,
+      tasTimeTicks: tasTicks,
+      tasUnlocked: canWatchLine('tas', completedThisLevel()),
+    },
+  });
+  resultsUi.update(resultsModel);
+}
+
+function closeResults(): void {
+  if (!results) return;
+  results = null;
+  resultsModel = null;
+  resultsUi.hide();
+}
+
+function resultsAction(id: ActionId): void {
+  switch (id) {
+    case 'next': {
+      const next = nextLevelEntry();
+      closeResults();
+      if (next) setLevel(next);
+      break;
+    }
+    case 'retry':
+      // Exactly what R does everywhere else, and deliberately routed through the
+      // same function rather than reimplemented.
+      restart(false);
+      break;
+    case 'watchRun':
+      closeResults();
+      startPlayback();
+      break;
+    case 'watchGhost': {
+      const e = resultsGhostEntry();
+      closeResults();
+      if (e) watchEntry(e);
+      break;
+    }
+    case 'watchTas': {
+      const e = tasBoard?.top[0] ?? null;
+      closeResults();
+      if (e) watchEntry(e);
+      break;
+    }
+    case 'board':
+      // The fuller view. The results panel stays up: they are on opposite sides
+      // of the screen and B is a toggle everywhere else in the game.
+      boardVisible = true;
+      saveFlag('board', true);
+      syncBoardUi();
+      refreshBoard();
+      break;
+    case 'levels':
+      closeResults();
+      levelBar.focus();
+      break;
+    case 'dismiss':
+      closeResults();
+      break;
+    default:
+      break;
+  }
 }
 
 // --- replay files -----------------------------------------------------------
@@ -857,7 +1147,17 @@ function step(): void {
     if (scripted.at >= scripted.masks.length || sim.state.dead || sim.state.finished) {
       const s = scripted;
       scripted = null;
-      lastReplay = recorder.build(level, spec, sim);
+      // A scripted run that ENDED THE RUN goes through the same `finishRun` a
+      // played one does — which is what lets bin/smoke prove the end-of-level
+      // screen appears on a finish and stays away on a death, through the real
+      // bundle. A scripted run that merely ran out of masks did not end
+      // anything, so it only banks what was recorded.
+      if ((sim.state.dead || sim.state.finished) && !wasOver) {
+        finishRun();
+        wasOver = true;
+      } else {
+        lastReplay = recorder.build(level, spec, sim);
+      }
       s.done(lastReplay);
       return;
     }
@@ -1085,6 +1385,18 @@ const boardUi = createBoardUi(boardRoot, {
   onRefresh: () => refreshBoard(),
   onWatch: (e) => watchEntry(e),
 });
+
+// The end-of-level screen. Every row it draws comes off the HUMAN board, and
+// every action it offers goes through the same functions the keys do.
+const resultsUi = createResultsUi(resultsRoot, {
+  onAction: (id) => resultsAction(id),
+  onWatchRow: (replayId) => {
+    const e = humanBoard?.top.find((x) => x.replayId === replayId)
+      ?? (humanBoard?.you?.replayId === replayId ? humanBoard.you : null);
+    closeResults();
+    if (e) watchEntry(e);
+  },
+});
 // Sync the URL on boot as well as on every change, so that the address bar is a
 // shareable link to what is on screen even when the level came from the stored
 // preference rather than from the URL.
@@ -1184,6 +1496,21 @@ const loop = createLoop({ step, draw });
 input.onCommand((code) => {
   // Any key at all ends the opening peek.
   if (code !== 'Tab') overview.skipIntro();
+  // THE RESULTS SCREEN GETS FIRST REFUSAL, and only while it is up.
+  //
+  // It owns a small set of keys and prints every one of them on itself, which is
+  // what makes the mode honest: G is "watch the ghost" here and the collision
+  // debug view everywhere else, L is "level select" here and "load a replay"
+  // everywhere else. R is the exception that is not an exception — it is routed
+  // straight at `restart(false)`, so it behaves exactly as R does in play, which
+  // is the one binding this game cannot afford to make special.
+  if (resultsModel && resultsUi.visible) {
+    const act = actionForKey(code, resultsModel.actions);
+    if (act !== null) {
+      resultsAction(act);
+      return;
+    }
+  }
   switch (code) {
     case 'Tab':
       // HOLD to see the whole level. The sim is frozen while it is down, so
@@ -1313,6 +1640,10 @@ interface VeloWindow extends Window {
   },
   get ghostNote() {
     return ghostNote;
+  },
+  /** The end-of-level panel's model, or null while it is not up. */
+  get results() {
+    return resultsModel;
   },
   identity,
   refreshBoard,

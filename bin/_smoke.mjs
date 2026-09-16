@@ -547,6 +547,70 @@ try {
   }
   if (!lb.hudGhost) throw new Error('the HUD never named the ghost — a second bike with no label reads as a bug');
 
+  // --- the end-of-level screen, end to end ---------------------------------
+  //
+  // Two assertions, and the second is the one that protects the core loop: the
+  // panel appears on a FINISH, and it does not appear on a death. Dying is the
+  // common case in a die-and-retry game and it already has instant restart —
+  // a panel in front of that would be the single worst thing this feature could
+  // do — so "never on death" is checked rather than trusted.
+  //
+  // Driven with the fixture's own input stream, which is a real recorded finish
+  // on this level and on this bike (the ghost above is built from it, so it is
+  // already proven to reproduce here).
+  const rs = await evalIn(cdp, `
+    (async () => {
+      const decode = (str) => {
+        const out = [];
+        for (const part of str.split(',')) {
+          const star = part.indexOf('*');
+          const mask = Number(star < 0 ? part : part.slice(0, star));
+          const n = Number(star < 0 ? 1 : part.slice(star + 1));
+          for (let i = 0; i < n; i++) out.push(mask);
+        }
+        return out;
+      };
+      const panel = document.getElementById('results');
+      const shut = () => panel.classList.contains('hidden');
+
+      // A death: throttle held from the start line puts the head into the
+      // terrain on this level well inside 600 frames.
+      await window.velo.scriptRun(new Array(600).fill(1));
+      const death = { dead: window.velo.sim.state.dead, model: !!window.velo.results, hidden: shut() };
+
+      // A finish.
+      window.velo.restart(false);
+      const fin = await window.velo.scriptRun(decode(${JSON.stringify(fixture.inputs)}));
+      const model = window.velo.results;
+      const finish = {
+        finished: !!(fin && fin.finished),
+        hidden: shut(),
+        time: model && model.time,
+        actions: model ? model.actions.map((a) => a.id + ':' + a.key) : null,
+        text: (panel.textContent || '').slice(0, 400),
+      };
+
+      // Escape closes it, instantly and with nothing to wait through.
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', bubbles: true }));
+      const dismissed = { hidden: shut(), model: !!window.velo.results };
+      return { death, finish, dismissed };
+    })()
+  `);
+  console.log('    results: ' + JSON.stringify({ ...rs, finish: { ...rs.finish, text: undefined } }));
+  if (!rs.death.dead) throw new Error('the death run did not die — the check proves nothing');
+  if (!rs.death.hidden || rs.death.model) {
+    throw new Error('the results panel appeared on a DEATH — that is the one thing it must never do');
+  }
+  if (!rs.finish.finished) throw new Error('the fixture input stream did not finish the level in the browser');
+  if (rs.finish.hidden) throw new Error('the results panel did not appear on a finish');
+  if (!rs.finish.time || !rs.finish.text.includes(rs.finish.time)) {
+    throw new Error(`the panel did not print the time (${rs.finish.time})`);
+  }
+  if (!rs.finish.actions.includes('next:Enter') || !rs.finish.actions.includes('retry:R')) {
+    throw new Error(`the panel did not offer next-on-Enter and retry-on-R (${rs.finish.actions})`);
+  }
+  if (!rs.dismissed.hidden || rs.dismissed.model) throw new Error('Escape did not dismiss the results panel');
+
   cdp.close();
 } catch (e) {
   failed = e;

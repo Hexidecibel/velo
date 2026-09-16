@@ -108,6 +108,21 @@ reap any Chrome holding one of their own profile directories before they start.
 | `+` / `-` | zoom bias |
 | P | pause |
 
+**On the end-of-level screen** — which appears on a finish and never on a death
+— a few keys mean something else for as long as it is up, and it prints every
+one of them on itself:
+
+| Key | |
+| --- | --- |
+| **Enter** (or N) | **next level.** The default action. |
+| R | retry — exactly what R does everywhere else, routed at the same function |
+| Esc | close it. Instantly; nothing fades and nothing has to be waited through. |
+| T | watch your run |
+| G | watch the ghost's run — *(the collision overlay everywhere else)* |
+| C | watch the TAS line, when it is offered at all |
+| B | the fuller leaderboard |
+| L | level select — *(load a replay file everywhere else)* |
+
 There is a collapsible control legend in the bottom-left corner of the page,
 because space-to-flip was the single most undiscoverable thing in the game and
 nothing on screen said so.
@@ -369,6 +384,10 @@ because anything submitted from a terminal was produced by a program;
 can check that claim. Retrofitting a category split after people have competed
 is a fight. Doing it now costs one string field.
 
+**The category is not, however, a thing to watch.** A TAS time is information; a
+TAS *line* is the level's answer, and it is gated on having finished the level
+yourself. See *Watching a TAS line* under Ghosts.
+
 ### Who you are, and what that is worth
 
 **No identity signal reaches this app.** HAProxy adds only `X-Forwarded-*`, and
@@ -401,6 +420,60 @@ deliberately **no email field** and will not be one until an account system
 needs it: storing personal data carries obligations that a local display name
 does not.
 
+## The end-of-level screen
+
+Finishing a level used to just stop. There was a moment of completion with
+nothing in it and no route onward, which on a twenty-level game is most of what
+a player needs from the moment.
+
+**It appears on a FINISH and never on a death.** Dying is the common case in a
+die-and-retry game and it already has instant restart; a panel in front of that
+would ruin the core loop, so `finishRun` gates it on `replay.finished` and
+`bin/smoke` asserts both halves against the real bundle — a death run leaves the
+panel shut, a finish opens it.
+
+**The rule everything else on it serves: the fastest path back into the game is
+the default, and dismissal is instant.** A results screen that costs three
+clicks to reach the next level is worse than no results screen. So Enter goes
+onward, R retries, Escape closes, nothing animates in, and nothing on it is ever
+waited through — the summary is complete on the frame the run ends, with or
+without a server, and the posting line fills itself in afterwards.
+
+What it shows:
+
+* **The time, large.** It is the thing you came for and the only large text on
+  the screen.
+* **Versus your PB** — faster or slower, signed, and against what. A new best is
+  marked with its own line in its own colour and the words rather than a symbol.
+  An exact tie has its own branch, because on a 128 Hz input grid two clean runs
+  of the same line tie routinely and folding that into "slower" reads as a loss.
+* **Your position and the gap to the entry above.** The gap is the number that
+  makes a board a race: with a field of two, "0.618 s behind krrl" is a thing you
+  go and do something about and "#2 of 2" is trivia.
+* **Whether it posted, resolved rather than hidden** — and when a refusal is
+  fixable, *how*. Every `RejectCode` the server can produce is handled by name:
+  over-cap, rev mismatch, non-shipped bike, verification failure, rate limit,
+  busy, timeout. "Not posted: this bike is not the shipped one" is a true
+  sentence that tells you nothing to do, and it had already confused this
+  project's own user once; it now comes with "press H and hit reset spec, and
+  turn live tune off if it is on".
+* **A compact top of the leaderboard**, with your own row present even when you
+  are outside it — and marked as a jump rather than silently mixed in. Being
+  outside the top N is the common case for a new player and exactly when a board
+  most needs to say something.
+
+**With no server it is a complete screen.** The time, the PB comparison, the
+apples and every action survive it; the board rows and the standing simply are
+not there, and the posting line says the leaderboard is offline and the time is
+yours locally. The PB comparison is against the **local** best, which is why it
+works at all offline — and it is read *before* `recordBest` overwrites it, or
+every run would compare against itself and look like a tie.
+
+`results.ts` decides all of that and is tested in plain node; `resultsui.ts`
+turns a model into elements and is not. Same split as the leaderboard panel, and
+for the same reason — there is no jsdom in this repo, and the DOM is not what
+could be wrong.
+
 ## Ghosts
 
 The run one place ahead of you, riding beside you.
@@ -412,18 +485,37 @@ replay is a kilobyte of buttons and because the sim was built cheap to
 instantiate and steppable headlessly for the solver that has not been written
 yet.
 
-**Ghost selection matters more than it sounds.** The picker offers the world
-best, your own PB, and *the entry just above you* — and the last is the default,
-because a world record is a number while the person one place ahead of you is a
-race you can win tonight. Trials figured this out; it holds here. With no time
+**A ghost is always a HUMAN run.** `chooseGhost` reads the human board and
+nothing else — it is handed the TAS standing as well and pointedly never looks
+at it, so that the rule is stated where it is enforced and `ghost.test.ts` can
+assert the consequence directly: a level with a TAS entry and no human entry
+yields **no ghost**, for every selector setting. That matters today rather than
+in principle, because thirteen of the twenty shipped levels are currently in
+exactly that state. See *Watching a TAS line* below for why this is a spoiler
+argument and not a preference one.
+
+Which board is on SCREEN is a separate question from which board a ghost comes
+from, and conflating them was a real bug: opening the TAS category quietly
+changed the line riding beside you. The client now always fetches the human
+board, whatever the panel is showing.
+
+**Ghost selection matters more than it sounds.** The picker offers the fastest
+human run, your own PB, and *the entry just above you* — and the last is the
+default, because a record is a number while the person one place ahead of you is
+a race you can win tonight. Trials figured this out; it holds here. With no time
 of your own, the entry "just above you" is the **slowest time on the board**,
 which is the right answer rather than a degenerate one: with no time everybody
 is ahead of you, and the nearest of them is the one you can actually catch. The
 server computes it, because the client only ever receives the top N.
 
-It falls back to your own PB when nobody is ahead, and to nothing after that —
-never to the world record. Silently showing somebody a time forty seconds faster
-than anything they have ridden is discouraging, not motivating.
+With a field of two — which is what this board actually is — that chain is the
+whole feature. If you are second, the ghost is the one person ahead of you. If
+you are first, it falls back to your own PB, which is still a race. If neither
+exists it shows nothing and says **"no ghost yet — be the first to finish this
+level"**, which is a perfectly good state and an honest one. It never falls back
+to the fastest run: silently showing somebody a time forty seconds faster than
+anything they have ridden is discouraging, not motivating, and that argument
+applies twice over to a solver's.
 
 **The ghost is strictly read-only with respect to you,** and that is asserted
 rather than hoped. It owns its own `Sim`, so its own state and its own `World`;
@@ -445,6 +537,46 @@ halted at the hard part is information. The HUD names it and reports the gap **i
 metres** — the two clocks are identical by construction, since the ghost is
 stepped one frame for one frame with you, so a time gap would always read 0.00 s.
 What differs is where you each are.
+
+### Watching a TAS line
+
+**A TAS time may be seen. A TAS line may not — not until you have finished the
+level yourself on this rev.**
+
+The two are different things and the split is the point. Knowing a 41.7 s exists
+here is motivating, and it proves the level is completable — which has already
+mattered twice in this project, when the scripted pilot declared three levels
+broken and the solver disproved it. That is information. But **route choice is
+this game's depth**: apples come in any order and the good levels have genuinely
+different orders with different times, and a TAS entry is the output of a search
+over exactly that space. It *is* the answer. Watching it does not merely
+discourage; it deletes the puzzle, permanently, because you cannot un-see a
+route.
+
+So:
+
+* A TAS run is never a ghost, never auto-selected, and never the fallback when
+  the human board is empty.
+* Its **time** shows on the TAS board and on the end-of-level screen.
+* Its **line** is watchable only once you have finished that level yourself —
+  local best or a human board entry of your own, either is sufficient, which is
+  what makes the gate work offline *and* survive clearing site data. After you
+  have solved it, seeing how a machine did it is a reward and a good way to find
+  out what you left on the table.
+* When it is locked the option is **absent, not greyed out**. A disabled "watch
+  the solver's run" is itself the spoiler — it tells you an optimal route exists
+  and is being kept from you, which is most of what seeing it would have told
+  you. `results.test.ts` asserts the string "TAS" does not appear in a locked
+  action list at all.
+
+The gate lives in `canWatchLine` and is enforced twice: in the panel that offers
+the button, and in `watchEntry`, which is the function that actually fetches
+somebody's route. "The UI does not show it" is a presentation fact, not a rule.
+
+The category itself is not going anywhere — it is proof of completability, it
+keeps machine runs out of human competition, and retrofitting the split later is
+a fight nobody wins. What changed is the framing: the solver's output is
+primarily an **authoring tool**, and only incidentally player-facing content.
 
 ## Live tune — changing the bike from a terminal
 
@@ -2307,12 +2439,17 @@ src/client/         canvas renderer, input, tuning panel, record-and-replay
                     the freeze and the opening peek; markers.ts is the off-screen
                     indicators. The last two are pure state and geometry so they
                     test in plain node.
-                    ghost.ts is the second sim that rides beside you and the
-                    rules for choosing whose run it is; identity.ts is the
+                    ghost.ts is the second sim that rides beside you, the
+                    rules for choosing whose run it is (human runs only) and the
+                    gate on watching a TAS line; identity.ts is the
                     device-local playerId and the honest note about what it is
                     not; api.ts is the leaderboard wire, and every call in it
                     degrades to "offline" rather than failing; boardui.ts is
                     the panel.
+                    results.ts is what the end-of-level screen DECIDES — the PB
+                    comparison, the refusal-to-plain-words mapping, the rows and
+                    the action list with its key bindings — and tests in plain
+                    node; resultsui.ts is the only half that touches the DOM.
 src/server/         Hono, the published bundle, and the leaderboard.
                     board.ts is the board as ARITHMETIC — placement, ranks, the
                     entry above you — with no filesystem in it, so it tests in

@@ -9,6 +9,12 @@ import { loadFlag, saveFlag } from './store.ts';
 export interface LevelBar {
   /** Re-render: selection, and the best-time annotations. */
   update(currentId: string, bests: Record<string, number>): void;
+  /**
+   * Put the keyboard on the picker. This IS "level select" — there is no
+   * separate screen and there does not need to be one, and routing the results
+   * panel's L at the control that already exists beats inventing a second.
+   */
+  focus(): void;
 }
 
 export function createLevelBar(
@@ -59,6 +65,9 @@ export function createLevelBar(
         : `${done}/${levels.length} completed (local, this browser, rev-scoped)`;
       note.className = cur?.error ? 'lb-note bad' : 'lb-note';
     },
+    focus(): void {
+      select.focus();
+    },
   };
 }
 
@@ -82,6 +91,7 @@ export function createLegend(root: HTMLElement): void {
     '<b>SPACE</b> flip direction — this is how you double back<br>' +
     '<b>TAB</b> hold to see the whole level (time stops)<br>' +
     '<b>R</b> restart &nbsp; <b>T</b> replay &nbsp; <b>E</b> export replay<br>' +
+    '<b>ENTER</b> next level, on the results screen &#8212; <b>ESC</b> closes it<br>' +
     '<b>B</b> leaderboard and ghost &nbsp; <b>[ / ]</b> level<br>' +
     '<b>+ / -</b> zoom &nbsp; <b>H</b> tuning sliders<br>' +
     '<b>G</b> show the true collision edge &nbsp; <b>V</b> art on / off<br>' +

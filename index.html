@@ -16,6 +16,10 @@
       <!-- The leaderboard. Also outside the panel: it is where you stand and
            which ghost you are racing, which is navigation, not tuning. -->
       <div id="board"></div>
+      <!-- The end-of-level screen. On a FINISH only: dying is the common case
+           and already has instant restart, and a panel in front of that would
+           ruin the loop. Enter goes onward, R retries, Escape closes. -->
+      <div id="results" class="hidden"></div>
       <!-- Live-tune notifications. A bike that changes under a player who is
            concentrating must SAY so, or they conclude they lost their touch. -->
       <div id="toast"></div>

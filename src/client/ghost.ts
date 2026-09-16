@@ -51,7 +51,9 @@ export const GHOST_LABELS: Record<GhostKind, string> = {
   // is a race you can win tonight. Trials figured this out and it holds here.
   above: 'the run just above you',
   pb: 'your personal best',
-  wr: 'the world best',
+  // The fastest HUMAN run. The board has a TAS category and this is not it —
+  // see the note above `chooseGhost`.
+  wr: 'the fastest human run',
 };
 
 export interface Compat {
@@ -186,37 +188,126 @@ export function createGhost(level: Level, spec: BikeSpec, replay: Replay, meta: 
 }
 
 // --- choosing one ------------------------------------------------------------
+//
+// THE LINE A MACHINE TOOK IS A SPOILER, AND THAT IS WHY THIS FILE ONLY EVER
+// LOOKS AT THE HUMAN BOARD.
+//
+// Route choice is this game's depth: apples come in any order, and on a good
+// level the orders differ in both feel and time. A TAS entry is the output of a
+// search over that space — it IS the answer. Watching it does not merely
+// discourage, it deletes the puzzle, permanently, because you cannot un-see a
+// route.
+//
+// So the TIME and the LINE are separated, and the split is absolute:
+//
+//   * A TAS TIME may be shown. "41.7 s exists here" is motivating, and it is
+//     proof the level is completable — which has already mattered twice in this
+//     project, when the scripted pilot declared three levels broken and the
+//     solver disproved it. That is information, not a solution.
+//   * A TAS LINE is never a ghost. Not chosen for you, not offered in the
+//     selector, and — this is the part that was wrong before — NOT the fallback
+//     when the human board is empty. "No ghost yet, be the first" is a perfectly
+//     good state and an honest one.
+//
+// Watching a TAS replay deliberately is gated on `canWatchLine` below, not on
+// the ghost selector, because after you have solved a level yourself, seeing how
+// a machine did it is a reward rather than a walkthrough.
 
-export interface GhostCandidate {
+/** One board row, reduced to what a ghost needs. */
+export type GhostEntry = { replayId: string; name: string; timeTicks: number; playerId: string } | null;
+
+/** Where a player stands on ONE board — the shape `/api/leaderboard` returns. */
+export interface Standing {
+  /** The entry one place ahead of this player. Server-computed; see api.ts. */
+  above: GhostEntry;
+  /** This player's own best on this board. */
+  you: GhostEntry;
+  /** The board's leader. */
+  best: GhostEntry;
+  rank: number | null;
+  total: number;
+}
+
+export interface GhostPick {
   kind: GhostKind;
-  entry: { replayId: string; name: string; timeTicks: number; playerId: string } | null;
+  entry: GhostEntry;
   rank: number | null;
 }
 
 /**
- * Resolve a requested ghost against what the board actually offers, falling
- * back in the order that keeps a ghost on screen when one is possible.
+ * Resolve a requested ghost against what the HUMAN board offers.
  *
- * The default chain is `above` -> `pb` -> nothing, which is what the brief
- * asks for: race the person in front when there is one, your own best
- * otherwise. `wr` is offered but never fallen back to — if somebody asked for
- * the run above them and there is nobody above them, silently showing them a
- * world record forty seconds faster is discouraging rather than motivating.
+ * `boards.tas` is accepted and deliberately never read. It is in the signature
+ * rather than absent from it so that the rule is stated where it is enforced and
+ * `ghost.test.ts` can assert it directly: a level with a TAS entry and no human
+ * entry yields NO ghost, which is the behaviour a missing parameter could only
+ * imply.
  *
- * `above` for a player with NO time is the slowest entry on the board, which is
- * the right answer and not a degenerate one: with no time everybody is ahead of
- * you, and the nearest of them is the one you can actually catch. The server
- * computes it, because the client only ever receives the top N.
+ * The chain is `above` -> `pb` -> nothing:
+ *
+ *   * Race the person in front of you. With a field of two that is the whole
+ *     point — one real person, a second or two ahead, is a race you can win
+ *     tonight.
+ *   * Nobody in front? Your own best, which is still a race.
+ *   * Neither? Nothing. `wr` is offered in the selector and is never fallen back
+ *     to: silently showing somebody a record forty seconds faster is
+ *     discouraging, and that argument applies doubly to a solver's run.
+ *
+ * `above` for a player with NO time is the SLOWEST entry on the board, computed
+ * by the server because the client only ever receives the top N. That is the
+ * right answer and not a degenerate one: with no time everybody is ahead of you,
+ * and the nearest of them is the one you can actually catch.
  */
 export function chooseGhost(
   want: GhostKind,
-  board: { above: GhostCandidate['entry']; you: GhostCandidate['entry']; best: GhostCandidate['entry']; rank: number | null },
-): { kind: GhostKind; entry: GhostCandidate['entry']; rank: number | null } {
-  if (want === 'off') return { kind: 'off', entry: null, rank: null };
-  if (want === 'wr') return { kind: 'wr', entry: board.best, rank: board.best ? 1 : null };
-  if (want === 'pb') return { kind: 'pb', entry: board.you, rank: board.rank };
+  boards: { human: Standing | null; tas?: Standing | null },
+): GhostPick {
+  const human = boards.human;
+  if (want === 'off' || !human) return { kind: want === 'off' ? 'off' : want, entry: null, rank: null };
+  if (want === 'wr') return { kind: 'wr', entry: human.best, rank: human.best ? 1 : null };
+  if (want === 'pb') return { kind: 'pb', entry: human.you, rank: human.rank };
   // want === 'above'
-  if (board.above) return { kind: 'above', entry: board.above, rank: board.rank === null ? null : board.rank - 1 };
-  if (board.you) return { kind: 'pb', entry: board.you, rank: board.rank };
+  if (human.above) return { kind: 'above', entry: human.above, rank: human.rank === null ? null : human.rank - 1 };
+  if (human.you) return { kind: 'pb', entry: human.you, rank: human.rank };
   return { kind: 'above', entry: null, rank: null };
+}
+
+/**
+ * Why there is no ghost, in one line, or '' when there is one (or when the
+ * player asked for none).
+ *
+ * It never mentions the TAS board. An empty human board says "be the first",
+ * full stop — a note explaining that a machine run is being withheld is itself a
+ * hint that something is being withheld, and the point of the rule is that the
+ * solver's line should not be present in ordinary play even as an absence.
+ */
+export function ghostNoteFor(
+  want: GhostKind,
+  pick: GhostPick,
+  boards: { human: Standing | null; tas?: Standing | null },
+): string {
+  if (want === 'off' || pick.entry) return '';
+  // No board at all is a network story, and boardStatus is already telling it.
+  if (!boards.human) return '';
+  if (boards.human.total === 0) return 'no ghost yet — be the first to finish this level';
+  return `no ${GHOST_LABELS[want]} to race yet`;
+}
+
+/**
+ * May this player watch the LINE of a run in this category?
+ *
+ * Human lines: always. Somebody else riding it by hand is the whole social half
+ * of the board, and it is how people learn from each other.
+ *
+ * TAS lines: only after you have finished the level yourself on this rev. Before
+ * that it is a walkthrough nobody asked for; after it, it is a reward. The gate
+ * is on WATCHING, never on seeing the time — a time is information, a line is
+ * the answer.
+ *
+ * The caller must make the option ABSENT rather than disabled when this returns
+ * false. A greyed-out "watch the solver's run" button is itself the spoiler that
+ * something optimal exists to be seen.
+ */
+export function canWatchLine(category: 'human' | 'tas', completedThisLevel: boolean): boolean {
+  return category === 'human' || completedThisLevel;
 }

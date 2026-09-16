@@ -10,7 +10,8 @@ import { TEST_LEVEL } from '@/sim/testlevel.ts';
 import { parseLevel } from '@/sim/level.ts';
 import { cloneSpec, DEFAULT_SPEC } from '@/sim/spec.ts';
 import { IN_LEAN_R, IN_THROTTLE } from '@/sim/consts.ts';
-import { chooseGhost, createGhost, ghostCompat, GHOST_KINDS } from './ghost.ts';
+import { canWatchLine, chooseGhost, createGhost, ghostCompat, ghostNoteFor, GHOST_KINDS } from './ghost.ts';
+import type { Standing } from './ghost.ts';
 
 const LEVEL = parseLevel(TEST_LEVEL);
 const SPEC = cloneSpec(DEFAULT_SPEC);
@@ -157,17 +158,18 @@ describe('chooseGhost', () => {
     playerId,
   });
 
-  const board = { above: entry('bb', 4000), you: entry('cc', 5000), best: entry('aa', 3000), rank: 3 };
+  const human: Standing = { above: entry('bb', 4000), you: entry('cc', 5000), best: entry('aa', 3000), rank: 3, total: 9 };
+  const empty: Standing = { above: null, you: null, best: null, rank: null, total: 0 };
 
   it('defaults to the run just above you', () => {
-    const r = chooseGhost('above', board);
+    const r = chooseGhost('above', { human });
     expect(r.kind).toBe('above');
     expect(r.entry?.playerId).toBe('bb');
     expect(r.rank).toBe(2);
   });
 
   it('falls back to your own PB when nobody is above you', () => {
-    const r = chooseGhost('above', { ...board, above: null, rank: 1 });
+    const r = chooseGhost('above', { human: { ...human, above: null, rank: 1 } });
     expect(r.kind).toBe('pb');
     expect(r.entry?.playerId).toBe('cc');
   });
@@ -176,17 +178,77 @@ describe('chooseGhost', () => {
     // Silently showing somebody a record forty seconds faster than anything
     // they have ridden is discouraging, not motivating. It stays available in
     // the selector and is never chosen for you.
-    const r = chooseGhost('above', { above: null, you: null, best: entry('aa', 3000), rank: null });
+    const r = chooseGhost('above', { human: { ...empty, best: entry('aa', 3000) } });
     expect(r.entry).toBeNull();
   });
 
   it('honours an explicit pick', () => {
-    expect(chooseGhost('wr', board).entry?.playerId).toBe('aa');
-    expect(chooseGhost('pb', board).entry?.playerId).toBe('cc');
-    expect(chooseGhost('off', board).entry).toBeNull();
+    expect(chooseGhost('wr', { human }).entry?.playerId).toBe('aa');
+    expect(chooseGhost('pb', { human }).entry?.playerId).toBe('cc');
+    expect(chooseGhost('off', { human }).entry).toBeNull();
   });
 
-  it('offers exactly the four kinds the UI lists', () => {
+  it('offers exactly the four kinds the UI lists, and none of them is TAS', () => {
     expect(GHOST_KINDS).toEqual(['off', 'above', 'pb', 'wr']);
+    expect(GHOST_KINDS).not.toContain('tas');
+  });
+
+  it('survives a board that has not arrived', () => {
+    expect(chooseGhost('above', { human: null }).entry).toBeNull();
+    expect(chooseGhost('wr', { human: null, tas: human }).entry).toBeNull();
+  });
+});
+
+describe('a machine run is never a ghost', () => {
+  // THE RULE, asserted directly rather than implied by a missing parameter.
+  //
+  // Route choice is this game's depth — apples come in any order and the orders
+  // differ. A TAS entry is the output of a search over exactly that space, so
+  // watching its line does not merely discourage, it deletes the puzzle for
+  // good. 13 of the 20 shipped levels currently have a TAS entry and no human
+  // one, which is precisely the situation a "fall back to whatever exists"
+  // policy would turn into a walkthrough.
+  const tasEntry = { replayId: 'tas0000000000000', name: 'the pilot', timeTicks: 1000, playerId: 'velobot0000' };
+  const tas: Standing = { above: tasEntry, you: null, best: tasEntry, rank: null, total: 1 };
+  const empty: Standing = { above: null, you: null, best: null, rank: null, total: 0 };
+
+  it('shows NO ghost on a level with a TAS entry and no human entry', () => {
+    for (const kind of GHOST_KINDS) {
+      expect(chooseGhost(kind, { human: empty, tas }).entry).toBeNull();
+    }
+  });
+
+  it('says "be the first" rather than naming what is being withheld', () => {
+    const pick = chooseGhost('above', { human: empty, tas });
+    const note = ghostNoteFor('above', pick, { human: empty, tas });
+    expect(note).toMatch(/be the first/);
+    // A note that explains a machine run is being held back IS the hint. The
+    // absence has to be a plain absence.
+    expect(note.toLowerCase()).not.toMatch(/tas|solver|machine|bot/);
+  });
+
+  it('says nothing at all when the player asked for no ghost', () => {
+    const pick = chooseGhost('off', { human: empty, tas });
+    expect(ghostNoteFor('off', pick, { human: empty, tas })).toBe('');
+  });
+
+  it('names the missing kind when the board is not empty', () => {
+    const human: Standing = { above: null, you: null, best: null, rank: null, total: 4 };
+    const pick = chooseGhost('pb', { human, tas });
+    expect(ghostNoteFor('pb', pick, { human, tas })).toMatch(/personal best/);
+  });
+});
+
+describe('canWatchLine', () => {
+  it('always allows a human line', () => {
+    expect(canWatchLine('human', false)).toBe(true);
+    expect(canWatchLine('human', true)).toBe(true);
+  });
+
+  it('allows a TAS line only after you have finished the level yourself', () => {
+    // Before: a walkthrough nobody asked for. After: a reward, and a good way
+    // to find out what you left on the table.
+    expect(canWatchLine('tas', false)).toBe(false);
+    expect(canWatchLine('tas', true)).toBe(true);
   });
 });

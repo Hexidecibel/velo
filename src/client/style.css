@@ -330,3 +330,149 @@ body:has(#panel.hidden) #board { right: 14px; }
 #board .bd-note.warn { color: var(--accent); }
 #board .bd-note.bad { color: var(--bad); }
 #board .bd-foot { color: #6b6390; font-size: 9px; margin-top: 6px; line-height: 1.35; }
+
+/* --- the end-of-level screen ---------------------------------------------- */
+/* Centred over the canvas, in the same drab surface the board and the legend
+   use, so it reads as another piece of this program's chrome rather than as a
+   modal from a different one. The only thing on it allowed to be loud is the
+   time.
+
+   NOTHING TRANSITIONS. No fade in, no slide, no delay. This is a die-and-retry
+   game: a player who crosses the line and immediately wants R must never feel
+   the screen was in the way, and an animation is exactly that feeling. `hidden`
+   is a display toggle and that is the whole of the show/hide story. */
+#results {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 340px;
+  max-width: calc(100vw - 24px);
+  max-height: 88vh;
+  overflow-y: auto;
+  text-shadow: 0 1px 2px #000;
+  z-index: 5;
+}
+/* It sits inboard of the tuning panel when that is open, like the level bar and
+   the board, so opening H never shoves it under the sliders. */
+#results { margin-left: calc(var(--panel-w) / -2); }
+body:has(#panel.hidden) #results { margin-left: 0; }
+#results.hidden { display: none; }
+
+#results .rs-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 12px 14px 10px;
+}
+#results .rs-head {
+  color: var(--good);
+  letter-spacing: .18em;
+  font-size: 10px;
+}
+#results .rs-level { color: var(--dim); margin-bottom: 2px; }
+
+/* The time. The thing they came for, and the only large text on the screen. */
+#results .rs-time { line-height: 1; margin: 2px 0 6px; }
+#results .rs-time-num {
+  font-size: 40px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.02em;
+}
+#results .rs-time-unit { font-size: 16px; color: var(--dim); margin-left: 2px; }
+
+/* A new best is marked so it cannot be missed: its own line, its own colour,
+   and the words rather than a symbol somebody has to learn. */
+#results .rs-pb.new {
+  display: inline-block;
+  margin: 0 0 4px;
+  padding: 1px 6px;
+  border: 1px solid var(--good);
+  border-radius: 2px;
+  color: var(--good);
+  letter-spacing: .12em;
+  font-size: 10px;
+}
+#results .rs-delta { font-variant-numeric: tabular-nums; }
+#results .rs-delta.faster, #results .rs-delta.first { color: var(--good); }
+#results .rs-delta.slower { color: var(--dim); }
+#results .rs-delta.same { color: var(--accent); }
+#results .rs-apples { color: var(--dim); font-size: 10px; margin-bottom: 8px; }
+
+/* Did it count. Resolved, never hidden — and when a refusal is fixable, how. */
+#results .rs-submit {
+  margin: 8px 0;
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-left-width: 2px;
+  border-radius: 3px;
+  background: #0f0c22;
+  line-height: 1.4;
+}
+#results .rs-submit.ok { border-left-color: var(--good); }
+#results .rs-submit.warn { border-left-color: var(--accent); }
+#results .rs-submit.bad { border-left-color: var(--bad); }
+#results .rs-submit.ok .rs-submit-line { color: var(--good); }
+#results .rs-submit.warn .rs-submit-line { color: var(--accent); }
+#results .rs-submit.bad .rs-submit-line { color: var(--bad); }
+#results .rs-fix { color: var(--ink); font-size: 10px; margin-top: 3px; }
+#results .rs-detail { color: #6b6390; font-size: 9px; margin-top: 3px; }
+
+#results .rs-standing { margin: 8px 0 4px; }
+#results .rs-list { margin: 4px 0 6px; }
+#results .rs-row {
+  display: grid;
+  grid-template-columns: 22px 1fr auto auto;
+  gap: 6px;
+  align-items: baseline;
+  padding: 1px 0;
+}
+#results .rs-row.you {
+  color: var(--accent);
+  border-left: 2px solid var(--accent);
+  margin-left: -4px;
+  padding-left: 2px;
+}
+#results .rs-rank { color: var(--dim); text-align: right; }
+#results .rs-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#results .rs-rowtime { font-variant-numeric: tabular-nums; }
+#results .rs-watch { opacity: 0; }
+#results .rs-row:hover .rs-watch { opacity: 1; }
+/* The elision mark above a detached row, so "#12" under "#5" reads as a jump
+   rather than as a board with holes in it. */
+#results .rs-break { color: var(--dim); padding-left: 8px; line-height: 1; }
+#results .rs-tas { color: var(--dim); font-size: 10px; margin: 4px 0 2px; }
+
+/* The actions. Keyboard first: the key is printed on the left of every row and
+   the mouse is the alternative, not the interface. */
+#results .rs-acts { display: flex; flex-direction: column; gap: 3px; margin-top: 10px; }
+#results .rs-act {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: #221d42;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  font: inherit;
+  padding: 3px 7px;
+  color: var(--dim);
+  cursor: pointer;
+}
+#results .rs-act:hover { color: var(--ink); border-color: var(--edge); }
+#results .rs-act.primary { border-color: var(--edge); color: var(--ink); background: #1b2a44; }
+#results .rs-act kbd {
+  flex: 0 0 34px;
+  color: var(--accent);
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: .06em;
+  text-align: center;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0 3px;
+}
+#results .rs-act.primary kbd { border-color: var(--edge); }
+#results .rs-act-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

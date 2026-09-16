@@ -12,7 +12,7 @@
 // here.
 import { ticksToSeconds } from '@/sim/replay.ts';
 import type { BoardEntry, BoardPayload, Category } from './api.ts';
-import { GHOST_KINDS, GHOST_LABELS } from './ghost.ts';
+import { canWatchLine, GHOST_KINDS, GHOST_LABELS } from './ghost.ts';
 import type { GhostKind } from './ghost.ts';
 
 export interface BoardUiCallbacks {
@@ -37,6 +37,15 @@ export interface BoardUiState {
   statusKind: 'ok' | 'warn' | 'bad' | '';
   /** Why the chosen ghost is not on screen, when it is not. */
   ghostNote: string;
+  /**
+   * Have you finished this level yourself, on this rev?
+   *
+   * It gates WATCHING a TAS line and nothing else. A TAS time is information and
+   * is always shown; a TAS line is the optimal apple order found by search, and
+   * route choice is this game's depth — watching one before you have solved the
+   * level deletes the puzzle permanently. See the note above `chooseGhost`.
+   */
+  completed: boolean;
 }
 
 export interface BoardUi {
@@ -130,19 +139,38 @@ export function createBoardUi(root: HTMLElement, cb: BoardUiCallbacks): BoardUi 
     if (b.top.length === 0) {
       list.append(el('div', 'bd-empty', 'no times on this board yet — be first'));
     }
+    // Times always. LINES only when they are yours to see: a human line always,
+    // a machine line only once you have finished the level yourself.
+    const lines = canWatchLine(b.category, s.completed);
     for (let i = 0; i < b.top.length; i++) {
       const e = b.top[i];
       const row = el('div', `bd-row${e.playerId === s.playerId ? ' you' : ''}`);
       row.append(el('span', 'bd-rank', String(i + 1)));
       row.append(el('span', 'bd-name-cell', e.name));
       row.append(el('span', 'bd-time', fmt(e.timeTicks)));
-      const watch = el('button', 'bd-watch', 'watch');
-      watch.title = 'play this run from the start';
-      watch.addEventListener('click', () => cb.onWatch(e));
-      row.append(watch);
+      if (lines) {
+        const watch = el('button', 'bd-watch', 'watch');
+        watch.title = 'play this run from the start';
+        watch.addEventListener('click', () => cb.onWatch(e));
+        row.append(watch);
+      }
       list.append(row);
     }
     panel.append(list);
+    if (!lines && b.top.length > 0) {
+      // Said plainly HERE, where somebody has deliberately opened the TAS
+      // category and already knows machine runs exist, rather than anywhere in
+      // ordinary play. The ghost selector never mentions it at all: a note
+      // explaining what is being withheld is itself the hint.
+      panel.append(
+        el(
+          'div',
+          'bd-note',
+          'these are machine runs. The times are shown; the lines stay hidden until you finish this level ' +
+            'yourself, because a solver\u2019s route is the answer to the level rather than a race.',
+        ),
+      );
+    }
 
     // --- where you stand ---
     const you = el('div', 'bd-you');
@@ -163,7 +191,8 @@ export function createBoardUi(root: HTMLElement, cb: BoardUiCallbacks): BoardUi 
 
     // --- the ghost picker ---
     const ghost = el('div', 'bd-ghost');
-    ghost.append(el('label', 'bd-hint', 'ghost'));
+    // Human runs only, always. The TAS category is a board, never a ghost.
+    ghost.append(el('label', 'bd-hint', 'ghost (human runs)'));
     const sel = el('select');
     for (const k of GHOST_KINDS) {
       const o = el('option', undefined, GHOST_LABELS[k]);
