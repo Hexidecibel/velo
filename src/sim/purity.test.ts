@@ -38,11 +38,28 @@ const ALLOWED_MATH = new Set([
   'sqrt', 'abs', 'min', 'max', 'floor', 'ceil', 'round', 'trunc', 'sign', 'imul',
 ]);
 
+/**
+ * Every sim source, INCLUDING each rev directory's own copy.
+ *
+ * The recursion is not optional. A rev directory is a self-contained copy of
+ * the physics core, so a `Math.sin` introduced while developing rev 5 would sit
+ * in a file this scan never opened, pass every test, and desync between V8 and
+ * SpiderMonkey on somebody else's machine at launch — which is precisely the
+ * failure this file exists to make impossible.
+ */
 function simSources(): { file: string; text: string }[] {
-  return readdirSync(SIM_DIR)
-    .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
-    .sort()
-    .map((f) => ({ file: f, text: readFileSync(join(SIM_DIR, f), 'utf8') }));
+  const out: { file: string; text: string }[] = [];
+  const scan = (dir: string, prefix: string): void => {
+    for (const f of readdirSync(dir).sort()) {
+      if (!f.endsWith('.ts') || f.endsWith('.test.ts')) continue;
+      out.push({ file: prefix + f, text: readFileSync(join(dir, f), 'utf8') });
+    }
+  };
+  scan(SIM_DIR, '');
+  for (const d of readdirSync(SIM_DIR, { withFileTypes: true })) {
+    if (d.isDirectory() && /^rev[0-9]+$/.test(d.name)) scan(join(SIM_DIR, d.name), `${d.name}/`);
+  }
+  return out;
 }
 
 /**

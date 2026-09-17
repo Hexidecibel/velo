@@ -19,14 +19,18 @@
 import { readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseLevel } from '../src/sim/level.ts';
 import type { Level } from '../src/sim/level.ts';
-import { parseSpec, specHash, DEFAULT_SPEC } from '../src/sim/spec.ts';
+import { DEFAULT_SPEC } from '../src/sim/spec.ts';
 import type { BikeSpec } from '../src/sim/spec.ts';
-import { createSim } from '../src/sim/sim.ts';
-import { checkReplayCompat, decodeInputs, parseReplayFile, replaySpec, revMismatchRefusal, ticksToSeconds, verifyReplay } from '../src/sim/replay.ts';
+// Nothing here calls the live rev's `createSim`, `parseLevel`, `parseSpec`,
+// `specHash` or `verifyReplay` any more: every one of those belongs to the rev
+// the FILE was recorded under, and comes off the `Engine` instead. That is the
+// whole difference between a tool that can replay history and one that can only
+// replay today.
+import { checkReplayCompat, decodeInputs, parseReplayFile, replaySpec, revMismatchRefusal, ticksToSeconds } from '../src/sim/replay.ts';
 import type { ReplayFile } from '../src/sim/replay.ts';
-import { SIM_REV } from '../src/sim/rev.ts';
+import { SIM_REV, REVS, getEngine, hasEngine } from '../src/sim/rev.ts';
+import type { Engine } from '../src/sim/rev.ts';
 import { MAX_ANGVEL, MAX_ARM_ANGVEL, MAX_SPEED, SIM_HZ } from '../src/sim/consts.ts';
 import { rotX, rotY } from '../src/sim/rot.ts';
 import { BOOT_PRESET } from '../src/client/presets.ts';
@@ -76,14 +80,17 @@ function readJson(path: string): unknown {
  * whatever in levels/ happens to hash the same. Every route is checked against
  * simHash afterwards, so "found it" always means "found the same geometry".
  */
-function resolveLevel(file: ReplayFile, arg: string | undefined): { level: Level; from: string } {
-  if (arg) return { level: parseLevel(readJson(arg)), from: arg };
-  if (file.level !== undefined) return { level: parseLevel(file.level), from: 'embedded in the replay' };
+function resolveLevel(file: ReplayFile, arg: string | undefined, engine: Engine): { level: Level; from: string } {
+  // Compiled by the REV'S OWN loader: arc tessellation and the sag tolerance
+  // decide what the bike hits and are as much a part of a rev as step.ts is.
+  const parse = engine.parseLevel;
+  if (arg) return { level: parse(readJson(arg)), from: arg };
+  if (file.level !== undefined) return { level: parse(file.level), from: 'embedded in the replay' };
   const dir = join(ROOT, 'levels');
   if (existsSync(dir)) {
     for (const f of readdirSync(dir).filter((x) => x.endsWith('.json')).sort()) {
       try {
-        const lvl = parseLevel(readJson(join(dir, f)));
+        const lvl = parse(readJson(join(dir, f)));
         if (lvl.simHash === file.simHash) return { level: lvl, from: `levels/${f} (matched by simHash)` };
       } catch {
         // A level that does not load is bin/level-check's problem, not ours.
@@ -97,12 +104,22 @@ function resolveLevel(file: ReplayFile, arg: string | undefined): { level: Level
 }
 
 /** Same idea for the bike: the file's own spec first, since it is definitive. */
-function resolveSpec(file: ReplayFile, arg: string | undefined): { spec: BikeSpec; from: string } {
-  if (arg) return { spec: parseSpec(readJson(arg)), from: arg };
-  const embedded = replaySpec(file);
+function resolveSpec(file: ReplayFile, arg: string | undefined, engine: Engine): { spec: BikeSpec; from: string } {
+  if (arg) return { spec: engine.parseSpec(readJson(arg)), from: arg };
+  // `replaySpec` parses and hashes with the LIVE rev, so on a frozen rev it is
+  // the wrong pair of functions; do the same two steps with the file's engine.
+  if (file.spec !== undefined && file.spec !== null) {
+    try {
+      const own = engine.parseSpec(file.spec);
+      if (engine.specHash(own) === file.specHash) return { spec: own, from: 'embedded in the replay' };
+    } catch {
+      // Falls through to the built-ins, and then to the die() below.
+    }
+  }
+  const embedded = file.simRev === SIM_REV ? replaySpec(file) : null;
   if (embedded) return { spec: embedded, from: 'embedded in the replay' };
   for (const [name, s] of [['the M1 preset', BOOT_PRESET.spec], ['DEFAULT_SPEC', DEFAULT_SPEC]] as const) {
-    if (specHash(s) === file.specHash) return { spec: s, from: `${name} (matched by specHash)` };
+    if (engine.specHash(s) === file.specHash) return { spec: s, from: `${name} (matched by specHash)` };
   }
   die(
     `no bike spec for specHash ${file.specHash}. The replay carries none and neither built-in spec matches. ` +
@@ -133,8 +150,8 @@ interface Diag {
 
 const CSV_HEAD = 'frame,t,px,py,vx,vy,ox,oy,w,ax,ay,aw,defl0,defl1,spin0,spin1,grounded,contacts,maxDepth\n';
 
-function run(level: Level, spec: BikeSpec, masks: number[], csvPath?: string): Diag {
-  const sim = createSim(level, spec);
+function run(level: Level, spec: BikeSpec, masks: number[], csvPath: string | undefined, engine: Engine): Diag {
+  const sim = engine.createSim(level, spec);
   const md = sim.world.spec.suspension.maxDeflection;
   const d: Diag = {
     bottomed: 0, firstBottomFrame: -1, maxDeflect: 0,
@@ -221,23 +238,44 @@ console.log(`    recorded   rev ${file.simRev}${file.recordedAt ? `  at ${file.r
 console.log(`    claims     ${file.frames} frames, ${ticksToSeconds(file.timeTicks).toFixed(3)} s, ` +
   `${file.finished ? 'FINISHED' : file.dead ? 'DEAD' : 'unfinished'}, ${file.applesLeft} apples left`);
 
-if (file.simRev !== SIM_REV) {
+// THE PAYOFF OF THE FROZEN REVS, and the first thing in the tree to use them.
+// Until rev 5 existed this was a flat refusal of anything not stamped SIM_REV,
+// because there WAS only one engine and replaying a rev-3 file under rev-4
+// physics would have shown a different run than the one recorded. Now the rev
+// the file names is the rev it runs on, and a refusal means the rev is gone
+// rather than merely old.
+if (!hasEngine(file.simRev)) {
   console.error('');
   // One shared wording, so the CLI and the server's POST /api/runs cannot drift
   // apart about what a rev mismatch means.
   console.error(`!!! ${revMismatchRefusal(file.simRev)}`);
+  console.error(`    This build carries engines for rev ${REVS.join(' and ')}.`);
   process.exit(3);
 }
+const engine: Engine = getEngine(file.simRev);
+if (file.simRev !== SIM_REV) {
+  console.log(`    ENGINE     rev ${file.simRev} — a frozen rev, not the live one (rev ${SIM_REV}).`);
+}
 
-const { level, from: levelFrom } = resolveLevel(file, args.level);
-const { spec, from: specFrom } = resolveSpec(file, args.spec);
+const { level, from: levelFrom } = resolveLevel(file, args.level, engine);
+const { spec, from: specFrom } = resolveSpec(file, args.spec, engine);
 console.log(`    level      ${level.name}  ${level.simHash}   <- ${levelFrom}`);
-console.log(`    bike       ${specHash(spec)}   <- ${specFrom}`);
+console.log(`    bike       ${engine.specHash(spec)}   <- ${specFrom}`);
 
-const compat = checkReplayCompat(file, { level, spec });
-for (const p of compat.problems) console.log(`    MISMATCH   ${p}`);
+// `checkReplayCompat` answers the CLIENT's question — "can this build, on the
+// live rev, play this file" — using the live rev's `specHash` and `SIM_REV`.
+// That is the wrong question once we have the file's own engine in hand, and
+// asking it anyway produces two false alarms on a frozen-rev file: a SIM_REV
+// mismatch we have already handled, and a spec mismatch that is really just the
+// live rev hashing a spec it has no field names for. So on a non-live rev only
+// the LEVEL is worth comparing, and the rev is reported above as a fact.
+const compat = checkReplayCompat(file, file.simRev === SIM_REV ? { level, spec } : { level });
+for (const p of compat.problems) {
+  if (!compat.revOk && p.startsWith('SIM_REV mismatch')) continue;
+  console.log(`    MISMATCH   ${p}`);
+}
 
-const v = verifyReplay(level, spec, file);
+const v = engine.verifyReplay(level, spec, file);
 console.log('');
 if (v.ok) {
   console.log(`==> VERIFIED  ${file.hashes.length} hash checkpoints, every one reproduced`);
@@ -253,7 +291,7 @@ console.log(`    re-simulated: ${ticksToSeconds(v.timeTicks).toFixed(3)} s, ` +
 
 if (!args.quiet) {
   const masks = decodeInputs(file.inputs);
-  const d = run(level, spec, masks, args.csv);
+  const d = run(level, spec, masks, args.csv, engine);
   const md = spec.suspension.maxDeflection;
   const pct = (n: number): string => `${((n / Math.max(masks.length, 1)) * 100).toFixed(1)}%`;
   console.log('');

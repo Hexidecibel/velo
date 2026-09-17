@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Measure whether the rider can PUMP — add energy by moving their weight against
+# the terrain — and whether that makes a gap clearable that otherwise is not.
+#
+#   bin/pump lip                       height and speed off a small lip
+#   bin/pump gap                       widest gap cleared, with and without a pump
+#   bin/pump stability                 is the new term stable at 512 Hz
+#   bin/pump lip --revs 4,5 --linear 0,0.5,1
+#   bin/pump gap --speed 12
+#
+# WHY THIS EXISTS. Pumping was structurally impossible through SIM_REV 4: the
+# rider's 35 kg was welded to the chassis origin for linear motion, so moving the
+# arm could not move the system's centre of mass and therefore could not load or
+# unload the suspension. A previous agent tried six jump geometries hunting for a
+# pump and correctly gave up. SIM_REV 5 adds the missing linear half of the
+# rider's inertial reaction; this rig is how we find out whether that is a
+# mechanic or merely a term.
+#
+# HOW IT AVOIDS FOOLING ITSELF. Every candidate input sequence branches from ONE
+# snapshot of ONE approach, so "faster off the lip" can never be a different
+# run-up. The no-pump baseline is measured on the same bike from the same
+# snapshot. And the whole search runs on rev 4 as well, because if rev 4 finds
+# the same gain then the gain is the lean keys rotating the bike, which rev 4
+# could always do, and not the new term at all.
+#
+# COST: seconds for `lip` and `stability`, a couple of minutes for `gap`.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+exec "$ROOT/node_modules/.bin/tsx" "$ROOT/bin/_pump-main.ts" "$@"

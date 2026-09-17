@@ -3,6 +3,7 @@ import { BRAKE, SAMPLES, THROTTLE, launchFromRest, pitchUnder } from './_dive.ts
 import { PRESETS } from '../src/client/presets.ts';
 import { cloneSpec } from '../src/sim/spec.ts';
 import type { BikeSpec } from '../src/sim/spec.ts';
+import { chooseRev, revLabel, specOn } from './_rev.ts';
 
 const argv = process.argv.slice(2);
 let only: string | null = null;
@@ -10,9 +11,13 @@ let sweep: number[] | null = null;
 /** Which half of the inertial transfer a sweep moves: both, brake only, drive only. */
 let side: 'both' | 'brake' | 'drive' = 'both';
 let speed = 9;
+let rev: number | undefined;
+let linear = 0;
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
-  if (a === '--preset') only = argv[++i];
+  if (a === '--rev') rev = Number(argv[++i]);
+  else if (a === '--linear') linear = Number(argv[++i]);
+  else if (a === '--preset') only = argv[++i];
   else if (a === '--sweep') sweep = argv[++i].split(',').map(Number);
   else if (a === '--sweep-brake') { sweep = argv[++i].split(',').map(Number); side = 'brake'; }
   else if (a === '--sweep-drive') { sweep = argv[++i].split(',').map(Number); side = 'drive'; }
@@ -38,11 +43,15 @@ function withInertial(spec: BikeSpec, v: number): BikeSpec {
   return s;
 }
 
-function row(label: string, spec: BikeSpec): void {
-  const b = pitchUnder(spec, BRAKE, { speed });
-  const t = pitchUnder(spec, THROTTLE, { speed });
-  const air = pitchUnder(spec, BRAKE, { speed, airborne: true });
-  const launch = launchFromRest(spec);
+const CHOICE = chooseRev(rev, linear);
+
+function row(label: string, base: BikeSpec): void {
+  const spec = specOn(CHOICE, base);
+  const r = CHOICE.rev;
+  const b = pitchUnder(spec, BRAKE, { speed, rev: r });
+  const t = pitchUnder(spec, THROTTLE, { speed, rev: r });
+  const air = pitchUnder(spec, BRAKE, { speed, airborne: true, rev: r });
+  const launch = launchFromRest(spec, { rev: r });
   const cols = (r: { at: number[] }): string => r.at.map((v) => v.toFixed(1).padStart(7)).join('');
   const tail = (r: { to30: number; peakRate: number; wentOver: boolean; upToSpeed: boolean; spread: number }): string =>
     `  +-${(r.spread / 2).toFixed(1).padStart(4)}   to -30 ${r.to30 < 0 ? '  n/a' : r.to30.toFixed(3)}   rate ${r.peakRate.toFixed(0).padStart(5)} deg/s${r.wentOver ? '   OVER THE BARS' : ''}${r.upToSpeed ? '' : '   NEVER REACHED SPEED — not a measurement'}`;
@@ -62,6 +71,7 @@ function row(label: string, spec: BikeSpec): void {
   );
 }
 
+console.log(`    ENGINE: ${revLabel(CHOICE)}`);
 console.log('    pitch in degrees at ' + SAMPLES.map((v) => v + 's').join(' / ') + ', relative to the attitude when the input landed');
 console.log('    MEAN over 8 entries spread across the run-up\'s limit cycle; +- is half the spread at the last sample.');
 console.log('    NEGATIVE = nose down, EXCEPT the from-rest row, which is nose-UP. Facing is +x throughout.');

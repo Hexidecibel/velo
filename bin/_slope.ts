@@ -15,7 +15,7 @@
 // policies and keeps the best result, because "a player could do this" is the
 // question, not "does full throttle happen to work".
 import { parseLevel } from '../src/sim/level.ts';
-import { createSim } from '../src/sim/sim.ts';
+import { getEngine, SIM_REV } from '../src/sim/rev.ts';
 import type { RawLevel } from '../src/sim/level.ts';
 import type { BikeSpec } from '../src/sim/spec.ts';
 import { IN_LEAN_L, IN_LEAN_R, IN_THROTTLE } from '../src/sim/consts.ts';
@@ -111,13 +111,13 @@ function maskFor(strategy: Strategy, deg: number, x: number, oy: number, w: numb
   return IN_THROTTLE;
 }
 
-export function sweepCell(spec: BikeSpec, deg: number, entry: number, strategy: Strategy, fillet: number): Cell {
+export function sweepCell(spec: BikeSpec, deg: number, entry: number, strategy: Strategy, fillet: number, rev = SIM_REV): Cell {
   const raw = rampLevel(deg, fillet);
   const level = parseLevel(raw);
   const dx = RISE / Math.tan((deg * Math.PI) / 180);
   const topX = RUNUP + dx;
   {
-    const sim = createSim(level, spec);
+    const sim = getEngine(rev).createSim(level, spec);
     const s = sim.state;
     // Seed on the flat, 8 m short of the corner, already at speed.
     const x0 = RUNUP - 8;
@@ -165,9 +165,9 @@ export function sweepCell(spec: BikeSpec, deg: number, entry: number, strategy: 
   }
 }
 
-export function sweep(spec: BikeSpec, degs: number[], entries: number[], strategy: Strategy, fillet = 0): Cell[] {
+export function sweep(spec: BikeSpec, degs: number[], entries: number[], strategy: Strategy, fillet = 0, rev = SIM_REV): Cell[] {
   const out: Cell[] = [];
-  for (const d of degs) for (const e of entries) out.push(sweepCell(spec, d, e, strategy, fillet));
+  for (const d of degs) for (const e of entries) out.push(sweepCell(spec, d, e, strategy, fillet, rev));
   return out;
 }
 

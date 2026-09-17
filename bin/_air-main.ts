@@ -4,6 +4,7 @@ import { FEATURES, measure, withCompression, withRebound } from './_air.ts';
 import type { FeatureName } from './_air.ts';
 import { PRESETS } from '../src/client/presets.ts';
 import type { BikeSpec } from '../src/sim/spec.ts';
+import { chooseRev, revLabel, specOn } from './_rev.ts';
 
 const argv = process.argv.slice(2);
 let only: string | null = null;
@@ -12,9 +13,13 @@ let compSweep: number[] | null = null;
 let release = 29;
 let target = 9;
 let matrix: FeatureName | null = null;
+let rev: number | undefined;
+let linear = 0;
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
-  if (a === '--preset') only = argv[++i];
+  if (a === '--rev') rev = Number(argv[++i]);
+  else if (a === '--linear') linear = Number(argv[++i]);
+  else if (a === '--preset') only = argv[++i];
   else if (a === '--sweep') sweep = argv[++i].split(',').map(Number);
   else if (a === '--compression-sweep') compSweep = argv[++i].split(',').map(Number);
   else if (a === '--release') release = Number(argv[++i]);
@@ -28,10 +33,13 @@ for (let i = 0; i < argv.length; i++) {
 
 const FEATURE_ORDER: FeatureName[] = ['bump', 'kicker', 'drop', 'bigdrop'];
 
-function row(label: string, spec: BikeSpec): void {
+const CHOICE = chooseRev(rev, linear);
+
+function row(label: string, base: BikeSpec): void {
+  const spec = specOn(CHOICE, base);
   const parts: string[] = [];
   for (const f of FEATURE_ORDER) {
-    const r = measure(FEATURES[f], spec, { releaseX: release, targetSpeed: target });
+    const r = measure(FEATURES[f], spec, { releaseX: release, targetSpeed: target, rev: CHOICE.rev });
     parts.push(
       `${f.padEnd(6)} ${r.approach.toFixed(2).padStart(5)} m/s  ` +
         `peak ${r.peak.toFixed(3).padStart(6)} m  air ${r.airtime.toFixed(3).padStart(5)} s  ` +
@@ -44,6 +52,7 @@ function row(label: string, spec: BikeSpec): void {
   for (const p of parts) console.log(`    ${p}`);
 }
 
+console.log(`    ENGINE: ${revLabel(CHOICE)}`);
 console.log('    peak = chassis height above its own resting height, metres');
 console.log('    air  = longest stretch with neither wheel touching, seconds');
 console.log('    defl = peak suspension deflection (*n = n frames on the hard clamp)');
@@ -63,8 +72,8 @@ if (matrix) {
   console.log(`bike "${base.label}", compression ${base.spec.suspension.compressionDamping}, stiffness ${base.spec.suspension.stiffness}\n`);
   console.log('    rebound  ' + speeds.map((v) => String(v).padStart(6)).join('') + '     mean');
   for (const rb of rebounds) {
-    const spec = withRebound(base.spec, rb);
-    const peaks = speeds.map((v) => measure(FEATURES[matrix], spec, { releaseX: release, targetSpeed: v }).peak);
+    const spec = specOn(CHOICE, withRebound(base.spec, rb));
+    const peaks = speeds.map((v) => measure(FEATURES[matrix], spec, { releaseX: release, targetSpeed: v, rev: CHOICE.rev }).peak);
     const mean = peaks.reduce((a, b) => a + b, 0) / peaks.length;
     console.log('    ' + String(rb).padStart(7) + '  ' + peaks.map((p) => p.toFixed(3).padStart(6)).join('') + '   ' + mean.toFixed(4).padStart(6));
   }

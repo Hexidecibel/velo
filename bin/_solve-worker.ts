@@ -15,8 +15,7 @@
 // requires a handshake within a timeout and says so out loud. See bin/_solve.ts.
 import { parentPort } from 'node:worker_threads';
 import { readFileSync } from 'node:fs';
-import { parseLevel } from '@/sim/level.ts';
-import { parseSpec } from '@/sim/spec.ts';
+import { getEngine } from '@/sim/rev.ts';
 import { solveOne } from './_solve-run.ts';
 import type { Job, Done } from './_solve-run.ts';
 
@@ -29,8 +28,12 @@ port.on('message', (job: Job | { kind: 'stop' }) => {
   const j = job as Job;
   try {
     const raw: unknown = JSON.parse(readFileSync(j.file, 'utf8'));
-    const level = parseLevel(raw);
-    const spec = parseSpec(j.spec);
+    // The rev's OWN loader and spec parser: arc tessellation and the required
+    // spec fields both belong to the rev, so compiling with the live build's
+    // and running on another's is the subtle kind of wrong.
+    const engine = getEngine(j.rev);
+    const level = engine.parseLevel(raw);
+    const spec = engine.parseSpec(j.spec);
     const out = solveOne(j, level, spec, raw);
     port.postMessage({ kind: 'done', file: j.file, result: out } satisfies Done);
   } catch (e) {

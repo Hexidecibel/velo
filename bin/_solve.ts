@@ -5,11 +5,11 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { parseLevel } from '@/sim/level.ts';
 import { parseSpec, cloneSpec } from '@/sim/spec.ts';
 import { replayFileName } from '@/sim/replay.ts';
 import { SIM_REV } from '@/sim/rev.ts';
 import { BOOT_PRESET } from '@/client/presets.ts';
+import { chooseRev, specOn } from './_rev.ts';
 import { solveOne } from './_solve-run.ts';
 import type { Job, Outcome } from './_solve-run.ts';
 
@@ -26,6 +26,10 @@ interface Args {
   seed: number;
   spec?: string;
   quiet: boolean;
+  /** Which physics. Defaults to the LIVE rev, never the newest one. */
+  rev: number;
+  /** rev 5's rider.inertialTransferLinear. */
+  linear: number;
 }
 
 function die(msg: string): never {
@@ -43,6 +47,7 @@ function parseArgs(argv: string[]): Args {
   const a: Args = {
     files: [], jobs: 1, time: 300, effort: 1,
     branch: 4, tries: 2, trials: 200, seed: 0x5e1f, quiet: false,
+    rev: SIM_REV, linear: 0,
   };
   for (let i = 0; i < argv.length; i++) {
     const s = argv[i];
@@ -56,6 +61,8 @@ function parseArgs(argv: string[]): Args {
     else if (s === '--trials') a.trials = Math.round(num(argv[++i], '--trials'));
     else if (s === '--seed') a.seed = Math.round(num(argv[++i], '--seed'));
     else if (s === '--spec') a.spec = argv[++i] ?? die('--spec needs a path');
+    else if (s === '--rev') a.rev = Math.round(num(argv[++i], '--rev'));
+    else if (s === '--linear') a.linear = num(argv[++i], '--linear');
     else if (s === '--quiet') a.quiet = true;
     else if (s.startsWith('-')) die(`unknown option ${s}`);
     else a.files.push(s);
@@ -69,11 +76,18 @@ function parseArgs(argv: string[]): Args {
 }
 
 const args = parseArgs(process.argv.slice(2));
-const spec = args.spec ? parseSpec(JSON.parse(readFileSync(args.spec, 'utf8'))) : cloneSpec(BOOT_PRESET.spec);
-const bike = args.spec ? 'custom' : BOOT_PRESET.id;
+const CHOICE = chooseRev(args.rev, args.linear);
+const baseSpec = args.spec
+  ? parseSpec(JSON.parse(readFileSync(args.spec, 'utf8')))
+  : cloneSpec(BOOT_PRESET.spec);
+// The presets are rev-4 shaped; `specOn` adds the rev's extra fields on the way
+// past rather than editing what the game ships on. See bin/_rev.ts.
+const spec = specOn(CHOICE, baseSpec);
+const bike = args.spec ? 'custom' : CHOICE.rev === SIM_REV ? BOOT_PRESET.id : `${BOOT_PRESET.id}-r${CHOICE.rev}`;
 
 const jobOf = (file: string): Job => ({
   file,
+  rev: CHOICE.rev,
   spec: spec as unknown,
   bike,
   timeBudgetMs: Math.round(args.time * 1000),
@@ -91,7 +105,9 @@ function pct(v: number): string {
 
 function report(file: string, o: Outcome, tail = ''): void {
   console.log((o.solved ? '==> SOLVED     ' : '==> UNSOLVED   ') + file + tail);
-  console.log('    ' + o.name + '   (rev ' + SIM_REV + ', ' + o.apples + ' apples)');
+  console.log('    ' + o.name + '   (rev ' + CHOICE.rev
+    + (CHOICE.rev >= 5 ? ', linear ' + CHOICE.linear : '')
+    + ', ' + o.apples + ' apples)');
   if (!args.quiet) for (const l of o.log) console.log(l);
   if (o.solved) {
     console.log('    time            ' + o.seconds.toFixed(2) + ' s of game time, ' + o.frames + ' input frames'
@@ -230,7 +246,7 @@ if (args.jobs > 1 && args.files.length > 1) {
 } else {
   for (const f of args.files) {
     const raw: unknown = JSON.parse(readFileSync(f, 'utf8'));
-    const level = parseLevel(raw);
+    const level = CHOICE.engine.parseLevel(raw);
     const o = solveOne(jobOf(f), level, spec, raw);
     report(f, o);
     if (args.save !== undefined) save(args.save, o);
@@ -255,7 +271,7 @@ if (outcomes.length > 1) {
 
 if (args.json !== undefined) {
   const payload = outcomes.map(({ file, o }) => ({
-    file, name: o.name, simRev: SIM_REV, solved: o.solved, seconds: o.seconds, frames: o.frames,
+    file, name: o.name, simRev: CHOICE.rev, linear: CHOICE.rev >= 5 ? CHOICE.linear : undefined, solved: o.solved, seconds: o.seconds, frames: o.frames,
     appleOrder: o.appleOrder, apples: o.apples, difficulty: o.difficulty, routeMetres: o.routeMetres,
     expansions: o.expansions, simFrames: o.simFrames, deaths: o.deaths, wallMs: o.wallMs,
     segments: o.segments, retried: o.retried, failure: o.failure, verified: o.verified,

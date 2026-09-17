@@ -16,6 +16,9 @@
 # Exit status: 0 verified and fully compatible, 1 verification or compatibility
 # failed, 2 bad usage or unreadable input, 3 the replay is from another SIM_REV
 # and was REFUSED rather than played back against different physics.
+# A replay runs on the rev it was RECORDED under, not on the live one: the file
+# names a rev, `getEngine` hands out that rev's frozen engine, and only a rev this
+# build has no engine for is refused. That is the whole point of freezing revs.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 ensure_deps
 cd "$ROOT"

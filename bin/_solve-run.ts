@@ -1,7 +1,7 @@
 // Solve one level and package the answer, shared by the in-process path and
 // the worker path so that `--jobs 1` and `--jobs 8` cannot drift apart.
-import { createSim } from '@/sim/sim.ts';
-import { buildReplay, toReplayFile, verifyReplay } from '@/sim/replay.ts';
+import { getEngine } from '@/sim/rev.ts';
+import { toReplayFile } from '@/sim/replay.ts';
 import type { ReplayFile } from '@/sim/replay.ts';
 import type { Level } from '@/sim/level.ts';
 import type { BikeSpec } from '@/sim/spec.ts';
@@ -14,6 +14,8 @@ export const HASH_EVERY = 64;
 
 export interface Job {
   file: string;
+  /** Which physics rev to search, verify and stamp the replay with. */
+  rev: number;
   /** Raw BikeSpec-shaped object; workers re-parse it rather than trust it. */
   spec: unknown;
   bike: string;
@@ -62,7 +64,9 @@ export interface Done {
 export function solveOne(job: Job, level: Level, spec: BikeSpec, raw: unknown): Outcome {
   const log: string[] = [];
   const t0 = Date.now();
+  const engine = getEngine(job.rev);
   const r = solveLevel(level, spec, {
+    rev: job.rev,
     timeBudgetMs: job.timeBudgetMs,
     strategies: DEFAULT_SOLVE.strategies.map((s) => ({ ...s, budget: Math.round(s.budget * job.effort) })),
     branch: job.branch,
@@ -106,14 +110,14 @@ export function solveOne(job: Job, level: Level, spec: BikeSpec, raw: unknown): 
   // Re-simulate the winning stream from scratch. The search built it a segment
   // at a time from snapshots; this is the only thing that proves the whole
   // chain is one run, and it is also where the periodic hashes come from.
-  const sim = createSim(level, spec);
+  const sim = engine.createSim(level, spec);
   const hashes: string[] = [];
   for (let f = 0; f < r.masks.length; f++) {
     sim.advance(r.masks[f]);
     if ((f + 1) % HASH_EVERY === 0) hashes.push(sim.hash());
   }
-  const replay = buildReplay({ level, spec, masks: r.masks, hashEvery: HASH_EVERY, hashes, state: sim.state, bike: job.bike });
-  const v = verifyReplay(level, spec, replay);
+  const replay = engine.buildReplay({ level, spec, masks: r.masks, hashEvery: HASH_EVERY, hashes, state: sim.state, bike: job.bike });
+  const v = engine.verifyReplay(level, spec, replay);
   out.verified = v.ok && sim.state.finished && !sim.state.dead && sim.state.applesLeft === 0;
   if (!out.verified) {
     out.solved = false;
@@ -124,7 +128,7 @@ export function solveOne(job: Job, level: Level, spec: BikeSpec, raw: unknown): 
   out.difficulty = scoreDifficulty({
     level, spec, masks: r.masks,
     expansions: r.totals.expansions, deaths: r.totals.deaths, routeMetres: r.routeMetres,
-    trials: job.trials, seed: job.seed,
+    trials: job.trials, seed: job.seed, rev: job.rev,
   });
 
   if (job.wantReplay) {
@@ -133,7 +137,7 @@ export function solveOne(job: Job, level: Level, spec: BikeSpec, raw: unknown): 
       levelName: level.name,
       spec,
       recordedAt: new Date().toISOString(),
-      note: `bin/solve, ${r.totals.expansions} expansions, apple order ${r.appleOrder.join('-')}`,
+      note: `bin/solve on sim rev ${job.rev}, ${r.totals.expansions} expansions, apple order ${r.appleOrder.join('-')}`,
     });
   }
   return out;

@@ -5,6 +5,14 @@
 #   bin/solve levels/*.json --jobs 6 --time 300 --json /tmp/solved.json
 #   bin/solve levels/08-needle.json --save /tmp/          # writes a replay file
 #   bin/solve levels/08-needle.json --time 900 --effort 4        # try much harder
+#   bin/solve levels/*.json --rev 5 --linear 1                   # the experimental rev
+#
+# WHICH PHYSICS. `--rev` defaults to SIM_REV, the LIVE rev, and NOT to the newest
+# one that exists — a solver that quietly searched experimental physics would
+# report a level completable that nobody playing the game can complete. `--linear`
+# sets rev 5's rider.inertialTransferLinear; it is refused below rev 5 rather than
+# silently ignored. The replay a solve saves is stamped with the rev it was found
+# on, so bin/replay runs it on that rev's frozen engine.
 #
 # WHY THIS EXISTS. bin/level-drive is a scripted rider — throttle when a wheel
 # is down, lean into the face — and the plan calls it "a lower bound, not a

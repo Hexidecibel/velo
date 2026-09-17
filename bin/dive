@@ -23,6 +23,9 @@
 # about. The airborne row is a genuinely different mechanism (reaction torque
 # from braking a spinning wheel) and is printed separately so the two are never
 # confused for one another.
+# --rev N / --linear K pick the physics: --rev defaults to SIM_REV, the LIVE rev,
+# never the newest one. --linear sets rev 5's rider.inertialTransferLinear and is
+# refused below rev 5 rather than quietly ignored.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 ensure_deps
 cd "$ROOT"

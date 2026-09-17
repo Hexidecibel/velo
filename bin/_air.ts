@@ -21,7 +21,7 @@
 //           hit on an ordinary landing.
 import { parseLevel } from '../src/sim/level.ts';
 import type { Level } from '../src/sim/level.ts';
-import { createSim } from '../src/sim/sim.ts';
+import { getEngine, SIM_REV } from '../src/sim/rev.ts';
 import type { BikeSpec } from '../src/sim/spec.ts';
 import { cloneSpec } from '../src/sim/spec.ts';
 import { IN_LEAN_L, IN_LEAN_R, IN_THROTTLE } from '../src/sim/consts.ts';
@@ -93,12 +93,14 @@ export interface AirResult {
 export function measure(
   level: Level,
   spec: BikeSpec,
-  opts: { releaseX?: number; seconds?: number; targetSpeed?: number } = {},
+  opts: { releaseX?: number; seconds?: number; targetSpeed?: number; rev?: number } = {},
 ): AirResult {
   const releaseX = opts.releaseX ?? 29;
   const target = opts.targetSpeed ?? 9;
   const frames = Math.round((opts.seconds ?? 16) * 128);
-  const sim = createSim(level, spec);
+  // The rig's levels are hand-built here and contain no arcs, so every rev's
+  // loader compiles them identically; only the ENGINE needs choosing.
+  const sim = getEngine(opts.rev ?? SIM_REV).createSim(level, spec);
   const md = sim.world.spec.suspension.maxDeflection;
 
   // Settle on the suspension first: measuring "height above rest" needs a rest.

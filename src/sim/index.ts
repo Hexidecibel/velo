@@ -24,7 +24,7 @@ export { createSim } from './sim.ts';
 export type { Sim } from './sim.ts';
 export { encodeInputs, decodeInputs, buildReplay, verifyReplay, verifyReplaySteps, ticksToSeconds, parseReplayFile, checkReplayCompat, replaySpec, revMismatchRefusal, toReplayFile, replayFileName, ReplayError, REPLAY_FILE_VERSION } from './replay.ts';
 export type { Replay, VerifyResult, ReplayFile, ReplayCompat } from './replay.ts';
-export { SIM_REV, getEngine, currentEngine } from './rev.ts';
+export { SIM_REV, LATEST_REV, REVS, getEngine, hasEngine, currentEngine } from './rev.ts';
 export type { Engine } from './rev.ts';
 export { crossCheck, crossCheckMask } from './crosscheck.ts';
 export type { CrossCheck } from './crosscheck.ts';

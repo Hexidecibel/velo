@@ -25,7 +25,7 @@
 // phase and leaves the input. The spread is reported too — a row whose spread
 // rivals its mean is still not telling you anything.
 import { parseLevel } from '../src/sim/level.ts';
-import { createSim } from '../src/sim/sim.ts';
+import { getEngine, SIM_REV } from '../src/sim/rev.ts';
 import type { Sim } from '../src/sim/sim.ts';
 import type { BikeSpec } from '../src/sim/spec.ts';
 import { IN_BRAKE, IN_LEAN_L, IN_LEAN_R, IN_THROTTLE } from '../src/sim/consts.ts';
@@ -124,11 +124,13 @@ export const SAMPLES = [0.05, 0.1, 0.15, 0.2, 0.3];
 export function pitchUnder(
   spec: BikeSpec,
   mask: number,
-  opts: { speed?: number; holdSeconds?: number; airborne?: boolean } = {},
+  opts: { speed?: number; holdSeconds?: number; airborne?: boolean; rev?: number } = {},
 ): DiveResult {
   const speed = opts.speed ?? 9;
   const hold = Math.round((opts.holdSeconds ?? 0.4) * 128);
-  const sim = createSim(RIG, spec);
+  // RIG is hand-built above and contains no arcs, so every rev's loader
+  // compiles it identically; only the ENGINE needs choosing.
+  const sim = getEngine(opts.rev ?? SIM_REV).createSim(RIG, spec);
 
   // Settle on the springs, then run up to speed holding the chassis level.
   for (let f = 0; f < 192; f++) sim.advance(0);
@@ -266,9 +268,9 @@ export const THROTTLE = IN_THROTTLE;
  * and `spread` is 0 by construction — the same convention the airborne case
  * already uses.
  */
-export function launchFromRest(spec: BikeSpec, opts: { holdSeconds?: number } = {}): DiveResult {
+export function launchFromRest(spec: BikeSpec, opts: { holdSeconds?: number; rev?: number } = {}): DiveResult {
   const hold = Math.round((opts.holdSeconds ?? 1.2) * 128);
-  const sim = createSim(RIG, spec);
+  const sim = getEngine(opts.rev ?? SIM_REV).createSim(RIG, spec);
   // Long enough for a soft spring to stop ringing. Launching off a bike still
   // moving on its suspension measures the spring's phase, which is the same
   // mistake the grounded rows average away.
@@ -313,6 +315,6 @@ export function launchFromRest(spec: BikeSpec, opts: { holdSeconds?: number } = 
  * Seconds of full throttle from rest before the nose reaches 30 degrees up, or
  * -1 if it never does within the window. The one number `--sweep-drive` moves.
  */
-export function timeToWheelie(spec: BikeSpec, holdSeconds = 1.2): number {
-  return launchFromRest(spec, { holdSeconds }).to30;
+export function timeToWheelie(spec: BikeSpec, holdSeconds = 1.2, rev?: number): number {
+  return launchFromRest(spec, { holdSeconds, rev }).to30;
 }
