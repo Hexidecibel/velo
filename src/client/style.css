@@ -126,7 +126,9 @@ code { color: #29d9f2; }
   display: flex;
   align-items: center;
   gap: 8px;
-  max-width: 420px;
+  max-width: 520px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   text-shadow: 0 1px 2px #000;
 }
 /* The panel is a later sibling in the DOM, so this needs :has() on an
@@ -135,6 +137,14 @@ code { color: #29d9f2; }
 body:has(#panel.hidden) #levelbar { right: 14px; }
 #levelbar .lb-label { color: var(--dim); }
 #levelbar select { width: auto; min-width: 180px; max-width: 260px; }
+#levelbar .lb-browse {
+  font-size: 10px;
+  padding: 2px 7px;
+  background: #221d42;
+  color: var(--dim);
+  letter-spacing: .04em;
+}
+#levelbar .lb-browse:hover { color: var(--ink); border-color: var(--edge); }
 #levelbar .lb-note { color: var(--dim); font-size: 10px; }
 #levelbar .lb-note.bad { color: var(--bad); }
 
@@ -554,3 +564,174 @@ body.touch #hud, body.touch #legend, body.touch #board { display: none; }
 body.touch #levelbar { top: 6px; right: 6px; max-width: 46vw; }
 body.touch #levelbar .lb-note { display: none; }
 body.touch #results { max-height: 78vh; }
+
+/* --- the level chooser ---------------------------------------------------- */
+/* Same drab surface as the board and the results panel, for the same reason: it
+   sits over the canvas and the readability rule says the bike and the collision
+   edge are the highest-contrast things on screen — including underneath a menu.
+   NOTHING TRANSITIONS here either; it is a display toggle, like the results
+   screen, because a menu that animates in is a menu that was in the way. */
+#chooser {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(860px, calc(100vw - 24px));
+  max-height: 88vh;
+  overflow-y: auto;
+  z-index: 6;
+  text-shadow: 0 1px 2px #000;
+  outline: none;
+}
+/* Inboard of the tuning panel when it is open, like the level bar, the board
+   and the results screen. */
+#chooser { margin-left: calc(var(--panel-w) / -2); }
+body:has(#panel.hidden) #chooser { margin-left: 0; }
+#chooser.hidden { display: none; }
+
+#chooser .ch-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 10px 12px 12px;
+}
+#chooser .ch-head { display: flex; align-items: center; gap: 6px; }
+#chooser .ch-title {
+  flex: 1 1 auto;
+  color: var(--accent);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  font-size: 12px;
+}
+#chooser .ch-sorts { display: flex; gap: 4px; }
+#chooser button {
+  background: #221d42;
+  color: var(--dim);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  font: inherit;
+  font-size: 10px;
+  padding: 2px 7px;
+  cursor: pointer;
+}
+#chooser button:hover { color: var(--ink); border-color: var(--edge); }
+#chooser .ch-sort.on { color: var(--bg); background: var(--edge); border-color: var(--edge); }
+#chooser .ch-sub { color: var(--dim); font-size: 10px; margin: 2px 0 8px; }
+
+#chooser .ch-group {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 10px 0 5px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 3px;
+}
+#chooser .ch-group-label {
+  color: var(--dim);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+#chooser .ch-group-note { color: #6b6390; font-size: 10px; }
+
+#chooser .ch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(178px, 1fr));
+  gap: 8px;
+}
+/* A card is one button: the whole thing is the target, because a picture you
+   cannot click is a picture that looks broken. */
+#chooser .ch-card {
+  display: block;
+  text-align: left;
+  padding: 0;
+  overflow: hidden;
+  background: #17132e;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-size: 11px;
+}
+#chooser .ch-card:hover { border-color: var(--edge); }
+/* Keyboard selection and "the level you are on" are DIFFERENT marks, and both
+   carry more than colour: the current level gets a left rule, the selected card
+   gets a full outline. */
+#chooser .ch-card.sel { border-color: var(--edge); box-shadow: inset 0 0 0 1px var(--edge); }
+#chooser .ch-card.on { border-left: 3px solid var(--accent); }
+#chooser .ch-card.broken { border-color: #5a2323; }
+
+#chooser .ch-shot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 8 / 3;
+  background: var(--free);
+  border-bottom: 1px solid var(--line);
+  overflow: hidden;
+}
+#chooser .ch-shot img { display: block; width: 100%; height: 100%; object-fit: cover; }
+/* The placeholder is the level's number, not a spinner: the card is complete
+   and readable the moment it appears and the picture arrives into a space it
+   already has, so nothing reflows under the pointer. */
+#chooser .ch-shot-wait { color: #3b3466; font-size: 22px; letter-spacing: .08em; }
+#chooser .ch-shot-wait.bad { color: var(--bad); }
+
+#chooser .ch-meta { padding: 5px 7px 6px; }
+#chooser .ch-name { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#chooser .ch-card.on .ch-name { color: var(--accent); }
+#chooser .ch-facts { color: #6b6390; font-size: 10px; }
+#chooser .ch-err { color: var(--bad); font-size: 10px; line-height: 1.3; }
+
+#chooser .ch-diff { display: flex; align-items: center; gap: 5px; margin: 4px 0 2px; }
+#chooser .ch-bar {
+  flex: 1 1 auto;
+  height: 3px;
+  background: #221d42;
+  border-radius: 2px;
+  overflow: hidden;
+}
+#chooser .ch-fill { display: block; height: 100%; background: var(--dim); }
+/* The bands run cool to hot, and the WORD is always there beside the bar —
+   colour is never the only thing carrying the rating. */
+#chooser .ch-fill.gentle { background: #7fd4ff; }
+#chooser .ch-fill.steady { background: var(--good); }
+#chooser .ch-fill.tricky { background: var(--accent); }
+#chooser .ch-fill.hard   { background: #ff9a3d; }
+#chooser .ch-fill.brutal { background: var(--bad); }
+#chooser .ch-band.gentle { color: #7fd4ff; }
+#chooser .ch-band.steady { color: var(--good); }
+#chooser .ch-band.tricky { color: var(--accent); }
+#chooser .ch-band.hard   { color: #ff9a3d; }
+#chooser .ch-band.brutal { color: var(--bad); }
+#chooser .ch-band {
+  font-size: 10px;
+  letter-spacing: .04em;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+#chooser .ch-band.none { color: #6b6390; font-size: 9px; white-space: normal; line-height: 1.25; }
+
+#chooser .ch-best { color: var(--dim); font-size: 10px; font-variant-numeric: tabular-nums; }
+#chooser .ch-best.done { color: var(--good); }
+
+#chooser .ch-foot { color: #6b6390; font-size: 9px; margin-top: 10px; line-height: 1.4; }
+
+/* --- the debug readout, switched off -------------------------------------- */
+/* What is left when ` hides the HUD: the warnings, and nothing else. Boxed so
+   that one line reads as an alert rather than as a stray piece of telemetry
+   that failed to disappear. */
+#hud.compact { max-width: 44vw; white-space: normal; }
+#hud.compact span {
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 2px 7px;
+  border: 1px solid #6b5a20;
+  border-radius: 3px;
+  background: #221d0dee;
+  line-height: 1.35;
+}
+#hud.compact span.bad { border-color: #6b2020; background: #220d0dee; }
+
+/* On a phone the chooser is the one piece of new chrome that earns its place —
+   there is no keyboard to press [ with — so unlike the HUD and the legend it is
+   not hidden, only made to fit. */
+body.touch #chooser { max-height: 80vh; margin-left: 0; }

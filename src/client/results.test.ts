@@ -283,7 +283,7 @@ describe('the actions', () => {
     // displace `next` or `retry` at the top of the list.
     const acts = actionsFor({ ...base, montageCount: 37 });
     const m = acts.find((a) => a.id === 'montage')!;
-    expect(m.key).toBe('A');
+    expect(m.key).toBe('F');
     expect(m.primary).toBe(false);
     expect(m.label).toBe('watch all 37 attempts at once');
     expect(acts.findIndex((a) => a.id === 'montage')).toBeGreaterThan(
@@ -298,9 +298,9 @@ describe('the actions', () => {
     }
   });
 
-  it('binds A to the montage only when the montage is on the panel', () => {
-    expect(actionForKey('KeyA', actionsFor({ ...base, montageCount: 4 }))).toBe('montage');
-    expect(actionForKey('KeyA', actionsFor(base))).toBe(null);
+  it('binds F to the montage only when the montage is on the panel', () => {
+    expect(actionForKey('KeyF', actionsFor({ ...base, montageCount: 4 }))).toBe('montage');
+    expect(actionForKey('KeyF', actionsFor(base))).toBe(null);
   });
 
   it('names the ghost it offers, so "watch" is not a guess', () => {

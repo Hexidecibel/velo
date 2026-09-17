@@ -26,6 +26,12 @@ import { crossCheck } from '@/sim/crosscheck.ts';
 import { LEVELS, adoptLevel, findBySimHash, resolveLevel } from './levels.ts';
 import type { LevelEntry } from './levels.ts';
 import { createLegend, createLevelBar } from './chrome.ts';
+import { buildChooser, chooserSummary, CHOOSER_SORTS } from './chooser.ts';
+import type { ChooserSort } from './chooser.ts';
+import { createChooserUi } from './chooserui.ts';
+import { createThumbs } from './thumbs.ts';
+import { persistentBadges } from './hudmode.ts';
+import type { HudWarnState } from './hudmode.ts';
 import { downloadReplay, onReplayDropped, pickReplay } from './replayio.ts';
 import { clearStoredSpec, loadBests, loadChoice, loadFlag, loadLastLevel, loadStoredSpec, recordBest, saveChoice, saveFlag, saveLastLevel, saveStoredSpec } from './store.ts';
 import { fetchBoard, fetchReplay, submitRun } from './api.ts';
@@ -57,6 +63,7 @@ const toastRoot = document.getElementById('toast') as HTMLElement;
 const legendRoot = document.getElementById('legend') as HTMLElement;
 const boardRoot = document.getElementById('board') as HTMLElement;
 const resultsRoot = document.getElementById('results') as HTMLElement;
+const chooserRoot = document.getElementById('chooser') as HTMLElement;
 const touchRoot = document.getElementById('touch') as HTMLElement;
 const ctx = canvas.getContext('2d', { alpha: false }) as CanvasRenderingContext2D;
 
@@ -243,6 +250,11 @@ const overview = createOverview(cloneOverview(DEFAULT_OVERVIEW));
 overview.startIntro();
 let debug = false;
 let hudCache = '';
+// THE DEBUG READOUT, ON OR OFF. Remembered, and the user's own reason for it:
+// "starting to feel like the hud overlay should be toggleable too, almost ready
+// to just play it straight up." What survives being off is decided by
+// hudmode.ts — warnings stay, telemetry goes.
+let hudVisible = loadFlag('hud', true);
 // The art. `enabled` is the A/B switch — V, or the slider on the panel — and it
 // is deliberately kept rather than deleted once the art lands: readability is
 // the acceptance criterion for the whole look, and readability is judged by
@@ -404,6 +416,9 @@ function setLevel(next: LevelEntry, note = ''): void {
   url.searchParams.set('level', entry.id);
   history.replaceState(null, '', url);
   levelBar.update(entry.id, bests);
+  // `[` and `]` still work with the chooser open, so the card marked as current
+  // has to follow them rather than going stale behind the menu.
+  if (chooserUi.visible) renderChooser();
   // A ghost belongs to a level. Dropped before the fetch rather than after, so
   // there is never a frame where last level's ghost is drawn on this one.
   dropGhost('');
@@ -1101,8 +1116,10 @@ function resultsAction(id: ActionId): void {
       refreshBoard();
       break;
     case 'levels':
+      // The chooser, not the dropdown. This action has always been called
+      // "level select"; now there is something worth selecting from.
       closeResults();
-      levelBar.focus();
+      openChooser();
       break;
     case 'dismiss':
       closeResults();
@@ -1419,7 +1436,10 @@ function draw(alpha: number, dtMs: number): void {
   if (artParams.enabled > 0) {
     const art = ensureBake();
     renderArt(ctx, cssW, cssH, cam, sim.world, sim.state, pose, spec,
-      { ...opts, time: (performance.now() - bootTime) / 1000 }, artParams, art);
+      // The in-canvas level card, clock and apple counter are the GAME talking
+      // and stay whatever the readout is doing. The detail chip beside them is
+      // an instrument, so it goes with the readout.
+      { ...opts, time: (performance.now() - bootTime) / 1000, detailChip: hudVisible }, artParams, art);
   } else {
     render(ctx, cssW, cssH, cam, sim.world, sim.state, pose, spec, opts);
   }
@@ -1488,7 +1508,52 @@ function setMuted(on: boolean): void {
   toast(on ? 'sound off' : 'sound on', 'M');
 }
 
+/** The two things that are warnings rather than telemetry. See hudmode.ts. */
+function hudWarnState(): HudWarnState {
+  return {
+    tuned: specIsTuned,
+    heldFields: liveTune.heldPaths.size,
+    droppedPaths: liveTune.droppedPaths,
+    liveTuneError,
+  };
+}
+
+/** Badge text comes off a file on disk (data/spec.json), so it is escaped. */
+function esc(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function setHudVisible(on: boolean): void {
+  hudVisible = on;
+  saveFlag('hud', on);
+  hud.classList.toggle('compact', !on);
+  // Force a rewrite: the cache is keyed on the HTML, and the two modes can
+  // agree on an empty string.
+  hudCache = ' ';
+  updateHud();
+  toast(
+    on
+      ? 'debug readout on'
+      : 'debug readout off — the level name, clock and apples are drawn in the game. Warnings still show.',
+    '`',
+  );
+}
+
 function updateHud(): void {
+  // HIDDEN MEANS HIDDEN, except for the warnings. A tuned bike that silently
+  // fails to post, and a live-tune file naming a field this build does not
+  // have, are both things a player cannot discover any other way — so they
+  // survive as a compact badge rather than as eleven lines of telemetry.
+  if (!hudVisible) {
+    const html = persistentBadges(hudWarnState())
+      .map((b) => `<span class="${b.tone}">${esc(b.text)}</span>`)
+      .join('\n');
+    if (html !== hudCache) {
+      hudCache = html;
+      hud.innerHTML = html;
+    }
+    return;
+  }
   const s = sim.state;
   const m = input.mask();
   const keys =
@@ -1589,9 +1654,82 @@ function updateHud(): void {
 const levelBar = createLevelBar(levelbarRoot, LEVELS, (id) => {
   const hit = LEVELS.find((l) => l.id === id);
   if (hit) setLevel(hit);
-});
+}, () => openChooser());
 levelBar.update(entry.id, bests);
 createLegend(legendRoot);
+
+// --- the level chooser ------------------------------------------------------
+//
+// A picture of each level, its measured difficulty, and whether you have done
+// it. It is deliberately NOT on the path that changes level in a hurry: `[` and
+// `]` still step instantly and never open this, and the dropdown in the level
+// bar still works exactly as it did. This answers the other question — which of
+// the twenty to ride — which a list of names cannot.
+//
+// IT PAUSES THE GAME while it is up, for the same reason the results screen
+// takes the keyboard: it is a menu. Pausing is the existing P, it cannot touch
+// a recording (no input frames are captured while the loop is paused), and it
+// is what makes the thumbnail queue free — nothing is competing for the frame.
+let chooserSort: ChooserSort = loadChoice<ChooserSort>('chooserSort', CHOOSER_SORTS, 'number');
+let pausedBeforeChooser = false;
+
+const thumbs = createThumbs({
+  onReady: (simHash, url) => chooserUi.setThumb(simHash, url),
+});
+
+const chooserUi = createChooserUi(chooserRoot, {
+  onPick: (id) => {
+    const hit = LEVELS.find((l) => l.id === id);
+    closeChooser();
+    if (hit) setLevel(hit);
+  },
+  onSort: (s) => {
+    chooserSort = s;
+    saveChoice('chooserSort', s);
+    renderChooser();
+  },
+  onClose: () => closeChooser(),
+  thumbUrl: (simHash) => {
+    const hit = findBySimHash(simHash);
+    return hit?.level ? thumbs.peek(hit.level) : null;
+  },
+  wantThumb: (simHash) => {
+    const hit = findBySimHash(simHash);
+    if (hit?.level) thumbs.request(hit.level);
+  },
+});
+
+function renderChooser(): void {
+  const groups = buildChooser(LEVELS, {
+    bests,
+    currentId: entry.id,
+    sort: chooserSort,
+    rev: SIM_REV,
+  });
+  chooserUi.show({ groups, summary: chooserSummary(groups, SIM_REV), sort: chooserSort });
+}
+
+function openChooser(): void {
+  if (chooserUi.visible) return;
+  closeResults();
+  pausedBeforeChooser = loop.paused;
+  loop.paused = true;
+  // Same as the results screen: on a phone the thumb pads sit exactly where the
+  // cards are, and a pad that is underneath a menu is a pad that eats a tap.
+  touch.setHidden(true);
+  renderChooser();
+}
+
+function closeChooser(): void {
+  if (!chooserUi.visible) return;
+  // The queue goes first: a thumbnail still being drawn after the menu closed
+  // is exactly the frame cost this is not allowed to have. Everything already
+  // drawn stays cached, so reopening is instant.
+  thumbs.stop();
+  chooserUi.hide();
+  loop.paused = pausedBeforeChooser;
+  touch.setHidden(false);
+}
 
 // The leaderboard panel. Created before live tune, because live tune's first
 // poll fires immediately and can reach `syncBoardUi` through recomputeSpec.
@@ -1795,6 +1933,13 @@ input.onCommand((code) => {
       return;
     }
   }
+  // The chooser swallows its own keys on its own element (see chooserui.ts).
+  // This is the one that has to work even when focus has wandered off it —
+  // Escape closing a menu is not allowed to depend on where the focus went.
+  if (chooserUi.visible && code === 'Escape') {
+    closeChooser();
+    return;
+  }
   switch (code) {
     case 'Tab':
       // HOLD to see the whole level. The sim is frozen while it is down, so
@@ -1807,7 +1952,14 @@ input.onCommand((code) => {
     case 'KeyT':
       startPlayback();
       break;
-    case 'KeyA':
+    case 'KeyF':
+      // F, not A: KeyA is LEAN LEFT under WASD, and input.ts returns on a
+      // sim-bound key before any command dispatch runs — so the montage key was
+      // dead from the keyboard on both this path and the results panel, while
+      // the legend and the results screen both advertised it. Found by the
+      // agent that built the chooser, not by a test, because nothing asserts
+      // that an advertised key is reachable.
+      //
       // The same montage the results screen offers, reachable after it has been
       // dismissed. A is unbound everywhere else, so this is not a mode: it does
       // the same thing whether the panel is up or not.
@@ -1829,6 +1981,20 @@ input.onCommand((code) => {
       break;
     case 'KeyH':
       panel.toggle();
+      break;
+    case 'KeyC':
+      // Pictures of every level, with their measured difficulty and your best
+      // time on each. A toggle, like every other panel in this game.
+      if (chooserUi.visible) closeChooser();
+      else openChooser();
+      break;
+    case 'Backquote':
+      // The debug readout. Backquote because it is the universal key for a
+      // developer overlay and because every letter that means anything here is
+      // already a binding — and because this is the key you want to be able to
+      // hit without thinking when somebody walks past and you want the screen
+      // to be the game.
+      setHudVisible(!hudVisible);
       break;
     case 'KeyM':
       setMuted(audio.toggleMuted());
@@ -1877,6 +2043,10 @@ window.addEventListener('pointerdown', () => {
   // means "I am ready" is the one that already skipped the opening peek.
   touch.arm();
 });
+
+// Honour the remembered readout state before the first frame, so a player who
+// turned it off does not get one frame of telemetry on every reload.
+hud.classList.toggle('compact', !hudVisible);
 
 loop.start();
 syncBoardUi();

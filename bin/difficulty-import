@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Turn a bin/solve --json payload into src/solver/measured.ts, the one place the
+# client can read a measured difficulty score from.
+#
+#   bin/solve levels/*.json --jobs 7 --time 1200 --json /tmp/solved.json
+#   bin/difficulty-import /tmp/solved.json
+#
+# WHY IT IS A SCRIPT AND NOT A HAND-EDITED FILE. The difficulty numbers are
+# measured from what the solver's search experienced, and producing them is
+# about an hour of CPU across the twenty levels — far too expensive for the
+# client, and too expensive for CI. So they are a build-time artefact. The
+# failure mode of any such artefact is that it rots: somebody moves an apple,
+# the number stays, and the game shows a confident rating for geometry that no
+# longer exists. Two things stop that:
+#
+#   * every row is keyed by the level's simHash AND the sim rev, so an edited
+#     level simply stops matching and the chooser says "unrated";
+#   * the generated file says it is generated and names this command, so the
+#     honest way to change a number is to re-run the solver.
+#
+# The output path defaults to src/solver/measured.ts and can be overridden with
+# a second argument. Exit status: 0 wrote the file, 2 bad usage or a payload
+# that mixes sim revs.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+[[ $# -ge 1 ]] || { echo "usage: bin/difficulty-import <solved.json> [out.ts]" >&2; exit 2; }
+exec "$ROOT/node_modules/.bin/tsx" "$ROOT/bin/_difficulty-import.ts" "$@"

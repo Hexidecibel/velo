@@ -14,6 +14,10 @@
 #   SHOTS_ONLY=art-62 bin/shots 01-first-light 02-the-long-climb ...
 #                                              # one shot per level, for judging
 #                                              # the twenty AS A SET
+#   SHOTS_CHROME=1 SHOTS_ONLY=chooser,hud-off bin/shots 07-the-chimney
+#                                              # the level chooser with its
+#                                              # thumbnails drawn, and the frame
+#                                              # with the debug readout off
 #
 # Five shots per level: art at the base camera, art zoomed in, art with the G
 # collision overlay up, the OLD flat renderer at the same camera for an A/B, and

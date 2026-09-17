@@ -392,7 +392,7 @@ export function actionsFor(a: ActionInput): ResultAction[] {
   if (a.montageCount !== null && a.montageCount >= 2) {
     out.push({
       id: 'montage',
-      key: 'A',
+      key: 'F',
       label: `watch all ${a.montageCount} attempts at once`,
       primary: false,
     });
@@ -420,7 +420,7 @@ export function actionForKey(code: string, actions: ResultAction[]): ActionId | 
       return by('watchRun');
     case 'KeyG':
       return by('watchGhost');
-    case 'KeyA':
+    case 'KeyF':
       return by('montage');
     case 'KeyB':
       return 'board';

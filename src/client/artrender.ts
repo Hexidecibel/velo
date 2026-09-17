@@ -55,6 +55,27 @@ let bloomB: HTMLCanvasElement | null = null;
 export interface ArtRenderOpts extends RenderOpts {
   /** Seconds since boot. Animation only — the sim never sees it. */
   time: number;
+  /**
+   * False for a render that is not a frame the player sees — a level-chooser
+   * thumbnail into an offscreen canvas.
+   *
+   * Its cost is real but it is not EVIDENCE about the frame budget: it is a
+   * different canvas at a different size drawn while nobody is driving. Folding
+   * it into the adaptive controller would mean opening the level chooser
+   * quietly reduced the detail of the next second of play, which is a menu
+   * degrading the game. Defaults to true, so every existing call site is
+   * unchanged.
+   */
+  measure?: boolean;
+  /**
+   * False hides the DETAIL chip in the in-canvas HUD. That chip is the one
+   * piece of the game HUD that is telemetry rather than presentation — the
+   * level card, the clock and the apple counter are the game saying where you
+   * are, and how much decoration the adaptive controller gave up is a
+   * development instrument. So it follows the debug readout (the ` key) rather
+   * than the art HUD. Defaults to true.
+   */
+  detailChip?: boolean;
 }
 
 /**
@@ -166,7 +187,7 @@ export function renderArt(
 
   ctx.restore();
 
-  if (art.hud > 0) drawHud(ctx, cssW, cssH, level.name, state, level.apples.length, P, q);
+  if (art.hud > 0) drawHud(ctx, cssW, cssH, level.name, state, level.apples.length, P, opts.detailChip === false ? null : q);
 
   if (opts.markers) {
     const targets: MarkerTarget[] = [];
@@ -183,7 +204,7 @@ export function renderArt(
   // Canvas2D rasterises lazily, so this is a floor rather than the whole truth
   // — but it is measured on the same terms every frame, which is what a
   // controller needs.
-  observe(adapt, performance.now() - t0, load, q);
+  if (opts.measure !== false) observe(adapt, performance.now() - t0, load, q);
 }
 
 // --- background -------------------------------------------------------------
@@ -665,7 +686,7 @@ const HUD_FONT = 'system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
 
 function drawHud(
   ctx: CanvasRenderingContext2D, cssW: number, cssH: number,
-  name: string, state: SimState, appleCount: number, P: Palette, quality: number,
+  name: string, state: SimState, appleCount: number, P: Palette, quality: number | null,
 ): void {
   // "10 — Cathedral" is an index and a title. Both are content, so both are
   // read off the level rather than configured.
@@ -743,11 +764,13 @@ function drawHud(
   }
 
   // THE DETAIL READOUT. Shown only when the adaptive system has actually given
-  // something up, because "DETAIL 100%" on every frame of every level is noise.
+  // something up, because "DETAIL 100%" on every frame of every level is noise,
+  // and not at all when the debug readout is off: it is the one thing in this
+  // HUD that is an instrument rather than the game talking.
   // Its absence is informative too: a dropped-frame report with no chip on
   // screen means the art was at full detail and the frame was long anyway,
   // which points somewhere else entirely.
-  if (quality < 0.97) {
+  if (quality !== null && quality < 0.97) {
     panel(rx + 196, y0, 92, 34, P.steelD);
     ctx.fillStyle = P.cream;
     ctx.font = `700 12px ${HUD_FONT}`;

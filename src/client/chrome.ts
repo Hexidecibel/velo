@@ -9,18 +9,13 @@ import { loadFlag, saveFlag } from './store.ts';
 export interface LevelBar {
   /** Re-render: selection, and the best-time annotations. */
   update(currentId: string, bests: Record<string, number>): void;
-  /**
-   * Put the keyboard on the picker. This IS "level select" — there is no
-   * separate screen and there does not need to be one, and routing the results
-   * panel's L at the control that already exists beats inventing a second.
-   */
-  focus(): void;
 }
 
 export function createLevelBar(
   root: HTMLElement,
   levels: LevelEntry[],
   onPick: (id: string) => void,
+  onBrowse: () => void,
 ): LevelBar {
   root.textContent = '';
   const label = document.createElement('span');
@@ -29,6 +24,17 @@ export function createLevelBar(
   const select = document.createElement('select');
   select.id = 'levelselect';
   root.append(label, select);
+
+  // The way in to the chooser, next to the control it is an alternative to.
+  // A key nobody has been told about is not a feature; the button is how C gets
+  // discovered, and it prints the key on itself so it teaches rather than
+  // replaces.
+  const browse = document.createElement('button');
+  browse.className = 'lb-browse';
+  browse.textContent = 'browse  C';
+  browse.title = 'pictures of every level, with difficulty and your best times';
+  browse.addEventListener('click', () => onBrowse());
+  root.append(browse);
 
   const note = document.createElement('span');
   note.className = 'lb-note';
@@ -65,9 +71,6 @@ export function createLevelBar(
         : `${done}/${levels.length} completed (local, this browser, rev-scoped)`;
       note.className = cur?.error ? 'lb-note bad' : 'lb-note';
     },
-    focus(): void {
-      select.focus();
-    },
   };
 }
 
@@ -91,10 +94,12 @@ export function createLegend(root: HTMLElement): void {
     '<b>SPACE</b> flip direction — this is how you double back<br>' +
     '<b>TAB</b> hold to see the whole level (time stops)<br>' +
     '<b>R</b> restart &nbsp; <b>T</b> replay &nbsp; <b>E</b> export replay<br>' +
-    '<b>A</b> watch every attempt of this session at once<br>' +
+    '<b>F</b> watch every attempt of this session at once<br>' +
     '<b>ENTER</b> next level, on the results screen &#8212; <b>ESC</b> closes it<br>' +
     '<b>B</b> leaderboard and ghost &nbsp; <b>[ / ]</b> level<br>' +
+    '<b>C</b> all levels &#8212; pictures, difficulty, your best times<br>' +
     '<b>+ / -</b> zoom &nbsp; <b>H</b> tuning sliders<br>' +
+    '<b>`</b> hide the debug readout &#8212; warnings stay<br>' +
     '<b>G</b> show the true collision edge &nbsp; <b>V</b> art on / off<br>' +
     '<b>M</b> mute — sound starts on your first click or key';
   d.append(body);

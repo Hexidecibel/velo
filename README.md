@@ -67,6 +67,7 @@ add a script rather than running an ad-hoc command.
 | `bin/level-check` | Validates a hand-authored level JSON, prints its two hashes, and **warns about straight runs too coarse to ride smoothly**. |
 | `bin/level-drive` | Drives a level headlessly with a scripted rider and reports whether every apple and the flower can actually be reached. `--save <path>` writes the pilot's best run as a standard replay file — a trailing `/` writes one per level into a directory. The saved file is re-verified before it is written, and loads in the client with `L`. |
 | `bin/solve` | **Searches for a run that completes a level, proves it, and scores how hard it was.** A best-first search over macro-actions — held input masks for tenths of a second — through `advance(mask)`, so anything it finds is expressible as a replay. Reports completability, the winning apple order, a difficulty score measured from the search rather than from level statistics, and with `--save` a verified replay file you can watch. `--jobs N` solves several levels at once on worker threads. Not a CI tool: minutes per hard level. See *The solver* below. |
+| `bin/difficulty-import` | **Turns a `bin/solve --json` payload into `src/solver/measured.ts`**, which is the one place the client can read a measured difficulty score from. Solving the set is about an hour of CPU, so the scores are a build-time artefact; every row is keyed by the level's `simHash` **and** the sim rev, so an edited level stops matching and the chooser says *unrated* rather than showing a confident number about geometry that no longer exists. |
 | `bin/spec` | **Changes the bike from a terminal while somebody rides it.** Writes `data/spec.json`; the client picks it up within ~2 s and says what moved. |
 | `bin/replay` | **Re-simulates an exported replay file** and reports identity, hash-chain verification and a diagnostic pass. This is what turns "sometimes it gets weird" into a reproducible artifact. |
 | `bin/air` | Measures jump height and airtime off a fixed synthetic feature, per bike, in metres. Turns "it should catch more air" into a number. |
@@ -76,7 +77,8 @@ add a script rather than running an ad-hoc command.
 | `bin/slope-sweep` | Sweeps a synthetic ramp across slope angle, entry speed, input strategy and transition sharpness, and prints what the bike does. |
 | `bin/audiobench` | **Measures what the sound costs a frame.** Drives a fixed input stream through the real frame loop twice — loud, and muted, which *suspends* the audio context and so really is the cost of no audio at all — interleaved so a busy box biases both equally, and reports the per-frame audio update alongside whole-frame times. `BENCH_FRAMES` and `BENCH_PASSES` lengthen it. |
 | `bin/artbench` | **Measures the art renderer's frame budget with the camera moving.** Flies the camera across a level at play speed, times the render call against the old flat renderer on the same frames, breaks the cost down layer by layer, and then drives the real game and watches real frame times. Exits 2 if a warm frame's p95 goes over 16.7 ms. Every timed pass runs at FULL detail with the adaptive system off, so "it passes" can never quietly mean "it passed by turning everything off"; what the adaptive system settles at is printed separately. `BENCH_OUT=<file>` appends each level as it finishes, so a killed sweep costs only what it had not reached. `BENCH_ART='{"props":0,...}'` overrides art parameters before measuring, which is how a before/after stays honest on one build. |
-| `bin/shots` | Screenshots several levels at the three zooms the camera reaches, with the art on, the art off, the `G` overlay up, and framed on the level's tightest ceiling. Output to `shots/` (gitignored). The A/B pair is the point: "is the collision edge still the most legible line" is a comparison, not an opinion. `SHOTS_ONLY=art-62` takes one shot per level, which is how you judge twenty levels as a SET; `SHOTS_AT=x,y,zoom` frames one exact place, which is how you find out what a prop that looked wrong in an overview actually is. |
+| `bin/montagebench` | **Measures what the end-of-level montage costs a frame, and is where `MONTAGE_CAP` comes from.** Stands up N synthetic riders on a real level and reports the two costs separately — the riders' own sims stepping, and the extra bikes being drawn — because they scale with different things. The draw samples are **paired and interleaved**, each frame drawn twice back to back with the crowd and without it: this box's load average moves by a factor of three inside a minute, and two consecutive passes report whatever somebody else's build was doing. Defaults to `20-close-quarters`, which is the level that decides the cap, because everybody dies inside the same few metres there and so **culling saves nothing**. |
+| `bin/shots` | Screenshots several levels at the three zooms the camera reaches, with the art on, the art off, the `G` overlay up, and framed on the level's tightest ceiling. Output to `shots/` (gitignored). The A/B pair is the point: "is the collision edge still the most legible line" is a comparison, not an opinion. `SHOTS_ONLY=art-62` takes one shot per level, which is how you judge twenty levels as a SET; `SHOTS_AT=x,y,zoom` frames one exact place, which is how you find out what a prop that looked wrong in an overview actually is. `SHOTS_QUERY=touch=1` shoots the page with the phone thumb pads up — they are elements, so they are in the screenshot — and `SHOTS_MONTAGE=24` stands up a crowd of montage riders first, because "does the winning line still read against the failures" is the whole acceptance criterion for that feature's look and is likewise a comparison rather than an opinion. `SHOTS_CHROME=1` adds two frames per level for judging the chrome instead of the art: the **level chooser with its thumbnails drawn** (it waits, because they are rendered one per animation frame on purpose) and the same frame with the **debug readout switched off**. |
 | `bin/board` | **Inspect, check, rebuild and prune the leaderboard store.** No arguments — or `list`, which is what everybody types, since every other subcommand here is a verb — lists every level with its entry counts; a level id shows one board; `player <id>` shows one player's PBs; `check` is an integrity pass; `rebuild [--verify]` regenerates the boards and player files from the submission log, re-simulating every replay if asked; `prune [--apply]` removes replay blobs nothing references, and is a dry run unless you say so. |
 | `bin/submit` | **Posts a replay file to a running server.** Defaults to the **TAS** category, because anything submitted from a terminal was produced by a program and declaring that is the whole point of having the category. Takes a directory, so `bin/submit /tmp/pilot/` posts a whole `bin/level-drive --save` sweep. A path that does not exist (or a directory with no replays in it) is one line and a non-zero exit — a typo is the common way to get here and a raw `ENOENT` stack trace reads like the script is broken rather than like the filename is wrong. |
 | `bin/clean` | Removes `dist/` and `tsconfig.tsbuildinfo`; `--all` also removes `node_modules/`. |
@@ -99,6 +101,7 @@ reap any Chrome holding one of their own profile directories before they start.
 | TAB (hold) | **see the whole level.** The sim and the clock freeze while it is down. |
 | R | restart |
 | T | replay the last run and check its hash chain |
+| F | **watch every attempt of this session at once** — see *The montage* |
 | E | **export the last run** as a self-contained `.replay.json` file |
 | L | load a replay file and watch it (or drag one onto the window) |
 | `[` / `]` | previous / next level |
@@ -106,7 +109,9 @@ reap any Chrome holding one of their own profile directories before they start.
 | V | art renderer on / off — the A/B for readability |
 | B | show/hide the **leaderboard and ghost picker** — open by default |
 | M | **mute** — remembered. Sound starts on your first click or key press, because browsers will not let a page make noise before one. |
+| C | **the level chooser** — a picture of every level, its measured difficulty, and your best time on it |
 | H | show/hide the tuning panel — **closed by default**, remembered once you open it |
+| `` ` `` | **hide the debug readout.** Remembered. The level card, clock and apple counter stay — they are drawn in the canvas and they are the game talking — and so do the two warnings that are not telemetry. |
 | `+` / `-` | zoom bias |
 | P | pause |
 
@@ -120,9 +125,10 @@ one of them on itself:
 | R | retry — exactly what R does everywhere else, routed at the same function |
 | Esc | close it. Instantly; nothing fades and nothing has to be waited through. |
 | T | watch your run |
+| A | **watch all N attempts at once** — only when there are at least two |
 | G | watch the ghost's run — *(the collision overlay everywhere else)* |
 | B | the fuller leaderboard |
-| L | level select — *(load a replay file everywhere else)* |
+| L | level select — opens the chooser — *(load a replay file everywhere else)* |
 
 There is a collapsible control legend in the bottom-left corner of the page,
 because space-to-flip was the single most undiscoverable thing in the game and
@@ -192,7 +198,10 @@ glob, not a hand-maintained array: adding a level is dropping a JSON file in a
 directory, and a registry you have to remember to update defeats that. A level
 that fails to load still appears, marked `BROKEN`, with the loader's message —
 silently vanishing from the menu is the most confusing possible feedback for
-somebody halfway through authoring it.
+somebody halfway through authoring it. **C** opens the fuller chooser — pictures,
+measured difficulty and best times — which is below.
+
+
 
 - `?level=<id>` selects a level and is kept in sync with the picker, so the
   address bar is always a shareable link to what is on screen. `?level=bowl`
@@ -205,6 +214,123 @@ somebody halfway through authoring it.
   and nothing in `localStorage` is allowed to grow into that. The one exception
   is the `playerId`, which is identity rather than a convenience and is treated
   as such.
+
+## The level chooser
+
+**C**, or the `browse` button beside the picker. A card per level with a picture
+of it, what the solver measured its difficulty to be, its apple count and size,
+and your best time on it.
+
+The one-line dropdown is still there and still does its job — it says which
+level you are on, and `[` / `]` step levels instantly. **Neither of them goes
+anywhere near the chooser**, because stepping levels when you already know where
+you are going has to stay free. The chooser answers the other question, the one
+a list of names cannot: *which of the twenty should I ride.*
+
+### The pictures are renders, not files
+
+A thumbnail is the real renderer, at the framing TAB already gives you, into a
+176x99 offscreen canvas. Twenty PNGs in the repo would be stale the first time
+somebody edited a level and wrong the first time the art changed; a render
+cannot drift from the game, because it **is** the game.
+
+Four rules keep it off the hot path, which is the whole risk in drawing twenty
+frames of a game that is trying to hold 60 fps:
+
+- nothing is drawn until the chooser is opened, so a player who never opens it
+  never pays;
+- **one per animation frame**, queued, and the queue is abandoned the moment the
+  chooser closes;
+- results are cached for the session by `simHash`, so the second open is free;
+- the render call passes `measure: false`, so a thumbnail's cost never reaches
+  the **adaptive detail controller**. Without that, opening a menu would quietly
+  reduce the detail of the next second of play — twenty long offscreen frames
+  are real milliseconds, but they are not evidence about the frame budget.
+
+The chooser also **pauses the game** while it is up, which is the existing `P`
+and cannot touch a recording: no input frames are captured while the loop is
+paused.
+
+### The difficulty number is the solver's, not an opinion
+
+Every rating comes from `bin/solve` — precision, clearance, effort and
+lethality, measured from what the search actually experienced (see *Difficulty,
+measured from the search*). Nothing here is hand-assigned, and there is **no
+description text**, because the level format has no description field and
+twenty invented sentences would be filler nobody maintains. What is on a card
+besides the picture and the time is read off the level: apple count, and size in
+metres.
+
+Scoring the set costs about an hour of CPU, so the numbers are a build-time
+artefact in `src/solver/measured.ts`, written by `bin/difficulty-import`. **The
+anti-rot mechanism is the key**: a row is keyed by the level's `simHash` and the
+sim rev, so moving one apple re-keys the level, the row stops matching, and the
+card says *unrated* instead of describing geometry that no longer exists. A
+rename or a recolour keeps it — the same split the leaderboard already trusts.
+
+Two more rules about honesty, both of which cost a card its rating:
+
+- **an unsolved level is never shown as hard.** `16-one-way` is the one the
+  solver cannot do; that is an honest "could not" and the solver has been wrong
+  in that direction twice, so the card says unrated and says why.
+- a level with no row at all — a new one, an edited one, a rev bump — is
+  unrated, never easy.
+
+The word beside the bar (*gentle, steady, tricky, hard, brutal*) is presentation
+cut against the twenty levels the set actually contains, which span 8 to 56. The
+score is the measurement; re-cutting the words changes no ordering.
+
+### Grouped by the shape the set already has
+
+In `number` order the cards group by decade — `01 – 10`, `11 – 20` — because the
+set was authored as a curriculum and a flat alphabetical list throws that away.
+The grouping is **derived from the leading number in the filename**, so a
+twenty-first level lands in `21 – 30` without anybody editing a table, and
+anything unnumbered (the two test levels, a level adopted from a replay file)
+goes in its own group at the end. `by difficulty` collapses it to one ramp,
+easiest first, with the unrated kept out of it rather than given a place in the
+order they have not earned.
+
+## The debug readout is toggleable now
+
+From the user: *"starting to feel like the hud overlay should be toggleable too,
+almost ready to just play it straight up."* **`` ` ``** does it, and the choice
+is remembered.
+
+The interesting part is the line between what is a readout and what is the game:
+
+- **The in-canvas HUD stays.** The level card, the clock and the apple counter
+  are drawn on the canvas in the level's own palette. They are the game telling
+  you where you are, not an instrument.
+- **The text column goes.** Speed, spin, contacts, zoom, fps, worst frame,
+  recorded frames, the ghost and montage captions, both hashes and the rev line
+  are development instruments, and they are what "play it straight up" means
+  getting rid of.
+- **The `DETAIL n%` chip goes with them.** It is the one thing in the in-canvas
+  HUD that is an instrument rather than the game talking, so it follows the
+  readout rather than the art HUD.
+- **Two things survive being hidden**, as a compact badge in the corner where
+  the readout was, because they are warnings rather than telemetry and hiding
+  them would hide the thing they warn about:
+  - **the bike is not the one as shipped** — tuned by your own sliders, or with
+    a field held by `bin/spec`. Such a run finishes normally and is then
+    silently refused by the leaderboard, which is exactly the confusion that put
+    the notice on the HUD in the first place. The badge says the consequence
+    ("times will not post"), not just the state.
+  - **`data/spec.json` named a field this build does not have.** The tune you
+    think you are riding is not the tune you are riding, and that is invisible
+    by construction.
+
+  With neither of those true — a shipped bike and no live tune — the badge is
+  empty and the screen is the game and nothing else.
+
+The **legend is left alone**: it is separate chrome, already collapsible, already
+remembered, and it is how somebody finds out that `` ` `` exists in the first
+place. Hiding the keys along with the telemetry would make the feature harder to
+undo than to do.
+
+`src/client/hudmode.ts` decides which warnings survive and is tested in plain
+node, because "a warning that is not shown" is not a thing a screenshot catches.
 
 ## Replays are files now
 
@@ -593,6 +719,217 @@ The category itself is not going anywhere — it is proof of completability, it
 keeps machine runs out of human competition, and retrofitting the split later is
 a fight nobody wins. What changed is the framing: the solver's output is an
 **authoring tool** and a **number**, and not player-facing content.
+
+## The montage
+
+Finish a level and the panel offers one more thing, on **A**: *watch all 37
+attempts at once*. Press it and every run of the session rides simultaneously —
+all the failures, faint, alongside the line that worked — dozens of ghosts dying
+in every wrong way while one of them makes it. It is Super Meat Boy's trick, and
+in that game it is the single most-loved thing in it, because it turns a grind
+into a visible story of how you learned the level.
+
+**It is nearly free here, and specifically because of a decision made on day
+one.** A replay is an **input stream of about a kilobyte**, not a trajectory, so
+a hundred attempts is ~100 KB rather than megabytes, and playback is N sims
+stepping in parallel — which the sim has supported since the first commit,
+because the solver needed it cheap to instantiate and steppable headlessly. The
+recorder has been retaining every attempt per level rather than overwriting for
+exactly this, so the feature was a rendering job rather than a data migration.
+
+Four rules govern it, and each one is a thing that would otherwise go wrong:
+
+**Ghosts stop at their death tick rather than vanishing.** The cluster of
+stopped bikes at the hard part *is* the story — it is a heat map of where the
+level beat you — and a rider that disappeared when it died would erase exactly
+the thing worth showing. When the last one stops, the HUD says so.
+
+**The crowd fades as it grows.** A single ghost draws at alpha 0.3 and that is
+the number the montage matches at the low end, because it must not introduce a
+second idiom for "another bike". But alpha composites: forty bikes at 0.3 piled
+on the same three metres is an opaque block, and the winning line would then
+read against a wall rather than against a crowd. So alpha falls off as
+`1/sqrt(n)`, with a floor so a lone rider at the far end does not disappear.
+
+**The crowd draws as silhouettes** — the renderer's *own* coarse tier, the one a
+bike already drops to when it is small on screen, asked for explicitly. Two
+reasons: a dozen full-detail bikes, chrome and panel lines and exhaust smoke
+times twelve, is a texture rather than a crowd; and it is the difference between
+fitting and not, at about **2.2 ms per full-detail rider against 0.45 ms per
+silhouette** on this box, roughly five times. It was briefly a *threshold* —
+full detail below a dozen riders — and that was worse than either rule alone,
+because it put a cliff in the middle: twelve attempts measured at 26 ms and
+twenty-four at 12 ms, so watching **fewer** of your failures cost more than
+watching more of them.
+
+**It is offered, never forced.** This screen's standing rule is that the fastest
+path back into the game is the default and dismissal is instant, so the montage
+is a key you press, printed on the panel like every other action, below `next`
+and `retry`. Nothing plays at you before you can hit Enter. A restart clears it
+immediately — faint bikes over a live attempt would be the exact opposite of the
+readability rule.
+
+The winning line is **not** one of the ghosts: it runs on the player's own sim
+through the ordinary playback path, which is what makes the camera follow it and
+what makes it the only bike on screen at full strength.
+
+### What it actually costs, and where the cap came from
+
+The plan estimated 50 ghosts at ~3.7 ms of a 16.7 ms frame from the sim
+benchmark. That arithmetic is right about the half it measured and it is half
+the bill. `bin/montagebench`, on `20-close-quarters` at 900x500 with the art's
+adaptive detail forced **off** so the number cannot be bought by quietly turning
+the game down:
+
+| riders | sim step (ms per input frame) | draw delta p50 | total per frame @ 60 fps |
+| ---: | ---: | ---: | ---: |
+| 6 | 0.055 | 8.3 ms | 8.4 ms |
+| 12 | 0.078 | 5.4 ms | 5.6 ms |
+| 24 | 0.121 | 9.7 ms | 10.0 ms |
+| 40 | 0.190 | 10.8 ms | 11.2 ms |
+
+Read those rows with ±2–3 ms of scheduler noise apiece: this box sits at a load
+average around 15, and an **empty** frame of the same scene measured anywhere
+between 6 and 12 ms across runs — which is why the 6-rider row can come out
+above the 12-rider one. Across every run the marginal cost is about **0.25 ms of
+draw per rider**.
+
+The **sim** half is far better than the plan predicted — a fifth of a
+millisecond of a rendered frame for forty riders. It is the **drawing** that
+costs, by an order of magnitude, even on the silhouette tier.
+
+So the cap is **24, not 50**, and the level that decided it is
+`20-close-quarters`: the densest in the set, the one the user can already feel,
+and the one where **culling saves least**, because the crowd dies inside the
+same few metres and most of it is on screen at once. On a sprawling level most
+of the crowd is off camera and the draw cost falls with it — the riders keep
+*stepping* either way, since a sim paused because it went off screen would come
+back in the wrong place at the wrong moment.
+
+That ~10 ms is a **floor, not a ceiling**: this box has no GPU, so Chrome
+rasterises on the CPU. A machine with a GPU is faster, never slower.
+
+Attempts prefer the most recent — the last two dozen are the ones on the part of
+the level that was actually hard, while the first ten are you learning the ramp
+exists and all die in the same uninteresting place. The winning run is exempt
+from the cap, because a montage without the line that worked is a pile of
+failures. Runs from another sim rev or another bike are **counted and not
+shown**, the same rule the leaderboard ghost runs under and for the same reason:
+replaying those inputs under these physics would draw a line nobody rode.
+
+Nothing here is written to disk. Attempts are for the run of play you are having
+right now; persisting them would be inventing the storage layer that belongs to
+the server.
+
+## Playing on a phone
+
+Landscape, a thumb in each bottom corner, the play area above and between them.
+The controls come up on their own when the primary pointer is coarse, and
+`?touch=1` forces them on from a desktop (`?touch=0` off).
+
+**Large zones, never joysticks — and that is the one decision everything else
+follows from.** A virtual stick is the obvious thing to reach for and it would
+be wrong, because **the sim takes a bitmask**: throttle is on or off, lean is on
+or off, and there is no analog value anywhere in the physics. A stick over a
+bitmask is a four-way pad wearing a costume, and a worse one than a pad — it
+adds a dead zone, it makes the thumb travel to reach an input that is binary at
+the other end, and it is a **false affordance**, because everybody who has held
+a stick expects it to mean partial throttle and it cannot.
+
+| Zone | Where |
+| --- | --- |
+| **GAS** | bottom-right corner, the biggest and lowest target on the screen — it is held almost constantly and everything else is occasional |
+| **brake** | inboard of it, same row, narrower: you reach for it in bursts |
+| **lean ↺ / lean ↻** | bottom-left, two zones **sharing an edge** |
+| **FLIP** | up and inboard of the right cluster |
+| restart, gas mode | small, at the top, away from both thumbs |
+
+**Multi-touch is the normal case, not an edge case.** Throttle plus lean is most
+of the game and throttle plus lean plus flip — three fingers — is how you save a
+landing, so the mask is built from a **map of pointer id to zone** rather than a
+set of zones: two fingers can be in the same zone, and a set would release the
+throttle when either of them lifted. Every way a touch can end is handled
+separately, because they are not interchangeable — `pointerup` is a lift,
+`pointercancel` is the OS taking the gesture away, and a window `blur` is the
+tab going away with fingers still down. A control that only listened for the
+first of those leaves the throttle welded on.
+
+**The lean pair has no dead strip between them.** Direction changes constantly
+in mid-air and lifting a thumb to do it would lose runs, so a moving touch
+re-tests which zone it is in on every move. But a touch that slides into the
+**play area latches** rather than releasing: the throttle is held for most of a
+run and a thumb drifts while it is held, and four millimetres past the top edge
+must not cut the engine with nothing on screen to say why. Only lifting
+releases. A slide never enters a command zone either — a thumb crossing the
+restart button on its way somewhere must not end the run.
+
+**Flip is the awkward one and it gets a home, not a gesture.** It is rare, it is
+critical, and both thumbs are already busy. No double-tap and no swipe: a
+gesture that fails does so *silently*, and this game punishes a missed input
+inside a tenth of a second.
+
+### Auto-throttle, as an option
+
+A two-button scheme was floated early and argued down for the keyboard. On a
+phone it is a genuinely better idea, so it ships as a toggle — the small **gas:
+held / gas: auto** button at the top — remembered between sessions, and off by
+default because some people will strongly prefer each.
+
+With it on the gas is held for you and the right cluster collapses to one big
+target. That target is the **brake**, which is the honest fourth control: the
+plan said "three targets, right thumb free", and dropping the brake would delete
+hooking the front tyre, `20-close-quarters`' braking beat, and any level that
+asks you to stop. The thumb is still free — this is a control you touch in
+bursts rather than hold, which was the point.
+
+Two details make it work rather than fight you. **The brake cuts the auto gas**
+rather than fighting it: throttle and brake are additive torques on the wheel,
+so holding both makes the bike fight itself, and under auto-throttle "brake"
+means "stop". (A player asking for both *deliberately* on a keyboard still gets
+exactly what they asked for; this governs only the bit the client adds on their
+behalf.) And **tap to start**: with the gas held the mask is never zero, so the
+opening peek — which ends on any input at all — would end on the frame the level
+loaded and the bike would drive off the line before anybody had looked at it. So
+the auto bit is withheld until the first touch since the last restart.
+
+### What the camera does about hands
+
+**Thumbs occlude the screen.** In landscape, hands cover the bottom corners,
+which is exactly where a grounded bike sits when the camera centres it — so the
+one thing the readability rule says must always be legible would be under a
+thumb. `screenBiasY` pushes the bike up the frame (0.17 of the half-viewport on
+touch, 0 on a desktop), and the ground it is about to hit comes up with it. It
+is a **presentation offset only**: it moves the published view and never the
+follow, so the safe-box guarantee still holds against the play framing, and the
+two together are clamped so they can never put the bike off the edge. It fades
+out under the overview, where there is no corner to hide in and an off-centre
+framing is just a crooked picture.
+
+**The bike is small on a phone.** 1.7 m at a 62 px/m base camera is under two
+centimetres of actual bike on a 12 cm screen, and the collision-edge readability
+the whole art direction rests on is much harder at that size. So the touch
+default zooms in — `zoomBias` 1.25, about 77 px/m, well inside the range
+`maxZoom` was raised to 150 for — and `+`/`-` still work from there, because the
+bias is a multiplier on the auto zoom rather than a zoom value.
+
+The desktop chrome gets out of the way too: the HUD is nine lines of telemetry,
+the legend lists keys there is no keyboard for, and the leaderboard panel sits
+exactly where the left thumb goes. The level bar stays, because changing level
+is navigation and there is no other way to do it, and the results panel's own
+buttons are tappable — the pads fade out for as long as it is up.
+
+### It is the same game, and that is asserted
+
+**A touch-played run records the same input stream as a keyboard one and must
+verify identically.** The pads emit nothing but the sim's own `IN_*` bits, and
+those bits reach the sim through `input.mask()` — the same function the
+fixed-step loop samples at 128 Hz for the keyboard — rather than being OR-ed in
+at the call site, because there are three call sites and one of them would
+eventually be missed. The recorder never learns where a bit came from.
+
+`touch.test.ts` asserts it rather than claiming it: a thumb-shaped stream goes
+through the real sim, the real recorder and the real `verifyReplay`, and the
+same buttons expressed as raw bits produce a byte-identical stream.
 
 ## Live tune — changing the bike from a terminal
 
@@ -2662,7 +2999,10 @@ src/solver/         the headless solver. field.ts is the level as a MAP
                     search experienced into a number; pack.ts is a SimState as
                     flat doubles. It imports src/sim and nothing imports it, so
                     the sim's isolation rule is untouched and no search ever
-                    reaches the client bundle.
+                    reaches the client bundle. measured.ts is the exception and
+                    is not code: a GENERATED table of difficulty scores, keyed by
+                    simHash and sim rev, which the chooser reads and
+                    bin/difficulty-import writes.
 src/client/         canvas renderer, input, tuning panel, record-and-replay
                     camera.ts is the play framing; overview.ts is the wide view,
                     the freeze and the opening peek; markers.ts is the off-screen
@@ -2680,6 +3020,28 @@ src/client/         canvas renderer, input, tuning panel, record-and-replay
                     comparison, the refusal-to-plain-words mapping, the rows and
                     the action list with its key bindings — and tests in plain
                     node; resultsui.ts is the only half that touches the DOM.
+                    montage.ts is which attempts ride at once, how faint the
+                    crowd is drawn and which of them are worth drawing at all:
+                    arithmetic over plain objects, no sim and no DOM. The riders
+                    themselves are ghost.ts's createRider, which is the
+                    primitive under both a leaderboard ghost and a montage
+                    rider, so the "it cannot touch the player's run" argument is
+                    made once.
+                    chooser.ts is what the level chooser LISTS — grouping,
+                    ordering, best times and the measured rating, decided over
+                    plain objects and tested in plain node; chooserui.ts is the
+                    only half that touches the DOM; thumbs.ts renders a level
+                    into a small offscreen canvas, one per animation frame, and
+                    caches it by simHash. hudmode.ts is the one rule the debug
+                    readout's on/off switch must not break: which warnings
+                    survive being hidden.
+                    touch.ts is the phone: where the thumb zones are, which one
+                    a touch is in, and what bitmask a set of held zones makes —
+                    all DOM-free and tested in plain node — with the elements
+                    and the pointer handlers underneath. It emits nothing but
+                    the sim's own IN_* bits and reaches the sim through
+                    input.mask(), so a touch run and a keyboard run are the same
+                    bytes.
 src/server/         Hono, the published bundle, and the leaderboard.
                     board.ts is the board as ARITHMETIC — placement, ranks, the
                     entry above you — with no filesystem in it, so it tests in

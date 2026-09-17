@@ -58,6 +58,18 @@ const QUERY = process.env.SHOTS_QUERY || '';
  */
 const MONTAGE = Number(process.env.SHOTS_MONTAGE || 0);
 
+/**
+ * Shoot the CHROME rather than the art — `SHOTS_CHROME=1`.
+ *
+ * Two extra frames per level: the level chooser with its thumbnails drawn, and
+ * the same frame with the debug readout switched off. Both are page elements
+ * over the canvas, so they are in the screenshot like the touch pads are, and
+ * both are judged the same way the art is — by looking at one. The chooser shot
+ * deliberately waits: thumbnails are rendered one per animation frame on
+ * purpose, so a shot taken immediately would photograph placeholders.
+ */
+const CHROME = process.env.SHOTS_CHROME === '1';
+
 await mkdir(OUT, { recursive: true });
 const serve = createServer(async (req, res) => {
   const raw = decodeURIComponent((req.url || '/').split('?')[0]);
@@ -129,8 +141,31 @@ try {
       ['art-tight-debug', `(()=>{const g=window.velo.tightestGap();return window.velo.renderAt(g.x,g.y,62,{art:true,debug:true})})()`],
       ['art-overview', `window.velo.renderAt((window.velo.level.minX+window.velo.level.maxX)/2,(window.velo.level.minY+window.velo.level.maxY)/2,Math.min(30,${W - 80}/(window.velo.level.maxX-window.velo.level.minX)),{art:true,overview:1})`],
     ];
+    if (CHROME) {
+      // The loop is restarted for this one: the readout is a DOM overlay but the
+      // in-canvas HUD is painted by a FRAME, so a shot with the loop stopped
+      // photographs the canvas as it was before the key was pressed.
+      variants.push(['hud-off', `(()=>{window.dispatchEvent(new KeyboardEvent('keydown',{code:'Backquote',bubbles:true}));window.velo.loop.start();return 1})()`]);
+      // Opens the chooser and WAITS for every thumbnail, reporting how long they
+      // took. Thumbnails are rendered one per animation frame on purpose, so a
+      // shot taken immediately photographs placeholders — and "how long do
+      // twenty renders of a level take" is a number worth printing rather than
+      // a sleep worth guessing.
+      variants.push(['chooser', `(async()=>{
+        const t0=performance.now();
+        window.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyC',bubbles:true}));
+        for(;;){
+          await new Promise((r)=>requestAnimationFrame(r));
+          const want=document.querySelectorAll('#chooser .ch-card').length;
+          const got=document.querySelectorAll('#chooser .ch-shot img').length;
+          if((want>0&&got>=want)||performance.now()-t0>15000) return JSON.stringify({thumbs:got+'/'+want,ms:Math.round(performance.now()-t0)});
+        }
+      })()`]);
+    }
     for (const [name, expr] of variants.filter(([n]) => !only.length || only.includes(n))) {
-      await ev(cdp, `(()=>{${expr};return 1})()`);
+      const said = await ev(cdp, `(()=>{const r=${expr};return r===undefined?1:r})()`);
+      if (name === 'chooser') console.log(`    thumbnails: ${await said}`);
+      if (name === 'hud-off') await new Promise((r) => setTimeout(r, 400));
       const r = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false, fromSurface: true });
       await writeFile(join(OUT, `${lv}--${name}.png`), Buffer.from(r.data, 'base64'));
     }
