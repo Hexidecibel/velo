@@ -44,7 +44,7 @@
 import { IN_MASK } from '@/sim/consts.ts';
 import type { Level } from '@/sim/level.ts';
 import type { BikeSpec } from '@/sim/spec.ts';
-import { createSim } from '@/sim/sim.ts';
+import { getEngine, SIM_REV } from '@/sim/rev.ts';
 import type { SimState } from '@/sim/step.ts';
 import { buildField, geodesic, distAt, nearestFree } from './field.ts';
 import type { Field } from './field.ts';
@@ -52,6 +52,12 @@ import { Nodes, search, diverseGoals, DEFAULT_SEARCH } from './search.ts';
 import type { SearchOpts, SearchStats } from './search.ts';
 
 export interface SolveOpts {
+  /**
+   * Which physics to search. Defaults to SIM_REV, the LIVE rev — a solver that
+   * quietly searched the newest physics would report a level completable that
+   * nobody playing the game could complete.
+   */
+  rev: number;
   /** Wall-clock ceiling for the whole solve, milliseconds. */
   timeBudgetMs: number;
   /** How hard to try, in order. The first that works wins. */
@@ -91,6 +97,7 @@ export interface Strategy {
 }
 
 export const DEFAULT_SOLVE: SolveOpts = {
+  rev: SIM_REV,
   timeBudgetMs: 5 * 60 * 1000,
   targetTries: 3,
   descendTolerance: 3,
@@ -255,7 +262,7 @@ export function solveLevel(level: Level, spec: BikeSpec, userOpts: Partial<Solve
     return true;
   };
 
-  const sim = createSim(level, spec);
+  const sim = getEngine(opts.rev).createSim(level, spec);
   const nodes = new Nodes(nApples);
   // Node 0 is the level start. `masksTo` walks back to it and stops, so every
   // chain is rooted at "the moment the run begins".

@@ -34,26 +34,36 @@ import { persistentBadges } from './hudmode.ts';
 import type { HudWarnState } from './hudmode.ts';
 import { downloadReplay, onReplayDropped, pickReplay } from './replayio.ts';
 import { clearStoredSpec, loadBests, loadChoice, loadFlag, loadLastLevel, loadStoredSpec, recordBest, saveChoice, saveFlag, saveLastLevel, saveStoredSpec } from './store.ts';
-import { fetchBoard, fetchReplay, submitRun } from './api.ts';
+import { fetchBoard, fetchPlayer, fetchReplay, submitRun } from './api.ts';
 import type { BoardEntry, BoardPayload, Category } from './api.ts';
 import { chooseGhost, createGhost, createRider, ghostCompat, ghostNoteFor, GHOST_KINDS, GHOST_LABELS, watchableCategory } from './ghost.ts';
 import type { Ghost, GhostKind, Rider, Standing } from './ghost.ts';
 import { montageAlpha, montageLabel, MONTAGE_MIN, selectMontage, visibleRiders } from './montage.ts';
-import { hasName, loadIdentity, setName } from './identity.ts';
+import {
+  adoptPlayerId, hasName, loadIdentity, previousPlayerId, restorePreviousPlayerId,
+  rotatePlayerId, setAppearance, setName,
+} from './identity.ts';
 import { createBoardUi } from './boardui.ts';
 import { createResultsUi } from './resultsui.ts';
+import { createLookUi } from './lookui.ts';
+import { createClaimUi } from './claimui.ts';
+import { CLAIM_PARAM, claimCode, parseClaim } from '@/shared/claim.ts';
 import { actionForKey, buildResults } from './results.ts';
 import type { ActionId, ResultsModel, SubmitState } from './results.ts';
 import { parseReplayFile } from '@/sim/replay.ts';
 import { createLiveTune } from './livetune.ts';
 import { renderArt } from './artrender.ts';
+import { makeLook } from './art/bikeart.ts';
+import type { BikeLook } from './art/bikeart.ts';
+import { appearanceFor, appearanceLabel, DEFAULT_APPEARANCE, parseAppearance, resolveAppearance } from '@/shared/appearance.ts';
+import type { AppearanceKey } from '@/shared/appearance.ts';
 import { bakeLevel, bakeSignature } from './art/bake.ts';
 import type { BakedLevel } from './art/bake.ts';
 import { cloneArt, DEFAULT_ART } from './art/params.ts';
 import { createAudio } from './audio/index.ts';
 import { cloneAudio, DEFAULT_AUDIO } from './audio/params.ts';
 import { sampleRide } from './audio/sample.ts';
-import { CONCRETE } from './art/palette.ts';
+import { CONCRETE, levelPalette } from './art/palette.ts';
 
 const canvas = document.getElementById('view') as HTMLCanvasElement;
 const hud = document.getElementById('hud') as HTMLElement;
@@ -64,6 +74,8 @@ const legendRoot = document.getElementById('legend') as HTMLElement;
 const boardRoot = document.getElementById('board') as HTMLElement;
 const resultsRoot = document.getElementById('results') as HTMLElement;
 const chooserRoot = document.getElementById('chooser') as HTMLElement;
+const lookRoot = document.getElementById('look') as HTMLElement;
+const claimRoot = document.getElementById('claim') as HTMLElement;
 const touchRoot = document.getElementById('touch') as HTMLElement;
 const ctx = canvas.getContext('2d', { alpha: false }) as CanvasRenderingContext2D;
 
@@ -170,6 +182,62 @@ let montage: MontageRun | null = null;
 // be faked; whose time it is can be.
 const identity = loadIdentity();
 let boardCategory = loadChoice<Category>('boardCategory', ['human', 'tas'], 'human');
+
+// --- what the bikes look like -----------------------------------------------
+//
+// COSMETICS, AND STRICTLY NOTHING ELSE. Nothing below is in `BikeSpec`, nothing
+// below is in `specHash`, and nothing below can change a time or stop one
+// counting. That separation is the whole design (see src/shared/appearance.ts)
+// and it is why a colour picker is safe to ship next to a leaderboard that
+// refuses a tuned bike.
+//
+// A LIVERY IS SOLVED AGAINST THE LEVEL IT IS RIDDEN ON, so every look is
+// memoised per level and thrown away when the level or the appearance changes.
+// Resolving one is a dozen bisections — nothing once, silly sixty times a
+// second.
+let paletteCache: { key: string; P: ReturnType<typeof levelPalette> } | null = null;
+function levelP(): ReturnType<typeof levelPalette> {
+  // Mirrors bakeLevel's own choice exactly, including `art.derive` being the
+  // switch that turns per-level palettes off. Two answers to "what colour is
+  // this level" would be two different bikes in the same frame.
+  const key = `${level.simHash}|${artParams.derive > 0 ? 1 : 0}`;
+  if (!paletteCache || paletteCache.key !== key) {
+    paletteCache = { key, P: artParams.derive > 0 ? levelPalette(level.style, level.simHash) : CONCRETE };
+  }
+  return paletteCache.P;
+}
+
+let myLookCache: BikeLook | null = null;
+/** The player's own bike, on this level. */
+function myLook(): BikeLook {
+  if (!myLookCache) myLookCache = makeLook(identity.appearance, levelP(), identity.playerId);
+  return myLookCache;
+}
+/** Called whenever the level or the chosen appearance moves under a cached look. */
+function dropLooks(): void {
+  paletteCache = null;
+  myLookCache = null;
+  ghostLook = null;
+  lastReplayLook = null;
+}
+
+/**
+ * THE GHOST'S OWN LIVERY. Theirs, never yours — the same argument as
+ * `ghostFacing`, and the reason the feature is worth building rather than a
+ * toybox: a ghost in your colours is a second copy of you, and a ghost in the
+ * colours the person who set it chose is a person.
+ */
+let ghostLook: BikeLook | null = null;
+
+/**
+ * The livery the CURRENT PLAYBACK is in, when it is not yours.
+ *
+ * T replays your own run and shows your own bike. A file dragged in, or a board
+ * row watched, shows the bike it was ridden on — resolved once, here, at the
+ * moment the replay is adopted, so there is exactly one answer to "whose run is
+ * this" and no two code paths can disagree about it.
+ */
+let lastReplayLook: BikeLook | null = null;
 // `above` by default: racing the run one place ahead of you is the one that
 // makes you ride harder, and it degrades to your own PB when nobody is ahead.
 let ghostKind = loadChoice<GhostKind>('ghost', GHOST_KINDS, 'above');
@@ -355,7 +423,10 @@ function bankAbandoned(): void {
 }
 
 function restart(keepReplay = true): void {
-  if (!keepReplay) lastReplay = null;
+  if (!keepReplay) {
+    lastReplay = null;
+    lastReplayLook = null;
+  }
   bankAbandoned();
   // Auto-throttle goes back to waiting for a tap. See `TouchControls.arm`.
   touch.disarm();
@@ -400,9 +471,13 @@ function setLevel(next: LevelEntry, note = ''): void {
   entry = next;
   level = next.level;
   baked = null;
+  // A livery is solved against the level's palette, so every look on screen is
+  // for the level that just left.
+  dropLooks();
   audio.reset();
   sim = createSim(level, spec);
   lastReplay = null;
+  lastReplayLook = null;
   replayNote = note;
   restart(false);
   // The opening peek happens on a LEVEL LOAD and not on a restart. Seeing the
@@ -456,6 +531,7 @@ function recomputeSpec(carry: boolean): void {
   prevState = sim.snapshot();
   recorder.reset();
   lastReplay = null;
+  lastReplayLook = null;
   playback = null;
   const p = PRESETS.find((x) => x.id === presetId);
   specIsTuned = p ? specHash(localSpec) !== specHash(p.spec) : true;
@@ -581,6 +657,8 @@ function finishRun(): void {
   const r = recorder.build(level, spec, sim);
   if (!r) return;
   lastReplay = r;
+  // Your own run, so T replays it in your own colours.
+  lastReplayLook = null;
   attempts.add(r);
   // READ BEFORE `recordBest` WRITES. It overwrites the stored best in place, so
   // a comparison taken afterwards is a run against itself.
@@ -689,6 +767,7 @@ function startMontage(): void {
   // the sim and the camera, so the montage is built after it and every rider
   // starts on the line together with the player's own.
   lastReplay = hero;
+  lastReplayLook = null;
   closeResults();
   startPlayback();
   montage = { riders, alpha: montageAlpha(riders.length + 1), label: montageLabel(sel) };
@@ -719,12 +798,15 @@ function syncBoardUi(): void {
     status: boardStatus,
     statusKind: boardStatusKind,
     ghostNote,
+    palette: levelP(),
+    appearance: identity.appearance,
   });
 }
 
 function dropGhost(note: string): void {
   ghost = null;
   ghostReplayId = '';
+  ghostLook = null;
   ghostNote = note;
 }
 
@@ -829,12 +911,21 @@ function ensureGhost(): void {
       syncBoardUi();
       return;
     }
+    // WHOSE APPEARANCE WINS, decided in one place. The BOARD ENTRY is preferred
+    // over anything the stored replay remembers, because the entry is refreshed
+    // in place on every submission — so the bike riding beside you is the bike
+    // on the row you are chasing, and the two can never disagree. A row from
+    // before any of this existed has none, and `resolveAppearance` turns that
+    // into a stable derivation from their playerId rather than into your bike.
+    const theirs = resolveAppearance(want.appearance, want.playerId);
     ghost = createGhost(level, spec, r.value, {
       kind: pick.kind,
       name: want.name,
       replayId: want.replayId,
       rank: pick.rank,
+      appearance: theirs,
     });
+    ghostLook = makeLook(theirs, levelP(), want.playerId);
     ghostReplayId = want.replayId;
     ghostNote = '';
     // Line it up with where the player already is, because a ghost that arrived
@@ -907,7 +998,18 @@ function submitRunIfPossible(r: Replay): void {
   pendingSubmit = null;
   setSubmitState(r, { kind: 'posting' });
   boardStatusSet('posting…', '');
-  submitRun({ playerId: identity.playerId, name: identity.name, category: 'human', replay: r }).then((res) => {
+  submitRun({
+    playerId: identity.playerId,
+    name: identity.name,
+    // POSTED ON EVERY RUN, not only the first. The server refreshes it in place
+    // exactly as it refreshes the name, so repainting your bike repaints the
+    // rows you already hold — the alternative makes repainting look broken
+    // while the data underneath is perfectly correct, which is the bug a test
+    // caught the last time this pattern was built.
+    appearance: identity.appearance,
+    category: 'human',
+    replay: r,
+  }).then((res) => {
     if (!res.ok) {
       // Latch on the CODE now that the wire carries one. Matching on the prose
       // worked only for as long as nobody reworded the refusal.
@@ -993,7 +1095,12 @@ function watchEntry(e: BoardEntry): void {
       return;
     }
     try {
-      loadReplay(parseReplayFile(r.value), `${e.name} — ${ticksToSeconds(e.timeTicks).toFixed(3)}s`);
+      const file = parseReplayFile(r.value);
+      loadReplay(file, `${e.name} — ${ticksToSeconds(e.timeTicks).toFixed(3)}s`);
+      // The ROW wins over what the stored blob remembers, so the bike you watch
+      // is the bike on the row you clicked. `loadReplay` has already resolved a
+      // look from the file alone; this is the one caller that knows better.
+      lastReplayLook = replayLook(file, e);
     } catch (err) {
       boardStatusSet(`that run did not parse: ${err instanceof Error ? err.message : String(err)}`, 'bad');
     }
@@ -1065,7 +1172,7 @@ function syncResults(): void {
       montageCount: montageCount(),
     },
   });
-  resultsUi.update(resultsModel);
+  resultsUi.update(resultsModel, levelP());
   // The panel's own buttons are UNDER the pads and they are the only way a
   // phone reaches "next level". The controls stay live — dismissing the panel
   // puts them straight back — they just get out of the way.
@@ -1141,6 +1248,10 @@ function exportReplay(): void {
       levelRaw: entry.raw,
       levelName: level.name,
       spec,
+      // So the file shows the bike it was ridden on when somebody else opens
+      // it. Presentation metadata; the verifier cannot see it.
+      playerId: identity.playerId,
+      appearance: identity.appearance,
     });
     replayNote = `exported ${name} — re-run it with: bin/replay ${name}`;
   } catch (e) {
@@ -1218,9 +1329,38 @@ function loadReplay(file: ReplayFile, name: string): void {
   }
 
   lastReplay = file;
+  // THE BIKE IT WAS RIDDEN ON. `meta` is the replay file's presentation block —
+  // never read by the sim, never hashed, and absent on every file recorded
+  // before today and on every pilot and solver run in `replays/`. Absent falls
+  // back to the shipped bike rather than erroring or drawing nothing.
+  lastReplayLook = replayLook(file, null);
   startPlayback();
   const claimed = `${file.finished ? 'FINISHED' : file.dead ? 'DEAD' : 'unfinished'} at ${ticksToSeconds(file.timeTicks).toFixed(3)}s`;
   replayNote = `${name}: ${claimed}${notes.length ? ` (${notes.join('; ')})` : ''} — ${replayNote}`;
+}
+
+/**
+ * Whose bike a replay shows.
+ *
+ * ONE resolution order, in one function, because the hazard is two code paths
+ * disagreeing about it:
+ *
+ *   1. the board entry we clicked, when there is one — it is refreshed in place
+ *      on every submission, so it is the current truth about that person and it
+ *      is what the row beside the button is already showing;
+ *   2. otherwise whatever the FILE remembers in its `meta` block, which is what
+ *      makes an exported replay stand alone when it is handed to somebody;
+ *   3. otherwise the stable derivation from the playerId, if we know one;
+ *   4. otherwise the shipped bike.
+ *
+ * Steps 3 and 4 are `resolveAppearance`'s, so this function is only ever
+ * choosing which source to hand it.
+ */
+function replayLook(file: ReplayFile, want: BoardEntry | null): BikeLook {
+  const carried = want?.appearance ?? (file.meta ? (file.meta as Record<string, unknown>).appearance : undefined);
+  const who = want?.playerId ?? (typeof file.meta?.playerId === 'string' ? file.meta.playerId : null);
+  const app = resolveAppearance(carried, who);
+  return makeLook(app, levelP(), who);
 }
 
 function importReplay(): void {
@@ -1396,6 +1536,14 @@ function montageDraws(
     const r = montage.riders[i];
     // ALWAYS the silhouette tier. Readability and cost both say so, and
     // montage.ts carries the measurement and the cliff it avoids.
+    // NO `look`, DELIBERATELY, AND THIS IS THE DECISION. A montage rider is one
+    // of the PLAYER'S OWN attempts, so it falls back to the player's current
+    // livery rather than carrying one per attempt. Appearance could have been
+    // embedded per attempt — repainting mid-session would then show
+    // historically, which is arguably nicer — but the failure mode of two code
+    // paths disagreeing is a crowd of forty split down the middle between two
+    // liveries, which reads as a bug. One answer, resolved live: the montage is
+    // about you, so it is all you, in the colours you are wearing now.
     out.push({ pose: r.pose(alpha), facing: r.facing, alpha: montage.alpha, coarse: true });
   }
   return out;
@@ -1439,7 +1587,17 @@ function draw(alpha: number, dtMs: number): void {
       // The in-canvas level card, clock and apple counter are the GAME talking
       // and stay whatever the readout is doing. The detail chip beside them is
       // an instrument, so it goes with the readout.
-      { ...opts, time: (performance.now() - bootTime) / 1000, detailChip: hudVisible }, artParams, art);
+      {
+        ...opts,
+        time: (performance.now() - bootTime) / 1000,
+        detailChip: hudVisible,
+        // THE BIKE ON SCREEN IS WHOEVER IS RIDING IT. During a playback of
+        // somebody else's file or somebody else's board row that is THEIR
+        // livery, because the player's own sim is what carries the line — see
+        // `lastReplayLook`. Everything else is yours.
+        look: playback && lastReplayLook ? lastReplayLook : myLook(),
+        ghostLook,
+      }, artParams, art);
   } else {
     render(ctx, cssW, cssH, cam, sim.world, sim.state, pose, spec, opts);
   }
@@ -1630,7 +1788,11 @@ function updateHud(): void {
     ghost
       ? `<span class="k">ghost</span> ${ghost.meta.name}${ghost.meta.rank !== null ? ` (#${ghost.meta.rank})` : ''} ` +
         `<span class="v">${ticksToSeconds(ghost.timeTicks).toFixed(3)}s</span>  ` +
-        `<span class="k">${GHOST_LABELS[ghost.meta.kind]}</span>  ${ghost.done ? 'finished' : `${ghost.at}/${ghost.frames}`}` +
+        `<span class="k">${GHOST_LABELS[ghost.meta.kind]}</span>  ` +
+        // Which bike that is, so the one riding beside you is identifiable as
+        // theirs rather than as a second copy of yours.
+        `<span class="k">${appearanceLabel(ghost.meta.appearance)}</span>  ` +
+        `${ghost.done ? 'finished' : `${ghost.at}/${ghost.frames}`}` +
         // A gap in METRES, not seconds. The ghost is stepped one frame for one
         // frame with you, so the two clocks are identical by construction and a
         // time gap would always read 0.00s. What differs is where you each are.
@@ -1739,7 +1901,260 @@ const boardUi = createBoardUi(boardRoot, {
   onName: (n) => onNameChosen(n),
   onRefresh: () => refreshBoard(),
   onWatch: (e) => watchEntry(e),
+  onCustomise: () => openLook(),
+  onLinkDevice: () => openClaim('mine'),
 });
+
+// --- being the same player on two devices ------------------------------------
+//
+// Identity lives in ONE browser's localStorage, which was fine until touch
+// controls shipped: picking up the phone made you a different person, with no
+// times and — now that a bike can be chosen — not even the same bike.
+//
+// This solves cross-device identity and NOTHING ELSE. It is not authentication
+// and the README's note stands unchanged: re-simulation proves a time is real;
+// nothing proves whose it is. See src/shared/claim.ts for why a bare playerId is
+// an honest thing to put in a QR code.
+let claimMode: 'mine' | 'adopt' = 'mine';
+let claimOffered: string | null = null;
+let claimOfferedName: string | null = null;
+let claimStatus = '';
+let claimStatusKind: 'ok' | 'warn' | 'bad' | '' = '';
+let pausedBeforeClaim = false;
+
+const claimUi = createClaimUi(claimRoot, {
+  onAdopt: (id) => {
+    if (id === identity.playerId) {
+      claimStatus = 'that is already this device — nothing to do';
+      claimStatusKind = 'ok';
+      renderClaim();
+      return;
+    }
+    const before = identity.playerId;
+    const next = adoptPlayerId(id, identity);
+    identity.playerId = next.playerId;
+    // The NAME and the BIKE follow the id, because claiming means being that
+    // person: posting under their id with your label would put your name on
+    // their rows, which is the one outcome nobody wants.
+    adoptRemoteIdentity(id);
+    claimMode = 'mine';
+    claimOffered = null;
+    claimStatus = `this device is now ${claimCode(id)} — it was ${claimCode(before)}, and “go back” undoes this`;
+    claimStatusKind = 'ok';
+    clearClaimParam();
+    onIdentityChanged();
+    renderClaim();
+  },
+  onUndo: () => {
+    const next = restorePreviousPlayerId(identity);
+    if (next.playerId === identity.playerId) {
+      claimStatus = 'there is no previous id on this device';
+      claimStatusKind = 'warn';
+      renderClaim();
+      return;
+    }
+    identity.playerId = next.playerId;
+    adoptRemoteIdentity(next.playerId);
+    claimStatus = `back to ${claimCode(next.playerId)}`;
+    claimStatusKind = 'ok';
+    onIdentityChanged();
+    renderClaim();
+  },
+  onRotate: () => {
+    const before = identity.playerId;
+    const next = rotatePlayerId(identity);
+    identity.playerId = next.playerId;
+    claimStatus =
+      `this device is now ${claimCode(next.playerId)}. Times posted as ${claimCode(before)} stay on the board `
+      + 'under that id — “go back” returns to it.';
+    claimStatusKind = 'ok';
+    onIdentityChanged();
+    renderClaim();
+  },
+  onClose: () => closeClaim(),
+});
+
+/**
+ * Pull the claimed player's NAME and BIKE down, so the device looks like them
+ * rather than posting under their id wearing your label.
+ *
+ * Degrades silently and completely: the server may be down, the device gate may
+ * have expired, the player may have no file yet because they have never posted.
+ * In every one of those the claim still stands — the id is what matters — and
+ * the label simply stays whatever it was until their next run refreshes it.
+ */
+function adoptRemoteIdentity(playerId: string): void {
+  fetchPlayer(playerId).then((r) => {
+    if (!r.ok || identity.playerId !== playerId) return;
+    if (r.value.name) {
+      identity.name = setName(r.value.name);
+    }
+    // Their bike too. Claiming means BEING that person, and a device that
+    // posted under their id in somebody else's livery would put the wrong bike
+    // on their rows the moment it finished a level.
+    if (r.value.appearance) {
+      identity.appearance = setAppearance(parseAppearance(r.value.appearance));
+      identity.chosenLook = true;
+    }
+    onIdentityChanged();
+    renderClaim();
+  });
+}
+
+/** Everything that has to move when this device becomes somebody else. */
+function onIdentityChanged(): void {
+  // A board is answered per player — `above`, `you` and `rank` are all computed
+  // for whoever asked — so the one on screen is now about the wrong person.
+  board = null;
+  humanBoard = null;
+  tasBoard = null;
+  ghostReplayId = '';
+  dropGhost('');
+  myLookCache = null;
+  syncBoardUi();
+  refreshBoard();
+}
+
+/** Take `?claim=` off the address bar once it has been answered either way. */
+function clearClaimParam(): void {
+  const url = new URL(location.href);
+  if (!url.searchParams.has(CLAIM_PARAM)) return;
+  url.searchParams.delete(CLAIM_PARAM);
+  history.replaceState(null, '', url);
+}
+
+function renderClaim(): void {
+  claimUi.show({
+    mode: claimMode,
+    playerId: identity.playerId,
+    name: identity.name,
+    offered: claimOffered,
+    offeredName: claimOfferedName,
+    previous: previousPlayerId(),
+    status: claimStatus,
+    statusKind: claimStatusKind,
+  });
+}
+
+function openClaim(mode: 'mine' | 'adopt'): void {
+  claimMode = mode;
+  if (!claimUi.visible) {
+    closeResults();
+    closeChooser();
+    closeLook();
+    pausedBeforeClaim = loop.paused;
+    loop.paused = true;
+    touch.setHidden(true);
+  }
+  renderClaim();
+}
+
+function closeClaim(): void {
+  if (!claimUi.visible) return;
+  claimUi.hide();
+  claimStatus = '';
+  claimStatusKind = '';
+  claimOffered = null;
+  claimOfferedName = null;
+  clearClaimParam();
+  loop.paused = pausedBeforeClaim;
+  touch.setHidden(false);
+}
+
+/**
+ * A claim link, answered on boot.
+ *
+ * ASKED, NEVER APPLIED SILENTLY. Adopting an id replaces who this device is,
+ * and a URL doing that without a question is exactly the behaviour nobody
+ * expects from a link — especially one that arrived by being scanned off
+ * somebody else's screen.
+ */
+(function offerClaimFromUrl(): void {
+  const id = parseClaim(location.href);
+  if (!id) return;
+  if (id === identity.playerId) {
+    clearClaimParam();
+    return;
+  }
+  claimOffered = id;
+  claimOfferedName = null;
+  fetchPlayer(id).then((r) => {
+    if (r.ok && claimOffered === id) {
+      claimOfferedName = r.value.name;
+      renderClaim();
+    }
+  });
+  openClaim('adopt');
+})();
+
+// --- the customiser ---------------------------------------------------------
+//
+// Six bikes, ten liveries, and what the rider is wearing. NONE OF IT TOUCHES
+// THE PHYSICS: same spec, same colliders, same head, one specHash — asserted in
+// bikeart.test.ts rather than promised, because a cosmetic that could refuse a
+// time would be the third time this user has been told their bike is not the
+// shipped one.
+//
+// It PAUSES THE GAME while it is up, exactly as the chooser does and for the
+// same reason: it is a menu, the preview is a live render, and a bike leaning
+// against a wall underneath an open panel is not a state anybody wants.
+let pausedBeforeLook = false;
+
+const lookUi = createLookUi(lookRoot, {
+  onPick: (key: AppearanceKey, id: string) => {
+    identity.appearance = setAppearance({ ...identity.appearance, [key]: id });
+    identity.chosenLook = true;
+    myLookCache = null;
+    renderLook();
+    syncBoardUi();
+    if (results) syncResults();
+  },
+  onRandom: () => {
+    // Somebody else's bike, borrowed. `appearanceFor` is the same derivation
+    // that gives a player who has never chosen a livery of their own, so the
+    // die roll produces a bike that already exists on somebody's board row
+    // rather than a nineteenth thing.
+    identity.appearance = setAppearance(appearanceFor(`${identity.playerId}:${Date.now()}`));
+    identity.chosenLook = true;
+    myLookCache = null;
+    renderLook();
+    syncBoardUi();
+  },
+  onReset: () => {
+    identity.appearance = setAppearance(DEFAULT_APPEARANCE);
+    identity.chosenLook = true;
+    myLookCache = null;
+    renderLook();
+    syncBoardUi();
+  },
+  onClose: () => closeLook(),
+});
+
+function renderLook(): void {
+  lookUi.show({
+    appearance: identity.appearance,
+    palette: levelP(),
+    playerId: identity.playerId,
+    levelName: level.name,
+  });
+}
+
+function openLook(): void {
+  if (lookUi.visible) return;
+  closeResults();
+  closeChooser();
+  pausedBeforeLook = loop.paused;
+  loop.paused = true;
+  touch.setHidden(true);
+  renderLook();
+}
+
+function closeLook(): void {
+  if (!lookUi.visible) return;
+  lookUi.hide();
+  loop.paused = pausedBeforeLook;
+  touch.setHidden(false);
+}
 
 // The end-of-level screen. Every row it draws comes off the HUMAN board, and
 // every action it offers goes through the same functions the keys do.
@@ -1940,6 +2355,16 @@ input.onCommand((code) => {
     closeChooser();
     return;
   }
+  // Same argument for the customiser: Escape closing a menu must not depend on
+  // where the focus went.
+  if (lookUi.visible && code === 'Escape') {
+    closeLook();
+    return;
+  }
+  if (claimUi.visible && code === 'Escape') {
+    closeClaim();
+    return;
+  }
   switch (code) {
     case 'Tab':
       // HOLD to see the whole level. The sim is frozen while it is down, so
@@ -1998,6 +2423,12 @@ input.onCommand((code) => {
       break;
     case 'KeyM':
       setMuted(audio.toggleMuted());
+      break;
+    case 'KeyY':
+      // Your bike: six silhouettes, ten liveries, and what the rider wears. A
+      // toggle, like every other panel in this game.
+      if (lookUi.visible) closeLook();
+      else openLook();
       break;
     case 'KeyB':
       boardVisible = !boardVisible;
@@ -2095,6 +2526,49 @@ interface VeloWindow extends Window {
       : null;
   },
   startMontage,
+
+  // --- customisation and cross-device identity, for bin/smoke ---------------
+  //
+  // The unit tests cover what a livery RESOLVES to and what a claim URL
+  // decodes to. What they cannot cover is the wiring: that the panels exist in
+  // the built page, that a chosen bike reaches the renderer, and that the QR
+  // actually gets drawn onto a canvas. Those are exactly the failures smoke
+  // exists for — the ones where every unit test passes and the page is broken.
+  get appearance() {
+    return { ...identity.appearance, chosen: identity.chosenLook, playerId: identity.playerId };
+  },
+  setAppearance(key: string, id: string) {
+    identity.appearance = setAppearance({ ...identity.appearance, [key]: id });
+    identity.chosenLook = true;
+    myLookCache = null;
+    if (lookUi.visible) renderLook();
+    syncBoardUi();
+    return { ...identity.appearance };
+  },
+  openLook() {
+    openLook();
+    return {
+      visible: lookUi.visible,
+      options: lookRoot.querySelectorAll('.lk-opt').length,
+      rows: lookRoot.querySelectorAll('.lk-row').length,
+      preview: (() => {
+        const c = lookRoot.querySelector('canvas');
+        return c ? { w: c.width, h: c.height } : null;
+      })(),
+    };
+  },
+  closeLook,
+  openClaim() {
+    openClaim('mine');
+    const c = claimRoot.querySelector('canvas');
+    return {
+      visible: claimUi.visible,
+      qr: c ? { w: c.width, h: c.height } : null,
+      code: claimRoot.querySelector('.cl-code')?.textContent ?? '',
+      playerId: identity.playerId,
+    };
+  },
+  closeClaim,
   /**
    * Stand up a montage of `count` synthetic riders on this level, for
    * bin/montagebench.
@@ -2237,7 +2711,10 @@ interface VeloWindow extends Window {
     const useArt = o?.art ?? artParams.enabled > 0;
     if (useArt) {
       renderArt(ctx, cssW, cssH, view, sim.world, sim.state, pose, spec,
-        { ...opts, time: (performance.now() - bootTime) / 1000 }, artParams, ensureBake());
+        // The player's own livery, so `bin/shots SHOTS_BIKES=...` photographs
+        // the bike that is actually selected rather than the shipped default.
+        { ...opts, time: (performance.now() - bootTime) / 1000, look: myLook(), ghostLook },
+        artParams, ensureBake());
     } else {
       render(ctx, cssW, cssH, view, sim.world, sim.state, pose, spec, opts);
     }

@@ -18,6 +18,7 @@ import {
   submitMessage,
 } from './results.ts';
 import type { ResultAction, SubmitState } from './results.ts';
+import { appearanceFor, parseAppearance } from '@/shared/appearance.ts';
 
 /** One second of run, in the ticks a replay counts in. */
 const SEC = INPUT_HZ * TICKS_PER_FRAME;
@@ -224,6 +225,31 @@ describe('the compact board', () => {
 
   it('is empty rather than throwing when there is no server', () => {
     expect(boardRows(null, 'zz', 5)).toEqual([]);
+  });
+
+  it('gives every row a resolved appearance, so nothing downstream has to decide', () => {
+    // A row is the last place that should be working out what to do about a
+    // missing appearance. It is decided ONCE, here, so every surface that shows
+    // a person shows the same person — which is the failure mode the user named:
+    // two code paths disagreeing and putting half a crowd in the wrong livery.
+    const out = boardRows(board({ top: rows, total: 6, rank: 2, you: rows[1] }), 'bb', 5);
+    for (const r of out) {
+      expect(r.playerId.length).toBeGreaterThan(0);
+      expect(parseAppearance(r.appearance)).toEqual(r.appearance);
+    }
+  });
+
+  it('a row that carries a livery keeps it; one that does not gets its own', () => {
+    // Rows written before customisation existed have no appearance. They must
+    // NOT all collapse onto the shipped bike, or an old board reads as one
+    // person who rode everything.
+    const painted: BoardEntry = {
+      ...entry('pp', 'painted', 39 * SEC),
+      appearance: { bike: 'bobber', paint: 'acid', helmet: 'bucket', jacket: 'vest', scarf: 'none', decal: 'checks' },
+    };
+    const out = boardRows(board({ top: [painted, ...rows], total: 7, rank: 1, you: painted }), 'pp', 5);
+    expect(out[0].appearance.bike).toBe('bobber');
+    expect(out[1].appearance).toEqual(appearanceFor(out[1].playerId));
   });
 });
 

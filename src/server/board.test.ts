@@ -15,6 +15,7 @@ import {
 } from './board.ts';
 import type { Category, Entry } from './board.ts';
 import type { VerifyResult } from '@/sim/replay.ts';
+import { DEFAULT_APPEARANCE } from '@/shared/appearance.ts';
 
 function verified(timeTicks: number): VerifyResult {
   return { ok: true, finished: true, dead: false, timeTicks, applesLeft: 0, finalHash: 'deadbeefdeadbeef' };
@@ -38,6 +39,7 @@ function entry(o: {
       simRev: o.rev ?? 3,
       specHash: 'c911d20c1e1fc095',
       bike: 'default',
+      appearance: DEFAULT_APPEARANCE,
       frames: 100,
       at: o.at ?? '2026-09-15T00:00:00.000Z',
     },
@@ -65,7 +67,7 @@ describe('place', () => {
     const e = entryFrom(
       {
         replayId: 'a', playerId: 'p', name: 'p', category: 'human',
-        simRev: 3, specHash: 's', bike: 'default', frames: 100, at: 'z',
+        simRev: 3, specHash: 's', bike: 'default', appearance: DEFAULT_APPEARANCE, frames: 100, at: 'z',
       },
       verified(5989),
     );

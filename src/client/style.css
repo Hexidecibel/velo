@@ -299,7 +299,9 @@ body:has(#panel.hidden) #board { right: 14px; }
 #board .bd-list { margin: 4px 0; }
 #board .bd-row {
   display: grid;
-  grid-template-columns: 22px 1fr auto auto;
+  /* Rank, THEIR BIKE, name, time, watch. The avatar column is a fixed width so
+     six rows of different bikes still line their names up. */
+  grid-template-columns: 22px 46px 1fr auto auto;
   gap: 6px;
   align-items: baseline;
   padding: 1px 0;
@@ -433,7 +435,7 @@ body:has(#panel.hidden) #results { margin-left: 0; }
 #results .rs-list { margin: 4px 0 6px; }
 #results .rs-row {
   display: grid;
-  grid-template-columns: 22px 1fr auto auto;
+  grid-template-columns: 22px 46px 1fr auto auto;
   gap: 6px;
   align-items: baseline;
   padding: 1px 0;
@@ -735,3 +737,189 @@ body:has(#panel.hidden) #chooser { margin-left: 0; }
    there is no keyboard to press [ with — so unlike the HUD and the legend it is
    not hidden, only made to fit. */
 body.touch #chooser { max-height: 80vh; margin-left: 0; }
+
+
+/* --- somebody's bike, small ------------------------------------------------ */
+/* Drawn by the real renderer at a small scale (avatar.ts), so it cannot drift
+   from the bike it is a picture of. `image-rendering: auto` deliberately: it is
+   supersampled at 2x and drawn back down, and the ink outlines want the
+   smoothing rather than a nearest-neighbour crunch. */
+.avatar {
+  display: block;
+  width: 46px;
+  height: 26px;
+  align-self: center;
+}
+
+/* --- the customiser -------------------------------------------------------- */
+/* Same drab surface, same borders, same absence of animation as the board, the
+   results screen and the level chooser. It is chrome over a game whose
+   highest-contrast things must stay the bike and the collision edge — including
+   when a menu is over them. */
+#look {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(700px, calc(100vw - 24px));
+  max-height: 88vh;
+  overflow-y: auto;
+  z-index: 6;
+  text-shadow: 0 1px 2px #000;
+  outline: none;
+}
+/* Inboard of the tuning panel when it is open, like every other panel here. */
+#look { margin-left: calc(var(--panel-w) / -2); }
+body:has(#panel.hidden) #look { margin-left: 0; }
+#look.hidden { display: none; }
+
+#look .lk-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 10px 12px 12px;
+}
+#look .lk-head { display: flex; align-items: center; gap: 6px; }
+#look .lk-title {
+  flex: 1 1 auto;
+  color: var(--accent);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+#look .lk-acts { display: flex; gap: 4px; }
+#look button {
+  font: inherit;
+  font-size: 11px;
+  color: var(--dim);
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 1px 7px;
+  cursor: pointer;
+}
+#look button:hover { color: var(--ink); border-color: var(--edge); }
+#look .lk-shot {
+  margin: 8px 0 4px;
+  display: flex;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+#look .lk-shot canvas { display: block; }
+#look .lk-sub { color: var(--dim); font-size: 10px; margin: 2px 0 8px; text-align: center; }
+#look .lk-row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 8px;
+  align-items: start;
+  padding: 4px 0 4px 6px;
+  border-left: 2px solid transparent;
+  margin-left: -8px;
+}
+/* The row the arrow keys are on. Marked with a rule as well as a colour, the
+   same way your own leaderboard row is. */
+#look .lk-row.sel { border-left-color: var(--accent); }
+#look .lk-label { line-height: 1.25; }
+#look .lk-axis { color: var(--ink); }
+#look .lk-axis-note { display: block; color: #6b6390; font-size: 9px; line-height: 1.3; }
+#look .lk-opts { display: flex; flex-wrap: wrap; gap: 4px; }
+#look .lk-opt.on { color: var(--bg); background: var(--edge); border-color: var(--edge); }
+#look .lk-foot { color: #6b6390; font-size: 9px; margin-top: 10px; line-height: 1.4; }
+
+/* Your own bike on the leaderboard panel, beside the way to change it. */
+#board .bd-mine { display: flex; align-items: center; gap: 6px; margin: 4px 0 6px; }
+#board .bd-edit { flex: 0 0 auto; }
+
+/* On a phone the customiser is reachable from the board panel's button rather
+   than from a key, so it has to fit the same way the chooser does. */
+body.touch #look { max-height: 80vh; margin-left: 0; }
+
+/* --- being the same player on two devices ---------------------------------- */
+/* Same drab surface as every other panel. The one exception is the QR itself,
+   which is black on white and ignores the palette entirely: the reader there is
+   a phone camera, not a person, and a tastefully tinted QR code is a QR code
+   that sometimes does not scan. */
+#claim {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(420px, calc(100vw - 24px));
+  max-height: 88vh;
+  overflow-y: auto;
+  z-index: 7;
+  text-shadow: 0 1px 2px #000;
+  outline: none;
+}
+#claim { margin-left: calc(var(--panel-w) / -2); }
+body:has(#panel.hidden) #claim { margin-left: 0; }
+#claim.hidden { display: none; }
+
+#claim .cl-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 10px 12px 12px;
+}
+#claim .cl-head { display: flex; align-items: center; gap: 6px; }
+#claim .cl-title {
+  flex: 1 1 auto;
+  color: var(--accent);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+#claim button {
+  font: inherit;
+  font-size: 11px;
+  color: var(--dim);
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+#claim button:hover { color: var(--ink); border-color: var(--edge); }
+#claim button.primary { color: #b9f3fb; border-color: #29d9f2; }
+#claim .cl-lead { color: var(--ink); margin: 6px 0; line-height: 1.4; }
+#claim .cl-shot {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 4px;
+}
+#claim .cl-shot canvas { display: block; border-radius: 2px; }
+/* The typable fallback. Bigger than the body text and letter-spaced, because it
+   is a string somebody is reading out across a room. */
+#claim .cl-code {
+  text-align: center;
+  font-size: 15px;
+  letter-spacing: .12em;
+  color: var(--ink);
+  margin: 2px 0 6px;
+  cursor: text;
+  user-select: all;
+  word-break: break-all;
+}
+#claim .cl-hint { color: var(--dim); font-size: 10px; text-align: center; word-break: break-all; }
+#claim .cl-note { color: var(--dim); font-size: 10px; margin: 8px 0; line-height: 1.4; }
+#claim .cl-note.ok { color: var(--good); }
+#claim .cl-note.warn { color: var(--accent); }
+#claim .cl-note.bad { color: var(--bad); }
+#claim .cl-form { display: flex; flex-wrap: wrap; gap: 4px; margin: 10px 0 4px; }
+#claim .cl-form .cl-hint { flex: 1 0 100%; text-align: left; }
+#claim .cl-form input {
+  flex: 1 1 140px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--ink);
+  background: #120f26;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 2px 6px;
+}
+#claim .cl-acts { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+#claim .cl-foot { color: #6b6390; font-size: 9px; margin-top: 8px; line-height: 1.4; }
+
+/* On a phone this is the panel that matters most — it is the device being
+   claimed — so it gets the full width and no panel offset. */
+body.touch #claim { max-height: 82vh; margin-left: 0; }

@@ -12,8 +12,12 @@
 // here.
 import { ticksToSeconds } from '@/sim/replay.ts';
 import type { BoardEntry, BoardPayload, Category } from './api.ts';
+import type { Appearance } from '@/shared/appearance.ts';
 import { GHOST_KINDS, GHOST_LABELS, watchableCategory } from './ghost.ts';
 import type { GhostKind } from './ghost.ts';
+import { avatarImg } from './avatar.ts';
+import { resolveAppearance } from '@/shared/appearance.ts';
+import type { Palette } from './art/palette.ts';
 
 export interface BoardUiCallbacks {
   onCategory(c: Category): void;
@@ -22,6 +26,10 @@ export interface BoardUiCallbacks {
   onRefresh(): void;
   /** Watch the selected ghost's run on its own, from the start. */
   onWatch(entry: BoardEntry): void;
+  /** Open the customiser. The board is where you see everybody else's bike. */
+  onCustomise(): void;
+  /** Open the cross-device claim panel: a QR, and a code you can type. */
+  onLinkDevice(): void;
 }
 
 export interface BoardUiState {
@@ -37,6 +45,13 @@ export interface BoardUiState {
   statusKind: 'ok' | 'warn' | 'bad' | '';
   /** Why the chosen ghost is not on screen, when it is not. */
   ghostNote: string;
+  /**
+   * The palette of the level on screen. A livery is solved against the level it
+   * is ridden on, so a row's avatar is drawn in the room the board is for.
+   */
+  palette: Palette;
+  /** The player's own bike, for the row that offers to change it. */
+  appearance: Appearance;
 }
 
 export interface BoardUi {
@@ -117,6 +132,31 @@ export function createBoardUi(root: HTMLElement, cb: BoardUiCallbacks): BoardUi 
       panel.append(form);
     }
 
+    // YOUR OWN BIKE, next to where everybody else's is shown. It is the one
+    // place the customiser is discoverable without reading the legend, and it
+    // prints its key on itself so it teaches rather than replaces.
+    const mine = el('div', 'bd-mine');
+    mine.append(avatarImg(s.appearance, s.palette, s.playerId));
+    const edit = el('button', 'bd-edit', 'your bike  Y');
+    edit.title = 'pick a bike, a livery and what the rider is wearing';
+    edit.addEventListener('click', () => {
+      edit.blur();
+      cb.onCustomise();
+    });
+    mine.append(edit);
+    // "Be this player on my phone too". It lives HERE because this is where
+    // identity already is — the name form is three lines up — and because the
+    // moment somebody cares about a name and a bike is the moment they care
+    // about having them on the device they actually play on.
+    const link = el('button', 'bd-edit', 'link a device');
+    link.title = 'scan a code on your phone and it becomes the same player';
+    link.addEventListener('click', () => {
+      link.blur();
+      cb.onLinkDevice();
+    });
+    mine.append(link);
+    panel.append(mine);
+
     if (!s.board) {
       panel.append(el('div', 'bd-note', s.status || 'loading…'));
       appendFooter(s);
@@ -139,6 +179,11 @@ export function createBoardUi(root: HTMLElement, cb: BoardUiCallbacks): BoardUi 
       const e = b.top[i];
       const row = el('div', `bd-row${e.playerId === s.playerId ? ' you' : ''}`);
       row.append(el('span', 'bd-rank', String(i + 1)));
+      // THE ROW SHOWS A PERSON. An appearance that never travelled — every row
+      // written before customisation existed — resolves to a stable derivation
+      // from the playerId rather than to one shared default, so an old board is
+      // still a board of different people.
+      row.append(avatarImg(resolveAppearance(e.appearance, e.playerId), s.palette, e.playerId));
       row.append(el('span', 'bd-name-cell', e.name));
       row.append(el('span', 'bd-time', fmt(e.timeTicks)));
       if (lines) {

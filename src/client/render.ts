@@ -12,6 +12,7 @@ import type { SimState } from '@/sim/step.ts';
 import type { World } from '@/sim/world.ts';
 import { drawEdgeMarkers, edgeMarkers } from './markers.ts';
 import type { MarkerTarget } from './markers.ts';
+import type { BikeLook } from './art/bikeart.ts';
 
 const COL_SOLID = '#1b2029';
 const COL_FREE = '#0b0d11';
@@ -91,6 +92,16 @@ export interface GhostDraw {
    * honours it; the flat one is simple strokes already and ignores it.
    */
   coarse?: boolean;
+  /**
+   * Whose bike this is, when it is somebody's. Absent means the player's own —
+   * which is exactly right for a montage rider, because a montage rider IS one
+   * of the player's own attempts.
+   *
+   * The flat renderer below ignores it: it is the debug A/B view, it draws in
+   * three fixed colours on purpose, and giving it a livery would make the A/B
+   * comparison test two things at once.
+   */
+  look?: BikeLook | null;
 }
 
 export interface RenderOpts {

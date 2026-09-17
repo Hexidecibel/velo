@@ -13,6 +13,7 @@ import { IN_LEAN_R, IN_THROTTLE } from '@/sim/consts.ts';
 import { chooseGhost, createGhost, ghostCompat, ghostNoteFor, GHOST_KINDS, watchableCategory } from './ghost.ts';
 import * as ghostModule from './ghost.ts';
 import type { Standing } from './ghost.ts';
+import { DEFAULT_APPEARANCE } from '@/shared/appearance.ts';
 
 const LEVEL = parseLevel(TEST_LEVEL);
 const SPEC = cloneSpec(DEFAULT_SPEC);
@@ -34,7 +35,13 @@ function record(frames: number): Replay {
 
 const REPLAY = record(200);
 
-const meta = { kind: 'above' as const, name: 'Somebody', replayId: 'ab12cd34ef567890', rank: 2 };
+const meta = {
+  kind: 'above' as const,
+  name: 'Somebody',
+  replayId: 'ab12cd34ef567890',
+  rank: 2,
+  appearance: DEFAULT_APPEARANCE,
+};
 
 describe('ghostCompat', () => {
   it('accepts a matching replay', () => {

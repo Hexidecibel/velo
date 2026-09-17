@@ -11,6 +11,7 @@
 import { parseReplayFile, replayFileName, toReplayFile } from '@/sim/replay.ts';
 import type { Replay, ReplayFile } from '@/sim/replay.ts';
 import type { BikeSpec } from '@/sim/spec.ts';
+import type { Appearance } from '@/shared/appearance.ts';
 
 /** Filesystem-safe local timestamp. Presentation only; never reaches the sim. */
 function stamp(): string {
@@ -25,15 +26,35 @@ export interface ExportContext {
   levelName: string;
   spec: BikeSpec;
   note?: string;
+  /**
+   * WHO RODE IT AND WHAT THEIR BIKE LOOKED LIKE.
+   *
+   * This is what makes an exported replay stand alone as a picture of a run
+   * rather than as an input stream that gets redrawn in whoever's colours
+   * happen to be loaded. It rides in `meta`, the replay FILE's presentation
+   * block, which the verifier cannot reach: `verifyReplay` takes a `Replay`,
+   * the hash chain is over sim state, and `specHash` is over `BikeSpec`. A file
+   * with a livery and the same file without one verify bit-identically, and
+   * replay.test.ts asserts exactly that.
+   */
+  playerId?: string;
+  appearance?: Appearance;
 }
 
 export function buildExport(replay: Replay, ctx: ExportContext): ReplayFile {
+  const meta: Record<string, unknown> = {};
+  if (ctx.playerId) meta.playerId = ctx.playerId;
+  if (ctx.appearance) meta.appearance = ctx.appearance;
   return toReplayFile(replay, {
     level: ctx.levelRaw,
     levelName: ctx.levelName,
     spec: ctx.spec,
     recordedAt: new Date().toISOString(),
     note: ctx.note,
+    // Omitted entirely rather than written as `{}`, so a file from a build with
+    // nothing to say about the rider looks exactly like a file from before this
+    // field existed — which is the state every replay in `replays/` is in.
+    meta: Object.keys(meta).length > 0 ? meta : undefined,
   });
 }
 

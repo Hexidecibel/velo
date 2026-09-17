@@ -14,6 +14,11 @@
 #   SHOTS_ONLY=art-62 bin/shots 01-first-light 02-the-long-climb ...
 #                                              # one shot per level, for judging
 #                                              # the twenty AS A SET
+#   SHOTS_BIKES=scrambler,cafe,moto,bobber,mono,trials SHOTS_ONLY=bike-scrambler,bike-cafe,bike-moto,bike-bobber,bike-mono,bike-trials bin/shots 01-first-light
+#                                              # one shot per bike type at 110
+#                                              # px/m: do six silhouettes read
+#                                              # as six bikes? A comparison, not
+#                                              # an opinion.
 #   SHOTS_CHROME=1 SHOTS_ONLY=chooser,hud-off bin/shots 07-the-chimney
 #                                              # the level chooser with its
 #                                              # thumbnails drawn, and the frame

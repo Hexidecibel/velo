@@ -69,6 +69,16 @@ const MONTAGE = Number(process.env.SHOTS_MONTAGE || 0);
  * purpose, so a shot taken immediately would photograph placeholders.
  */
 const CHROME = process.env.SHOTS_CHROME === '1';
+/**
+ * SHOTS_BIKES=scrambler,cafe,... — one shot per BIKE TYPE, at close camera.
+ *
+ * "Do six bikes read as six bikes" is a comparison and not an opinion, which is
+ * the same argument the art/old A/B pair is here for. The shots are taken at
+ * 110 px/m because that is where the fine tier lives and where a silhouette
+ * either differs or does not; the overview tier is deliberately three blobs for
+ * everybody and proves nothing about this.
+ */
+const BIKES = (process.env.SHOTS_BIKES || '').split(',').map((x) => x.trim()).filter(Boolean);
 
 await mkdir(OUT, { recursive: true });
 const serve = createServer(async (req, res) => {
@@ -141,6 +151,13 @@ try {
       ['art-tight-debug', `(()=>{const g=window.velo.tightestGap();return window.velo.renderAt(g.x,g.y,62,{art:true,debug:true})})()`],
       ['art-overview', `window.velo.renderAt((window.velo.level.minX+window.velo.level.maxX)/2,(window.velo.level.minY+window.velo.level.maxY)/2,Math.min(30,${W - 80}/(window.velo.level.maxX-window.velo.level.minX)),{art:true,overview:1})`],
     ];
+    for (const bike of BIKES) {
+      variants.push([
+        `bike-${bike}`,
+        `(()=>{window.velo.setAppearance('bike',${JSON.stringify(bike)});`
+          + `return window.velo.renderAt(${x},${y},110,{art:true})})()`,
+      ]);
+    }
     if (CHROME) {
       // The loop is restarted for this one: the readout is a DOM overlay but the
       // in-canvas HUD is painted by a FRAME, so a shot with the loop stopped
@@ -151,6 +168,21 @@ try {
       // shot taken immediately photographs placeholders — and "how long do
       // twenty renders of a level take" is a number worth printing rather than
       // a sleep worth guessing.
+      // The customiser, with its live preview. The preview is the one place the
+      // bike is drawn STANDING STILL and upright, which is the framing that
+      // actually answers "do six silhouettes read as six bikes" — a shot taken
+      // mid-wheelie answers a different question.
+      variants.push(['look', `(()=>{
+        window.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyY',bubbles:true}));
+        return document.querySelectorAll('#look .lk-opt').length;
+      })()`]);
+      // The claim code, which has to be photographed rather than described:
+      // "is that QR big enough to scan" is not a thing a unit test can answer.
+      variants.push(['claim', `(()=>{
+        window.dispatchEvent(new KeyboardEvent('keydown',{code:'Escape',bubbles:true}));
+        const r = window.velo.openClaim();
+        return JSON.stringify(r.qr);
+      })()`]);
       variants.push(['chooser', `(async()=>{
         const t0=performance.now();
         window.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyC',bubbles:true}));

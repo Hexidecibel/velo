@@ -110,6 +110,7 @@ reap any Chrome holding one of their own profile directories before they start.
 | B | show/hide the **leaderboard and ghost picker** — open by default |
 | M | **mute** — remembered. Sound starts on your first click or key press, because browsers will not let a page make noise before one. |
 | C | **the level chooser** — a picture of every level, its measured difficulty, and your best time on it |
+| Y | **your bike** — six silhouettes, ten liveries, and what the rider is wearing. None of it changes how the bike rides. |
 | H | show/hide the tuning panel — **closed by default**, remembered once you open it |
 | `` ` `` | **hide the debug readout.** Remembered. The level card, clock and apple counter stay — they are drawn in the canvas and they are the game talking — and so do the two warnings that are not telemetry. |
 | `+` / `-` | zoom bias |
@@ -125,7 +126,7 @@ one of them on itself:
 | R | retry — exactly what R does everywhere else, routed at the same function |
 | Esc | close it. Instantly; nothing fades and nothing has to be waited through. |
 | T | watch your run |
-| A | **watch all N attempts at once** — only when there are at least two |
+| F | **watch all N attempts at once** — only when there are at least two |
 | G | watch the ghost's run — *(the collision overlay everywhere else)* |
 | B | the fuller leaderboard |
 | L | level select — opens the chooser — *(load a replay file everywhere else)* |
@@ -384,7 +385,7 @@ Verification of a real run costs **6-60 ms**. A ten-minute run, the longest the
 server will accept, is about half a second.
 
 ```
-POST /api/runs                      { playerId, name, category, replay }
+POST /api/runs                      { playerId, name, appearance, category, replay }
 GET  /api/leaderboard/:simHash      ?category= &rev= &player= &limit=
 GET  /api/replays/:replayId         ?level=<simHash>   — the ghost fetch
 GET  /api/players/:playerId
@@ -546,6 +547,64 @@ every board. `PlayerFile` ships an unused `claimedBy` slot for that. There is
 deliberately **no email field** and will not be one until an account system
 needs it: storing personal data carries obligations that a local display name
 does not.
+
+### Being the same player on your phone
+
+Identity lives in **one browser's `localStorage`**. That was tolerable until
+touch controls shipped: the moment you pick up your phone you are a different
+person — new id, no times, and, now that a bike can be chosen, not even the same
+bike. A name is cheap to retype; a livery and a leaderboard history are not.
+
+So the board panel has **link a device**: a QR encoding `/?claim=<playerId>`,
+and the same id printed underneath in four-character groups, because cameras
+fail, QR readers vary and a code you can type is the fallback that always works.
+Scan it on the phone, it lands on the game, and it offers — never applies
+silently — to become that player. The name and the bike come down with it, so
+the phone posts as *them* rather than under their id wearing your label.
+
+Four things are worth being plain about, and the panel says all four rather than
+implying any of them:
+
+- **It is a bearer credential.** Anyone who can see the code can become that
+  player on their own device. Among a handful of device-gated friends that is a
+  perfectly good trade.
+- **It is not a new exposure.** The `playerId` is not a secret and never was:
+  every leaderboard row the API returns carries the playerId of whoever set it,
+  so the code gives away nothing the board does not already publish.
+- **The phone has to be enrolled with cush-auth first.** An un-enrolled device
+  bounces to the sign-in page before a byte of the game loads, which looks
+  exactly like a broken QR code and is not one.
+- **It is not a login, and this changes nothing above.** Re-simulation proves a
+  time is real; nothing proves whose it is. A claim code does not move that line
+  by one bit — it moves an id between two devices that could both already post
+  under any id they liked.
+
+**Nothing is lost by claiming, and it is reversible.** The playerId, name and
+bike are replaced; the id this device had is kept, so one click goes back. Local
+best times are untouched, and not out of convenience: `bests.rev<N>` is keyed by
+the level's `simHash` alone — it is this *browser's* record of what it has done,
+not this *player's* — so there is nothing to merge and nothing to discard.
+Merging them into the claimed player would be the dishonest option, since those
+times were set by a different player record on the server.
+
+**Rotation** is offered as *start over as a new player*, and what it costs is
+stated rather than glossed: there is no server-side secret to rotate — the code
+*is* the id — so rotating means becoming a different player. Times already
+posted stay on the board under the old id; they are not deleted and not moved,
+they just stop being yours. The old id is kept, so showing a code on a stream is
+recoverable rather than permanent.
+
+The QR encoder is **written out rather than installed** — `src/client/qr.ts`,
+about three hundred lines, byte mode at error-correction level L, versions 1 to
+10. Same reasoning as the art, the audio and the physics: a QR code is a spec
+with a fixed answer, so there is no version of that dependency that gets better.
+`qr.test.ts` checks the generator polynomials and the format information against
+the published tables, reads the data back out of the finished matrix to prove
+the placement, mask and interleave agree with each other, and compares the whole
+841-module matrix against one produced by an independent encoder. That last
+check earned its place immediately: the format information was written
+**transposed**, which produces a code that is structurally perfect, passes every
+self-consistency test, and that no reader on earth will open.
 
 ## The end-of-level screen
 
@@ -719,6 +778,137 @@ The category itself is not going anywhere — it is proof of completability, it
 keeps machine runs out of human competition, and retrofitting the split later is
 a fight nobody wins. What changed is the framing: the solver's output is an
 **authoring tool** and a **number**, and not player-facing content.
+
+## Your bike
+
+*"customizable character, colors, clothes, bike"*, and then *"multiple bike
+types, colors, accessories, etc. nothing that will impact gameplay or anything
+like that"*. Press **Y**.
+
+Six bike silhouettes, ten liveries, four helmets, three jacket cuts, three
+scarves and four sets of bodywork markings — 8,640 combinations, all of which
+ride **identically**.
+
+### The hard constraint: cosmetics live outside `BikeSpec`
+
+Collision is two wheels, three chassis circles and a head sphere, all of them
+`BikeSpec` values, and `BikeSpec` is content-hashed into `specHash` — which the
+server checks to decide whether a time counts. **If a colour touched
+`BikeSpec`, repainting your bike would refuse your runs**, with the same "this
+bike is not the shipped one" message the tuning panel already produces and that
+has confused this user twice.
+
+So an `Appearance` is a separate structure in `src/shared/appearance.ts` that
+the sim never sees and `specHash` never covers — the same pattern as the level
+format's `style` block. That is not a convention, it is three tests:
+
+- **every one of the 8,640 appearances leaves `specHash` bit-identical**, and no
+  appearance axis appears anywhere in `specPaths()`;
+- **every bike type resolves to the same `specHash`**, swept across the whole
+  product. A future contributor who thinks a bobber *should* have a longer
+  wheelbase gets a failing test rather than a leaderboard full of refused runs;
+- `bikeart.ts` may import `BikeSpec` only as a **type**, so the art can read the
+  shape of a spec and can never construct or mutate one.
+
+`bin/smoke` makes the same check through the real bundle: repaint the bike in
+the built page, and `window.velo.specHash()` must not move.
+
+### The guardrail: you cannot make yourself invisible
+
+Hand someone a free colour wheel and they will pick dark grey on a dark level,
+disappear, and correctly report the game as unfair. **There is no colour
+picker.** A colourway is a set of *hues*, and the hex is solved per level
+against that level's own palette — the same discipline `palette.ts` already runs
+under, where the collision lip's contrast is computed rather than hoped for.
+
+Terrain is dark by law: `derivePalette` caps every terrain tone at
+`TERRAIN_MAX_LUM`, because the whole art direction rests on solids being dark
+and air being light. So the floors are stated against that:
+
+| | floor | against |
+| --- | --- | --- |
+| every bike part | **3.2** | the brightest terrain tone in this level's palette |
+| the head — the death sphere | **4.6**, and never below luminance 0.68 | the same |
+| every part that is not the head | ceiling at luminance 0.55 | so the head is always the brightest thing on the bike |
+| visor, decals | **1.7** | the colour they are drawn *on top of* |
+
+Clearing the terrain floor also clears the part's own ink outline, which is what
+separates it from the *light* half of the frame — the same ink-and-lip mechanism
+the terrain edge uses, and the reason the shipped cream bodywork reads against a
+pale wall at contrast 1.3.
+
+The helmet is kept distinct from the wheels **by construction rather than by
+arithmetic**: every colourway places its helmet hue at least 45 degrees from its
+wheel and frame hues. Contrast ratio is luminance-only and would call a yellow
+and a blue at the same luminance identical, which is exactly wrong for "is that
+a third wheel or the rider's head" — the failure the shipped art already avoided
+when it put the wheel hubs in ink rather than cream.
+
+**Level palettes are derived per level**, so a livery that reads on 03 may
+vanish on 11. The sweep is therefore against the whole set rather than a sample:
+every bike x accessory x livery against the twenty shipped levels, `CONCRETE`
+and generated palettes, plus every colourway against four hundred more for the
+levels not written yet.
+
+### Nothing may lie about the collision shape
+
+Two rules the shapes inherit, both learned the hard way:
+
+- **The head is the death sphere and is drawn at its true radius.** Every helmet
+  decorates the circle *from the inside*, under a clip, so no accessory can make
+  the thing that kills you look bigger than it is. `headDrawRadius` is a
+  function rather than a habit precisely so that a per-helmet outset is a
+  failing test.
+- **Nothing overhangs.** The exhaust tip used to sit at x = -0.90 while the rear
+  tyre's back edge is at -0.85, so the pipe stuck out *behind* the wheel and was
+  the only part of the bike that did — reported from play as "why does the bike
+  have a weird long muffler?". With six bike types there are six ways to do that
+  again, so it is a sweep: every polygon, every run and every disc of every type
+  is sampled against the bike's own silhouette. Tank bands, seat wedges and
+  decals are exempt because they are drawn under a clip on the body path and a
+  clipped fill cannot add a pixel to an outline.
+
+Everything survives the detail tiers. At the **overview tier** a bike is three
+blobs and a link, and it still carries its livery — a montage of forty bikes in
+one colour is a texture rather than a crowd, which is the whole thing this
+feature exists to avoid. Every wheel style also has to keep **spin** visible:
+spokes, or a disc's own mark. Spin is a real state variable and traction cannot
+be read without seeing it.
+
+### The payoff: ghosts wear their owner's colours
+
+Appearance travels with a submission as presentation metadata, **keyed to the
+`playerId` exactly like the display name** — and, like the name, it is
+**refreshed in place** when it changes, so repainting repaints the rows you
+already hold. That was a real bug the last time this pattern was built, and it
+has its own test.
+
+- **Leaderboard ghosts** wear the livery on the row you are chasing. The board
+  entry wins over anything the stored replay remembers, because the entry is
+  refreshed on every submission, so the bike beside you and the row you clicked
+  can never disagree.
+- **Replay files** carry it in `meta`, the file's presentation block — never
+  read by the sim, never hashed. A replay with a livery and the same replay
+  without one verify to a **bit-identical hash chain**, which is asserted the
+  same way a muted run and a loud one are. Every file recorded before today has
+  no `meta`, and the pilot and solver runs in `replays/` never will; absent is an
+  ordinary state and falls back to the shipped bike.
+- **The montage** is resolved live rather than embedded per attempt, and that is
+  a decision rather than an oversight. Embedding would show a mid-session
+  repaint historically, which is arguably nicer — but the failure mode of two
+  code paths disagreeing is a crowd of forty split down the middle between two
+  liveries, which reads as a bug. The montage is about *you*, so it is all you,
+  in the colours you are wearing now.
+- **Board rows and the results screen** show that player's bike as a small
+  avatar beside their name. It is the same drawing code at a small scale
+  (`avatar.ts` calls `drawBikePortrait`, which calls `drawBike`), so an avatar
+  cannot drift from the bike it is a picture of — the same argument the level
+  thumbnails make.
+
+A row with no appearance — every row written before today — resolves to a
+**stable derivation from the playerId** rather than to one shared default. Same
+argument as twenty levels sharing one palette: a board of people who have never
+opened the customiser should still be a board of different people.
 
 ## The montage
 
@@ -2991,6 +3181,15 @@ leaderboard *forks* by rev rather than resetting.
 ```
 index.html          Vite entry at the repo root
 src/sim/            the deterministic core — imports NOTHING
+src/shared/         the two things BOTH halves have to agree about and neither
+                    may own: appearance.ts is the cosmetic catalogue (six bikes,
+                    ten liveries, the accessories) plus the tolerant parser and
+                    the stable per-playerId derivation — the client draws from
+                    it, the server validates against it, and NOTHING in it can
+                    reach BikeSpec; claim.ts is the cross-device claim URL and
+                    the typable code. Like src/sim it imports nothing, touches
+                    no DOM and reads no clock, for the same reason: one copy is
+                    how the two sides stay in step.
 src/solver/         the headless solver. field.ts is the level as a MAP
                     (occupancy grid, clearance, geodesic distance fields);
                     search.ts is the macro-action best-first search and its
@@ -3008,6 +3207,17 @@ src/client/         canvas renderer, input, tuning panel, record-and-replay
                     the freeze and the opening peek; markers.ts is the off-screen
                     indicators. The last two are pure state and geometry so they
                     test in plain node.
+                    art/bikeart.ts is the bike as DATA — the six silhouettes,
+                    the wheel treatments, the helmets and jackets, and the
+                    arithmetic that solves a colourway against a level's own
+                    palette so a player CANNOT pick something invisible. It
+                    imports BikeSpec as a type only, so the art can read a spec
+                    and can never build or edit one. avatar.ts is that same
+                    drawing code at 46 px, cached per livery per palette, which
+                    is what puts a person on a leaderboard row; lookui.ts is the
+                    customiser panel and qr.ts is a hand-rolled QR encoder,
+                    checked module-for-module against an independent one;
+                    claimui.ts is the panel that shows it.
                     ghost.ts is the second sim that rides beside you, the
                     rules for choosing whose run it is (human runs only) and
                     watchableCategory, which is why a TAS line has no route to a

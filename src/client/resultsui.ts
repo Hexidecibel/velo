@@ -18,6 +18,8 @@
 // is written with `textContent`. Same absolute rule as boardui.ts.
 import type { ActionId, ResultsModel } from './results.ts';
 import { fmtTime } from './results.ts';
+import { avatarImg } from './avatar.ts';
+import type { Palette } from './art/palette.ts';
 
 export interface ResultsUiCallbacks {
   onAction(id: ActionId): void;
@@ -26,8 +28,14 @@ export interface ResultsUiCallbacks {
 }
 
 export interface ResultsUi {
-  /** Draw a model. Called on the finishing frame and again as the network lands. */
-  update(model: ResultsModel): void;
+  /**
+   * Draw a model. Called on the finishing frame and again as the network lands.
+   *
+   * The PALETTE comes in because a livery is solved against the level it is
+   * ridden on — the same paint is a different set of pixels on a different
+   * level — so a row's avatar has to be drawn in the room the run happened in.
+   */
+  update(model: ResultsModel, palette: Palette): void;
   hide(): void;
   readonly visible: boolean;
 }
@@ -54,7 +62,7 @@ export function createResultsUi(root: HTMLElement, cb: ResultsUiCallbacks): Resu
   // Rebuilt wholesale, like the board panel. It is forty nodes and it changes
   // twice in a run's lifetime — once when the run ends and once when the post
   // resolves — so a rebuild cannot fall out of step with the data.
-  function render(m: ResultsModel): void {
+  function render(m: ResultsModel, P: Palette): void {
     panel.textContent = '';
 
     panel.append(el('div', 'rs-head', 'FINISHED'));
@@ -96,6 +104,9 @@ export function createResultsUi(root: HTMLElement, cb: ResultsUiCallbacks): Resu
         if (r.detached) list.append(el('div', 'rs-break', '⋯'));
         const row = el('div', `rs-row${r.you ? ' you' : ''}`);
         row.append(el('span', 'rs-rank', String(r.rank)));
+        // Their bike, beside their name. The same drawing code at a small
+        // scale — see avatar.ts — which is what turns a table into a place.
+        row.append(avatarImg(r.appearance, P, r.playerId));
         row.append(el('span', 'rs-name', r.name));
         row.append(el('span', 'rs-rowtime', `${fmtTime(r.timeTicks)}s`));
         const watch = el('button', 'rs-watch', 'watch');
@@ -137,8 +148,8 @@ export function createResultsUi(root: HTMLElement, cb: ResultsUiCallbacks): Resu
     get visible() {
       return visible;
     },
-    update(model: ResultsModel): void {
-      render(model);
+    update(model: ResultsModel, palette: Palette): void {
+      render(model, palette);
       visible = true;
       root.classList.remove('hidden');
     },

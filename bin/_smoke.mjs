@@ -635,13 +635,17 @@ try {
     throw new Error(`the panel did not offer next-on-Enter and retry-on-R (${rs.finish.actions})`);
   }
   if (!rs.dismissed.hidden || rs.dismissed.model) throw new Error('Escape did not dismiss the results panel');
-  if (!rs.finish.actions.includes('montage:A')) {
+  // `montage:F`, not `montage:A`. KeyA is LEAN LEFT under WASD and input.ts
+  // returns on a sim-bound key before any command dispatch runs, so the montage
+  // was moved to F when that was found — and this expectation was not moved
+  // with it, which is why bin/smoke had been failing on a feature that works.
+  if (!rs.finish.actions.includes('montage:F')) {
     throw new Error(`the panel did not offer the montage after two attempts (${rs.finish.actions})`);
   }
 
   // --- the montage, end to end ---------------------------------------------
   //
-  // Two attempts exist by now — the death above and the finish — so pressing A
+  // Two attempts exist by now — the death above and the finish — so pressing F
   // must stand up a crowd and ride it. What this proves that the unit tests
   // cannot: the attempts really are RETAINED across a restart in the live
   // client (the recorder used to throw each run away), the riders really do
@@ -672,6 +676,76 @@ try {
   if (mont.ridingAtStart < 1) throw new Error('the montage riders started already finished');
   if (!(mont.coarse > 0 && mont.coarse <= 0.3)) throw new Error(`montage alpha out of range (${mont.coarse})`);
   if (!mont.clearedByRestart) throw new Error('a restart did not clear the montage — faint bikes over a live run');
+
+  // --- customisation, through the real bundle -------------------------------
+  //
+  // WHAT THE UNIT TESTS CANNOT SEE. `bikeart.test.ts` proves a livery resolves
+  // to legible colours for every bike, accessory and level palette, and
+  // `appearance.test.ts` proves none of it can reach `specHash`. Neither can
+  // prove the panel exists in the built page, that the preview canvas gets
+  // drawn, or that a chosen bike reaches the renderer — which is the class of
+  // failure where every test passes and the screen is wrong.
+  const look = await evalIn(cdp, `
+    (async () => {
+      const raf = () => new Promise((r) => requestAnimationFrame(r));
+      const opened = window.velo.openLook();
+      const before = window.velo.appearance;
+      const picked = window.velo.setAppearance('bike', 'bobber');
+      const painted = window.velo.setAppearance('paint', 'acid');
+      await raf();
+      const hashBefore = window.velo.specHash();
+      window.velo.setAppearance('helmet', 'bucket');
+      await raf();
+      const hashAfter = window.velo.specHash();
+      window.velo.closeLook();
+      return {
+        opened,
+        startedAs: before.bike,
+        bike: picked.bike,
+        paint: painted.paint,
+        hashBefore,
+        hashAfter,
+        closed: !document.getElementById('look').classList.contains('hidden') === false,
+      };
+    })()
+  `);
+  console.log('    customiser: ' + JSON.stringify(look));
+  if (!look.opened.visible) throw new Error('the customiser did not open');
+  if (!look.opened.preview || look.opened.preview.w < 100) {
+    throw new Error(`the customiser preview canvas was not drawn (${JSON.stringify(look.opened.preview)})`);
+  }
+  if (look.opened.rows < 5) throw new Error(`the customiser offered ${look.opened.rows} axes`);
+  if (look.opened.options < 20) throw new Error(`the customiser offered ${look.opened.options} options`);
+  if (look.bike !== 'bobber' || look.paint !== 'acid') throw new Error('picking an option did not stick');
+  // THE ONE THAT MATTERS. Repainting the bike must leave the spec hash
+  // bit-identical, or the server refuses the next run with "this bike is not
+  // the shipped one" — the refusal that has already confused this user twice.
+  if (look.hashBefore !== look.hashAfter) {
+    throw new Error(`changing the bike moved specHash (${look.hashBefore} -> ${look.hashAfter})`);
+  }
+  if (!look.closed) throw new Error('the customiser did not close');
+
+  // --- the claim code -------------------------------------------------------
+  //
+  // A hand-rolled QR encoder is checked module-for-module against an
+  // independent implementation in qr.test.ts. What is checked HERE is that it
+  // reaches a canvas in the built page at a size a phone camera could read,
+  // and that the typable fallback is printed beside it.
+  const claim = await evalIn(cdp, `
+    (async () => {
+      const opened = window.velo.openClaim();
+      window.velo.closeClaim();
+      return opened;
+    })()
+  `);
+  console.log('    claim: ' + JSON.stringify({ ...claim, code: claim.code.slice(0, 9) + '…' }));
+  if (!claim.visible) throw new Error('the claim panel did not open');
+  if (!claim.qr || claim.qr.w < 100 || claim.qr.w !== claim.qr.h) {
+    throw new Error(`the QR canvas was not drawn square and large (${JSON.stringify(claim.qr)})`);
+  }
+  if (!claim.code.replace(/\s+/g, '').includes(claim.playerId)) {
+    throw new Error('the claim panel did not print the typable code');
+  }
 
   // --- the touch controls come up on a coarse pointer -----------------------
   //

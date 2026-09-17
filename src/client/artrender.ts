@@ -37,6 +37,12 @@ import { solidFraction } from './art/space.ts';
 import { chooseQuality, detailAt, loadOf, newAdapt, observe } from './art/adapt.ts';
 import type { DetailLevels } from './art/adapt.ts';
 import { drawProps } from './art/propdraw.ts';
+import { textOutline } from './art/letters.ts';
+import {
+  bikeShape, bodyBox, headDrawRadius, helmetStyle, jacketCut, makeLook, scarfStyle,
+} from './art/bikeart.ts';
+import type { BikeColors, BikeLook, BikeShape, Pt } from './art/bikeart.ts';
+import { DEFAULT_APPEARANCE } from '@/shared/appearance.ts';
 
 type Bounds = { minX: number; minY: number; maxX: number; maxY: number };
 
@@ -76,6 +82,19 @@ export interface ArtRenderOpts extends RenderOpts {
    * than the art HUD. Defaults to true.
    */
   detailChip?: boolean;
+  /**
+   * THE PLAYER'S OWN LIVERY. Absent means the shipped bike, which is what every
+   * offscreen caller (thumbnails, the smoke harness) wants: a thumbnail is a
+   * picture of the LEVEL and must not change because somebody repainted their
+   * bike, exactly as it is drawn on the shipped spec rather than a tuned one.
+   */
+  look?: BikeLook | null;
+  /**
+   * The leaderboard ghost's livery — THEIRS, never yours. Same argument as
+   * `ghostFacing`: borrowing the player's would put somebody else's run in your
+   * colours, which is the one thing this feature exists to stop.
+   */
+  ghostLook?: BikeLook | null;
 }
 
 /**
@@ -170,12 +189,18 @@ export function renderArt(
   // once, each at the alpha montage.ts chose for the size of the crowd, so the
   // winning line — the player's own sim, at full strength two lines below —
   // reads against the failures rather than being lost in them.
+  const playerLook = opts.look ?? fallbackLook(P);
   if (opts.ghosts) {
-    for (const g of opts.ghosts) drawBike(ctx, g.pose, spec, px, P, g.facing, t, g.alpha, g.coarse);
+    // A montage rider with no livery of its own is one of YOUR attempts, so it
+    // wears your colours. See montageDraws in main.ts for why that is resolved
+    // live rather than embedded per attempt.
+    for (const g of opts.ghosts) {
+      drawBike(ctx, g.pose, spec, px, P, g.facing, t, g.alpha, g.coarse ? 'coarse' : 'auto', g.look ?? playerLook);
+    }
   }
-  if (opts.ghost) drawBike(ctx, opts.ghost, spec, px, P, opts.ghostFacing ?? state.facing, t, 0.3);
-  if (!state.dead && !state.finished) drawFX(ctx, pose, state, P, px, t);
-  drawBike(ctx, pose, spec, px, P, state.facing, t, 1);
+  if (opts.ghost) drawBike(ctx, opts.ghost, spec, px, P, opts.ghostFacing ?? state.facing, t, 0.3, 'auto', opts.ghostLook);
+  if (!state.dead && !state.finished) drawFX(ctx, pose, state, P, px, t, playerLook);
+  drawBike(ctx, pose, spec, px, P, state.facing, t, 1, 'auto', playerLook);
 
   if (art.motes * D.motes > 0.5 && s > 0) drawMotes(ctx, b, P, t, art.motes * D.motes, s);
   if (opts.overview > 0) drawLocator(ctx, pose, px, opts.overview, P);
@@ -939,25 +964,48 @@ const FINE_OFF = PLAY_MIN_PX * 0.53;
 const BLOB_ON = PLAY_MIN_PX * 0.42;
 const BLOB_OFF = PLAY_MIN_PX * 0.63;
 
-export /**
- * The exhaust tip, in chassis-local metres, and the pipe's thickness.
+/**
+ * The bike's look when nobody has said what it should be.
  *
- * SHARED BY THE DRAWING AND THE FX EMITTER, deliberately. They were two
- * hardcoded copies of `-0.9`, which is the same shape of mistake that already
- * put the exhaust smoke on the wrong end of the bike when it was flipped: two
- * places holding one fact, and only one of them getting fixed.
- *
- * Reported from play: "why does the bike have a weird long muffler?" The tip
- * used to sit at x = -0.90 while the rear tyre's back edge is at -0.85 (wheel
- * centre -0.60, radius 0.25) — so the pipe stuck out BEHIND the wheel, and it
- * was the only part of the bike that did. At 0.92 m it was also over half the
- * bike's 1.7 m length, drawn 0.10 m thick, which is 40% of a wheel radius.
- *
- * Now it tucks just inside the tyre's silhouette and is slimmer, so it reads as
- * a muffler behind the wheel rather than as the bike's largest feature.
+ * Memoised on the PALETTE OBJECT, not deep-compared: `bakeLevel` builds one
+ * palette per level and hands the same object to every frame, so identity is
+ * exactly the right key and a level change is exactly when it should be
+ * recomputed. Resolving a colourway is a dozen bisections, which is nothing
+ * once a level, and would be silly sixty times a second.
  */
-const PIPE_TIP: readonly [number, number] = [-0.82, -0.14];
-const PIPE_W = 0.075;
+let fallbackCache: { p: Palette; look: BikeLook } | null = null;
+function fallbackLook(P: Palette): BikeLook {
+  if (!fallbackCache || fallbackCache.p !== P) fallbackCache = { p: P, look: makeLook(DEFAULT_APPEARANCE, P) };
+  return fallbackCache.look;
+}
+
+/**
+ * Where the exhaust smoke comes out, in chassis-local metres.
+ *
+ * SHARED BY THE DRAWING AND THE FX EMITTER, deliberately, and the reason is a
+ * bug that has already been fixed once here: they were two hardcoded copies of
+ * `-0.9`, which is the same shape of mistake that put the exhaust smoke on the
+ * wrong end of the bike when it was flipped — two places holding one fact, and
+ * only one of them getting fixed. With six bike types there are now six pipes
+ * and one of them is not a pipe at all, so it is one function.
+ *
+ * The muffler lesson that produced the original constant lives on as an
+ * assertion rather than a comment: see `outsideSilhouette` in bikeart.ts, which
+ * every type's pipe is swept against.
+ */
+function exhaustPoint(shape: BikeShape): Pt {
+  if (shape.pipe) return shape.pipe.tip;
+  if (shape.vent) {
+    let x = 0;
+    let y = 0;
+    for (const v of shape.vent) {
+      x += v[0];
+      y += v[1];
+    }
+    return [x / shape.vent.length, y / shape.vent.length];
+  }
+  return [-0.82, -0.14];
+}
 
 let fineLatched = true;
 export function fineTier(detailPx: number): boolean {
@@ -979,18 +1027,43 @@ export const TIERS = { playMinPx: PLAY_MIN_PX, fineOn: FINE_ON, fineOff: FINE_OF
  * was drawn on the spec's own numbers: wheels r 0.25 on anchors at (+-0.6,
  * -0.15), head r 0.16 at 0.55 along the arm. The head is the death sphere, so
  * it is drawn at its TRUE radius and never a pixel larger — a helmet drawn
- * generously would be a lie about what kills you.
+ * generously would be a lie about what kills you. That is now `headDrawRadius`,
+ * a function with a test on it, rather than a habit.
  *
  * It has to read at the full camera range: 110 px/m where every panel line
  * shows, 62 at the base framing, and about 7 in the overview where the whole
  * bike is a dozen pixels. The detail tiers below are that, and the coarsest tier
  * is deliberately a chunky silhouette rather than a faithful miniature.
+ *
+ * EVERYTHING COSMETIC COMES IN THROUGH `look`, AND NOTHING ELSE DOES. The shape
+ * data, the colours and the accessories are all read off it; `spec` is read only
+ * for the numbers the SIM uses — wheel radius, arm length, head radius, the
+ * suspension anchors — so a bike type cannot move a collider even by accident.
+ * Six types, ten liveries, and one `specHash`.
  */
+/**
+ * Which detail tier to draw at.
+ *
+ *   'auto'    the hysteresis latches decide, which is what play wants.
+ *   'coarse'  the silhouette, asked for explicitly — the montage.
+ *   'fine'    full detail WITHOUT TOUCHING THE LATCHES, which is what an
+ *             offscreen portrait wants. The latches are module scope and shared
+ *             by every bike on the canvas on purpose; a leaderboard row drawing
+ *             forty little avatars through them would flip the PLAYER'S bike to
+ *             blobs and back, which is exactly the shimmer they exist to stop.
+ */
+export type BikeTier = 'auto' | 'coarse' | 'fine';
+
 function drawBike(
   ctx: CanvasRenderingContext2D, p: Pose, spec: BikeSpec, px: number, P: Palette,
-  facing: number, t: number, a: number, coarse = false,
+  facing: number, t: number, a: number, tier: BikeTier = 'auto', look?: BikeLook | null,
 ): void {
+  const L = look ?? fallbackLook(P);
+  const C = L.colors;
+  const shape = bikeShape(L.app.bike);
+  const TAU = Math.PI * 2;
   const wr = spec.wheel.radius;
+  const hr = headDrawRadius(spec, L.app.helmet);
   const hx = p.px + spec.rider.armLength * p.ax;
   const hy = p.py + spec.rider.armLength * p.ay;
   const detail = wr / px; // wheel radius in screen pixels
@@ -1005,40 +1078,46 @@ function drawBike(
   // by every bike in the frame — one controller for the whole canvas, on
   // purpose — so forty montage riders driving it would flip the PLAYER'S bike
   // to blobs and back, which is exactly the shimmer the latch exists to stop.
-  if (coarse || blobTier(detail)) {
+  if (tier === 'coarse' || (tier === 'auto' && blobTier(detail))) {
     // Overview tier. Three ink-outlined blobs and a link: at this size anything
     // finer is mush, and the only question the frame has to answer is "where am
     // I and which way up".
-    ctx.strokeStyle = P.ink;
+    //
+    // THE LIVERY STILL SHOWS HERE, and it has to. A montage is forty bikes at
+    // this tier and a leaderboard ghost drops to it whenever the camera pulls
+    // back; drawing all of them in one colour would make the crowd a texture
+    // rather than a crowd, which is the whole thing the feature exists to
+    // avoid.
+    ctx.strokeStyle = C.ink;
     ctx.lineWidth = 3 * px;
     ctx.beginPath();
     ctx.moveTo(p.wx[0], p.wy[0]);
     ctx.lineTo(p.px, p.py);
     ctx.lineTo(p.wx[1], p.wy[1]);
     ctx.stroke();
-    ctx.strokeStyle = P.cream;
+    ctx.strokeStyle = C.frame;
     ctx.lineWidth = 1.5 * px;
     ctx.stroke();
     for (let i = 0; i < 2; i++) {
       ctx.beginPath();
-      ctx.arc(p.wx[i], p.wy[i], Math.max(wr, 2.5 * px), 0, Math.PI * 2);
-      ctx.fillStyle = P.yellow;
+      ctx.arc(p.wx[i], p.wy[i], Math.max(wr, 2.5 * px), 0, TAU);
+      ctx.fillStyle = C.wheel;
       ctx.fill();
       ctx.lineWidth = 1.5 * px;
-      ctx.strokeStyle = P.ink;
+      ctx.strokeStyle = C.ink;
       ctx.stroke();
     }
     ctx.beginPath();
-    ctx.arc(hx, hy, Math.max(spec.rider.headRadius, 2.5 * px), 0, Math.PI * 2);
-    ctx.fillStyle = P.cream;
+    ctx.arc(hx, hy, Math.max(hr, 2.5 * px), 0, TAU);
+    ctx.fillStyle = C.head;
     ctx.fill();
-    ctx.strokeStyle = P.ink;
+    ctx.strokeStyle = C.ink;
     ctx.stroke();
     ctx.restore();
     return;
   }
 
-  const fine = fineTier(detail);
+  const fine = tier === 'fine' || (tier === 'auto' && fineTier(detail));
   const local = (): void => {
     ctx.translate(p.px, p.py);
     ctx.transform(p.ox, p.oy, -p.oy, p.ox, 0, 0);
@@ -1049,145 +1128,165 @@ function drawBike(
     ctx.moveTo(pts[0][0], pts[0][1]);
     for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
     ctx.lineWidth = w + 6 * px;
-    ctx.strokeStyle = P.ink;
+    ctx.strokeStyle = C.ink;
     ctx.stroke();
     ctx.lineWidth = w;
     ctx.strokeStyle = col;
     ctx.stroke();
   };
+  const poly = (pts: readonly Pt[]): void => {
+    ctx.beginPath();
+    pts.forEach((q, i) => (i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])));
+    ctx.closePath();
+  };
 
-  // 1. Behind the wheels: exhaust, swingarm, fork.
+  // 1. Behind the wheels: exhaust, swingarm, fork. All three come off the bike
+  //    type, and the swingarm and fork END AT THE SIM'S OWN SUSPENSION ANCHORS
+  //    rather than at literals, so a frame cannot draw a wheel somewhere the
+  //    physics does not put one.
   ctx.save();
   local();
-  ctx.beginPath();
-  ctx.moveTo(0.02, -0.1);
-  ctx.quadraticCurveTo(-0.14, -0.28, -0.42, -0.25);
-  ctx.lineTo(PIPE_TIP[0], PIPE_TIP[1]);
-  ctx.lineWidth = PIPE_W + 6 * px;
-  ctx.strokeStyle = P.ink;
-  ctx.stroke();
-  ctx.lineWidth = PIPE_W;
-  ctx.strokeStyle = '#d9d4e8';
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.arc(PIPE_TIP[0], PIPE_TIP[1], 0.052, 0, Math.PI * 2);
-  ctx.fillStyle = P.ink;
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(PIPE_TIP[0], PIPE_TIP[1], 0.026, 0, Math.PI * 2);
-  ctx.fillStyle = P.orange;
-  ctx.fill();
-  ink(0.07, '#3a3560', [[-0.1, -0.04], [-0.6, -0.15]]);
-  ink(0.06, P.cyan, [[0.33, 0.3], [0.6, -0.15]]);
+  const pipe = shape.pipe;
+  if (pipe) {
+    ctx.beginPath();
+    ctx.moveTo(pipe.from[0], pipe.from[1]);
+    ctx.quadraticCurveTo(pipe.ctrl[0], pipe.ctrl[1], pipe.mid[0], pipe.mid[1]);
+    ctx.lineTo(pipe.tip[0], pipe.tip[1]);
+    ctx.lineWidth = pipe.w + 6 * px;
+    ctx.strokeStyle = C.ink;
+    ctx.stroke();
+    ctx.lineWidth = pipe.w;
+    ctx.strokeStyle = C.metal;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(pipe.tip[0], pipe.tip[1], pipe.tipR, 0, TAU);
+    ctx.fillStyle = C.ink;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(pipe.tip[0], pipe.tip[1], pipe.tipR * 0.5, 0, TAU);
+    ctx.fillStyle = C.panel;
+    ctx.fill();
+  }
+  const a0 = spec.wheel.anchors[0];
+  const a1 = spec.wheel.anchors[1];
+  ink(shape.swingW, C.dark, [[shape.swing[0], shape.swing[1]], [a0.x, a0.y]]);
+  ink(shape.forkW, C.panel, [[shape.fork[0], shape.fork[1]], [a1.x, a1.y]]);
   ctx.restore();
 
   // 2. Wheels, in world space, spinning on the sim's own spin scalar.
+  const ws = shape.wheel;
   for (let i = 0; i < 2; i++) {
     ctx.save();
     ctx.translate(p.wx[i], p.wy[i]);
     ctx.beginPath();
-    ctx.arc(0, 0, wr, 0, Math.PI * 2);
-    ctx.fillStyle = P.ink;
+    ctx.arc(0, 0, wr, 0, TAU);
+    ctx.fillStyle = C.ink;
     ctx.fill();
     ctx.beginPath();
-    ctx.arc(0, 0, wr * 0.8, 0, Math.PI * 2);
-    ctx.fillStyle = '#2b2744';
+    ctx.arc(0, 0, wr * 0.82, 0, TAU);
+    ctx.fillStyle = C.tyre;
     ctx.fill();
     ctx.save();
     ctx.rotate(p.wspin[i]);
-    if (fine) {
-      ctx.fillStyle = P.ink;
-      for (let k = 0; k < 12; k++) {
-        ctx.rotate(Math.PI / 6);
+    if (fine && ws.treads > 0) {
+      ctx.fillStyle = C.ink;
+      const step = TAU / ws.treads;
+      for (let k = 0; k < ws.treads; k++) {
+        ctx.rotate(step);
         ctx.fillRect(wr * 0.8, -wr * 0.112, wr * 0.2, wr * 0.224);
       }
     }
     ctx.restore();
     ctx.beginPath();
-    ctx.arc(0, 0, wr * 0.6, 0, Math.PI * 2);
-    ctx.fillStyle = P.yellow;
+    ctx.arc(0, 0, wr * ws.rim, 0, TAU);
+    ctx.fillStyle = C.wheel;
     ctx.fill();
     ctx.lineWidth = 3.5 * px;
-    ctx.strokeStyle = P.ink;
+    ctx.strokeStyle = C.ink;
     ctx.stroke();
-    // The tri-spoke is how wheel SPIN stays visible, and spin is a real state
-    // variable you cannot tune traction without seeing.
+    // SPIN HAS TO STAY VISIBLE ON EVERY TYPE. It is a real state variable and
+    // traction cannot be tuned — or read — without seeing it, so every wheel
+    // style carries something that turns: spokes, or the disc's own mark.
+    // bikeart.test.ts asserts no style has neither.
     ctx.save();
     ctx.rotate(p.wspin[i]);
-    ctx.fillStyle = P.ink;
-    for (let k = 0; k < 3; k++) {
-      ctx.rotate((Math.PI * 2) / 3);
+    ctx.fillStyle = C.ink;
+    for (let k = 0; k < ws.spokes; k++) {
+      ctx.rotate(TAU / ws.spokes);
       ctx.beginPath();
       ctx.moveTo(0, -wr * 0.16);
-      ctx.lineTo(wr * 0.56, -wr * 0.1);
-      ctx.lineTo(wr * 0.56, wr * 0.1);
+      ctx.lineTo(wr * ws.rim * 0.93, -wr * 0.1);
+      ctx.lineTo(wr * ws.rim * 0.93, wr * 0.1);
       ctx.lineTo(0, wr * 0.16);
       ctx.closePath();
       ctx.fill();
     }
+    if (ws.disc) {
+      ctx.beginPath();
+      ctx.arc(0, 0, wr * ws.rim * 0.62, 0, TAU);
+      ctx.fillStyle = C.panel;
+      ctx.fill();
+      ctx.fillStyle = C.ink;
+      ctx.beginPath();
+      ctx.moveTo(wr * ws.rim * 0.18, -wr * 0.09);
+      ctx.lineTo(wr * ws.rim * 0.58, -wr * 0.05);
+      ctx.lineTo(wr * ws.rim * 0.58, wr * 0.05);
+      ctx.lineTo(wr * ws.rim * 0.18, wr * 0.09);
+      ctx.closePath();
+      ctx.fill();
+    }
     ctx.restore();
-    // Hub in INK, not cream. Cream is the rider's colour and nothing else's:
-    // the head is the death sphere and a cream dot on each wheel makes three
-    // identical pale circles out of the one thing that must never be mistaken
-    // for anything.
+    // Hub in INK, not in the helmet colour. The head is the death sphere and a
+    // pale dot on each wheel makes three matching circles out of the one thing
+    // that must never be mistaken for anything — which is also why every
+    // colourway puts its helmet hue at least 45 degrees off its wheel hue.
     ctx.beginPath();
-    ctx.arc(0, 0, wr * 0.2, 0, Math.PI * 2);
-    ctx.fillStyle = P.ink;
+    ctx.arc(0, 0, wr * ws.hub, 0, TAU);
+    ctx.fillStyle = C.ink;
     ctx.fill();
     ctx.restore();
   }
 
-  // 3. Chassis.
+  // 3. Chassis. The outline is what says which bike this is; everything inside
+  //    it is drawn UNDER A CLIP ON THAT OUTLINE, which is what makes a tank
+  //    band, a seat wedge and a decal structurally incapable of adding a pixel
+  //    to the bike's silhouette.
   ctx.save();
   local();
-  const body: [number, number][] = [
-    [-0.5, 0.1], [-0.52, 0.24], [-0.4, 0.28], [-0.2, 0.24], [-0.02, 0.32], [0.2, 0.35],
-    [0.38, 0.3], [0.46, 0.16], [0.4, 0.04], [0.12, -0.02], [-0.25, -0.02], [-0.44, 0.02],
-  ];
-  const bodyPath = (): void => {
-    ctx.beginPath();
-    body.forEach((q, i) => (i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])));
-    ctx.closePath();
-  };
-  bodyPath();
-  ctx.fillStyle = P.cream;
+  poly(shape.body);
+  ctx.fillStyle = C.frame;
   ctx.fill();
   ctx.lineWidth = 6 * px;
-  ctx.strokeStyle = P.ink;
+  ctx.strokeStyle = C.ink;
   ctx.stroke();
   if (fine) {
     ctx.save();
-    bodyPath();
+    poly(shape.body);
     ctx.clip();
-    ctx.fillStyle = P.cyan;
-    ctx.fillRect(-1, -0.2, 2, 0.2);
-    ctx.fillStyle = P.orange;
-    ctx.beginPath();
-    ctx.moveTo(-0.7, 0.17);
-    ctx.lineTo(0.6, 0.06);
-    ctx.lineTo(0.6, 0.16);
-    ctx.lineTo(-0.7, 0.27);
-    ctx.closePath();
+    poly(shape.tank);
+    ctx.fillStyle = C.panel;
     ctx.fill();
-    ctx.fillStyle = P.ink;
-    ctx.beginPath();
-    ctx.moveTo(-0.54, 0.22);
-    ctx.lineTo(-0.2, 0.24);
-    ctx.lineTo(-0.02, 0.32);
-    ctx.lineTo(-0.2, 0.34);
-    ctx.lineTo(-0.54, 0.3);
-    ctx.closePath();
+    poly(shape.seat);
+    ctx.fillStyle = C.ink;
     ctx.fill();
+    if (shape.vent) {
+      poly(shape.vent);
+      ctx.fillStyle = C.ink;
+      ctx.fill();
+    }
+    drawDecal(ctx, shape, L, px);
     ctx.restore();
-    bodyPath();
+    poly(shape.body);
     ctx.lineWidth = 4 * px;
-    ctx.strokeStyle = P.ink;
+    ctx.strokeStyle = C.ink;
     ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(0.46, 0.26, 0.075, 0, Math.PI * 2);
-    ctx.fillStyle = P.yellow;
-    ctx.fill();
-    ctx.stroke();
+    if (shape.lamp) {
+      ctx.beginPath();
+      ctx.arc(shape.lamp.x, shape.lamp.y, shape.lamp.r, 0, TAU);
+      ctx.fillStyle = C.trim;
+      ctx.fill();
+      ctx.stroke();
+    }
   }
 
   // 4. The rider — a chunky kid on the sim's driven pendulum. Everything that
@@ -1206,87 +1305,190 @@ function drawBike(
   const foot = { x: 0.05, y: -0.1 };
   const grip = { x: 0.27, y: 0.46 };
   const elb = { x: 0.07, y: 0.4 };
+  const cut = jacketCut(L.app.jacket);
+  const scarf = scarfStyle(L.app.scarf);
 
-  if (fine) {
+  if (fine && scarf.segments > 0) {
     ctx.beginPath();
     ctx.moveTo(sh.x - 0.02, sh.y + 0.05);
-    for (let i = 1; i <= 6; i++) {
-      const u = i / 6;
-      ctx.lineTo(sh.x - 0.04 - u * 0.62, sh.y + 0.06 + Math.sin(t * 9 + u * 6) * 0.09 * u + u * 0.16);
+    const lift = scarf.length / 0.62;
+    for (let i = 1; i <= scarf.segments; i++) {
+      const u = i / scarf.segments;
+      ctx.lineTo(
+        sh.x - 0.04 - u * scarf.length,
+        sh.y + 0.06 + Math.sin(t * 9 + u * 6) * scarf.sway * u + u * 0.16 * lift,
+      );
     }
-    ctx.lineWidth = 0.09 + 5 * px;
-    ctx.strokeStyle = P.ink;
+    ctx.lineWidth = scarf.w + 5 * px;
+    ctx.strokeStyle = C.ink;
     ctx.stroke();
-    ctx.lineWidth = 0.09;
-    ctx.strokeStyle = P.yellow;
+    ctx.lineWidth = scarf.w;
+    ctx.strokeStyle = C.scarf;
     ctx.stroke();
   }
-  ink(0.12, '#2b2744', [[hip.x, hip.y], [knee.x, knee.y], [foot.x, foot.y]]);
+  ink(0.12, C.dark, [[hip.x, hip.y], [knee.x, knee.y], [foot.x, foot.y]]);
+  const [j0, j1, j2] = cut.torso;
   ctx.beginPath();
   ctx.moveTo(hip.x - 0.11, hip.y - 0.05);
-  ctx.lineTo(sh.x - 0.17, sh.y - 0.01);
-  ctx.lineTo(sh.x + 0.04, sh.y + 0.12);
-  ctx.lineTo(sh.x + 0.17, sh.y - 0.06);
+  ctx.lineTo(sh.x + j0[0], sh.y + j0[1]);
+  ctx.lineTo(sh.x + j1[0], sh.y + j1[1]);
+  ctx.lineTo(sh.x + j2[0], sh.y + j2[1]);
   ctx.lineTo(hip.x + 0.15, hip.y - 0.03);
   ctx.closePath();
-  ctx.fillStyle = P.magenta;
+  ctx.fillStyle = C.jacket;
   ctx.fill();
   ctx.lineWidth = 6 * px;
-  ctx.strokeStyle = P.ink;
+  ctx.strokeStyle = C.ink;
   ctx.stroke();
-  ink(0.1, P.magenta, [[sh.x, sh.y + 0.02], [elb.x, elb.y], [grip.x, grip.y]]);
+  if (fine && cut.open) {
+    // A sleeveless cut reads by the shirt showing down the front, not by a
+    // thinner outline — at this size a thinner outline is not a difference.
+    ctx.beginPath();
+    ctx.moveTo(sh.x + j2[0], sh.y + j2[1]);
+    ctx.lineTo(hip.x + 0.15, hip.y - 0.03);
+    ctx.lineTo(hip.x + 0.02, hip.y - 0.02);
+    ctx.lineTo(sh.x + j1[0] * 0.5, sh.y + j1[1] * 0.6);
+    ctx.closePath();
+    ctx.fillStyle = C.head;
+    ctx.fill();
+  }
+  if (fine && cut.flash) {
+    ctx.beginPath();
+    cut.flash.forEach((q, i) => (i ? ctx.lineTo(sh.x + q[0], sh.y + q[1]) : ctx.moveTo(sh.x + q[0], sh.y + q[1])));
+    ctx.closePath();
+    ctx.fillStyle = C.trim;
+    ctx.fill();
+  }
+  ink(cut.arm, C.jacket, [[sh.x, sh.y + 0.02], [elb.x, elb.y], [grip.x, grip.y]]);
   if (fine) {
     ctx.beginPath();
-    ctx.arc(grip.x, grip.y, 0.06, 0, Math.PI * 2);
-    ctx.fillStyle = P.lime;
+    ctx.arc(grip.x, grip.y, 0.06, 0, TAU);
+    ctx.fillStyle = C.trim;
     ctx.fill();
     ctx.lineWidth = 4 * px;
-    ctx.strokeStyle = P.ink;
+    ctx.strokeStyle = C.ink;
     ctx.stroke();
   }
   ctx.restore();
 
-  // 5. The head, in WORLD space at its true radius. Drawn outside the chassis
+  // 5. The head, in WORLD space at its TRUE radius. Drawn outside the chassis
   // frame so that no accumulated local transform can move it off the sphere the
-  // sim actually tests.
+  // sim actually tests — and every helmet is drawn UNDER A CLIP ON THAT SAME
+  // CIRCLE, so no accessory can make the kill volume look bigger than it is.
   ctx.beginPath();
-  ctx.arc(hx, hy, spec.rider.headRadius, 0, Math.PI * 2);
-  ctx.fillStyle = P.cream;
+  ctx.arc(hx, hy, hr, 0, TAU);
+  ctx.fillStyle = C.head;
   ctx.fill();
   ctx.lineWidth = 5 * px;
-  ctx.strokeStyle = P.ink;
+  ctx.strokeStyle = C.ink;
   ctx.stroke();
   if (fine) {
+    const hs = helmetStyle(L.app.helmet);
     ctx.save();
     ctx.beginPath();
-    ctx.arc(hx, hy, spec.rider.headRadius, 0, Math.PI * 2);
+    ctx.arc(hx, hy, hr, 0, TAU);
     ctx.clip();
-    // A VISOR, not a pie slice. Drawn in the chassis frame so it sweeps round
-    // with the bike and tells you which way the rider is looking, which at the
-    // base camera is most of what says "upright" or "upside down".
-    const hr = spec.rider.headRadius;
+    // Drawn in the chassis frame so the helmet sweeps round with the bike and
+    // tells you which way the rider is looking, which at the base camera is
+    // most of what says "upright" or "upside down".
     ctx.translate(hx, hy);
     ctx.transform(p.ox, p.oy, -p.oy, p.ox, 0, 0);
     ctx.scale(facing, 1);
-    ctx.fillStyle = P.cyan;
-    ctx.fillRect(-hr * 0.1, -hr * 0.5, hr * 1.3, hr * 0.85);
+    ctx.fillStyle = C.frame;
+    for (const [bx, by, bw, bh] of hs.band) ctx.fillRect(bx * hr, by * hr, bw * hr, bh * hr);
+    ctx.fillStyle = C.visor;
+    for (const [vx, vy, vw, vh] of hs.lens) ctx.fillRect(vx * hr, vy * hr, vw * hr, vh * hr);
+    ctx.fillStyle = C.trim;
+    for (const [sx, sy, sr] of hs.studs) {
+      ctx.beginPath();
+      ctx.arc(sx * hr, sy * hr, sr * hr, 0, TAU);
+      ctx.fill();
+    }
     ctx.fillStyle = alpha(P.ink, 0.22);
-    ctx.fillRect(-hr * 1.3, hr * 0.3, hr * 2.6, hr * 1.3);
+    ctx.fillRect(-hr * 1.3, hs.shadeY * hr, hr * 2.6, hr * 1.3);
     ctx.restore();
     ctx.beginPath();
-    ctx.arc(hx, hy, spec.rider.headRadius, 0, Math.PI * 2);
+    ctx.arc(hx, hy, hr, 0, TAU);
     ctx.lineWidth = 4 * px;
-    ctx.strokeStyle = P.ink;
+    ctx.strokeStyle = C.ink;
     ctx.stroke();
   }
 
   ctx.restore();
 }
 
+/**
+ * Bodywork markings, drawn INSIDE the caller's clip on the body path.
+ *
+ * Placed from the body's own bounding box rather than authored per bike, so one
+ * set of numbers lands sensibly on all six shapes and a seventh bike cannot
+ * forget to place them.
+ *
+ * The number plate is pale — it is drawn in the helmet colour, which is the
+ * brightest colour the livery has — with the digits in the decal colour. That
+ * gets its contrast for free: the decal is floored against the FRAME, the head
+ * is brighter than the frame by construction, so a digit that clears the
+ * bodywork clears the plate by more.
+ */
+function drawDecal(ctx: CanvasRenderingContext2D, shape: BikeShape, L: BikeLook, px: number): void {
+  const id = L.app.decal;
+  if (id === 'none') return;
+  const C: BikeColors = L.colors;
+  const bb = bodyBox(shape);
+  const w = bb.maxX - bb.minX;
+  const h = bb.maxY - bb.minY;
+  const midY = bb.minY + h * 0.5;
+
+  if (id === 'stripe') {
+    ctx.fillStyle = C.decal;
+    ctx.beginPath();
+    ctx.moveTo(bb.minX - 0.1, midY - h * 0.12);
+    ctx.lineTo(bb.maxX + 0.1, midY + h * 0.02);
+    ctx.lineTo(bb.maxX + 0.1, midY + h * 0.22);
+    ctx.lineTo(bb.minX - 0.1, midY + h * 0.08);
+    ctx.closePath();
+    ctx.fill();
+    return;
+  }
+
+  if (id === 'checks') {
+    const n = 9;
+    const cw = (w + 0.2) / n;
+    const ch = h * 0.17;
+    ctx.fillStyle = C.decal;
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < 2; j++) {
+        if ((i + j) % 2 !== 0) continue;
+        ctx.fillRect(bb.minX - 0.1 + i * cw, midY - ch + j * ch, cw, ch);
+      }
+    }
+    return;
+  }
+
+  // id === 'number'
+  const pw = Math.min(0.26, w * 0.38);
+  const ph = Math.min(0.2, h * 0.62);
+  const cx = bb.minX + w * 0.24;
+  const cy = midY + h * 0.02;
+  ctx.fillStyle = C.head;
+  ctx.fillRect(cx - pw / 2, cy - ph / 2, pw, ph);
+  ctx.lineWidth = 4 * px;
+  ctx.strokeStyle = C.ink;
+  ctx.strokeRect(cx - pw / 2, cy - ph / 2, pw, ph);
+  const lay = textOutline(L.plate, cx, cy - ph * 0.3, { size: ph * 0.6, align: 'center' });
+  ctx.strokeStyle = C.decal;
+  ctx.lineWidth = ph * 0.15;
+  for (const stroke of lay.strokes) {
+    ctx.beginPath();
+    stroke.forEach((q, i) => (i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])));
+    ctx.stroke();
+  }
+}
+
 // --- fx ---------------------------------------------------------------------
 
 function drawFX(
-  ctx: CanvasRenderingContext2D, p: Pose, state: SimState, P: Palette, px: number, t: number,
+  ctx: CanvasRenderingContext2D, p: Pose, state: SimState, P: Palette, px: number, t: number, look: BikeLook,
 ): void {
   const speed = Math.sqrt(state.vx * state.vx + state.vy * state.vy);
 
@@ -1302,9 +1504,12 @@ function drawFX(
   // fix is a single `f` threaded through all of them rather than one sign flip.
   const f = state.facing;
 
-  // Exhaust from the pipe tip, chassis-local (-0.9, -0.14) — the x mirrors.
-  const lx = PIPE_TIP[0] * f;
-  const ly = PIPE_TIP[1];
+  // Exhaust from this BIKE TYPE'S pipe tip, chassis-local — the x mirrors. One
+  // of the six vents instead of piping, and `exhaustPoint` answers for it too,
+  // so smoke never comes out of a place the bike has no hole in.
+  const tip = exhaustPoint(bikeShape(look.app.bike));
+  const lx = tip[0] * f;
+  const ly = tip[1];
   const tipX = p.px + p.ox * lx - p.oy * ly;
   const tipY = p.py + p.oy * lx + p.ox * ly;
   for (let k = 0; k < 4; k++) {
@@ -1481,4 +1686,53 @@ function drawDebug(ctx: CanvasRenderingContext2D, world: World, px: number): voi
     ctx.stroke();
   }
   ctx.restore();
+}
+
+// --- the bike as a portrait --------------------------------------------------
+
+/**
+ * ONE PERSON'S BIKE, STANDING STILL, IN WHATEVER CANVAS YOU HAND IT.
+ *
+ * This is what turns a board row from a name and a number into somebody. It is
+ * not a second drawing of the bike — it is `drawBike`, at a small scale, on a
+ * synthetic level pose, which is the same argument thumbs.ts makes about level
+ * pictures: a portrait cannot drift from the game because it IS the game.
+ *
+ * `tier: 'fine'` rather than letting the latches decide, for the reason spelled
+ * out on `BikeTier`: an avatar must never be able to change what the player's
+ * own bike is drawn at.
+ */
+export function drawBikePortrait(
+  ctx: CanvasRenderingContext2D, spec: BikeSpec, P: Palette, look: BikeLook, zoom: number,
+): void {
+  const a0 = spec.wheel.anchors[0];
+  const a1 = spec.wheel.anchors[1];
+  const pose: Pose = {
+    px: 0,
+    py: 0,
+    ox: 1,
+    oy: 0,
+    wx: [a0.x, a1.x],
+    wy: [a0.y, a1.y],
+    // A quarter turn of spin, so the spokes read as spokes rather than as a
+    // cross that happens to line up with the axes on every single avatar.
+    wspin: [0.4, 0.4],
+    ax: 0,
+    ay: 1,
+  };
+  drawBike(ctx, pose, spec, 1 / zoom, P, 1, 0, 1, 'fine', look);
+}
+
+/**
+ * The bike's extent in metres, for framing a portrait. Derived from the SPEC —
+ * the wheels and the head sphere — rather than from the art, because the art is
+ * required to stay inside them and framing on the art would let a bike type
+ * quietly change how big everyone's avatar is.
+ */
+export function portraitExtent(spec: BikeSpec): { w: number; h: number; cy: number } {
+  const wr = spec.wheel.radius;
+  const ax = Math.max(Math.abs(spec.wheel.anchors[0].x), Math.abs(spec.wheel.anchors[1].x));
+  const top = spec.rider.armLength + spec.rider.headRadius;
+  const bottom = spec.wheel.anchors[0].y - wr;
+  return { w: 2 * (ax + wr), h: top - bottom, cy: (top + bottom) / 2 };
 }

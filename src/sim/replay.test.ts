@@ -237,6 +237,68 @@ describe('replay files', () => {
   });
 });
 
+describe('presentation metadata cannot reach the verifier', () => {
+  // THE RULE THE `meta` FIELD INHERITS, AS A TEST. A replay carries who rode it
+  // and what their bike looked like so that a file handed to somebody else
+  // shows the run it actually was — and none of that may be able to change
+  // whether the run verifies. It sits on `ReplayFile` and not on `Replay`
+  // precisely so that is structural: `verifyReplay` takes a `Replay`, the
+  // periodic hash chain is over sim state, and `specHash` is over `BikeSpec`.
+  //
+  // Same shape of assertion as the one that proves a muted run and a loud run
+  // record byte-identical replays: change the presentation, assert the physics
+  // did not move a bit.
+  const r = record(600);
+
+  it('a replay with a livery verifies bit-identically to one without', () => {
+    const plain = toReplayFile(r, { level: TEST_LEVEL, levelName: 'test', spec: DEFAULT_SPEC });
+    const painted = toReplayFile(r, {
+      level: TEST_LEVEL,
+      levelName: 'test',
+      spec: DEFAULT_SPEC,
+      meta: {
+        playerId: 'k3jf83nd8sl2mfk1',
+        appearance: { bike: 'bobber', paint: 'acid', helmet: 'bucket', jacket: 'vest', scarf: 'none', decal: 'checks' },
+      },
+    });
+    const a = verifyReplay(level, DEFAULT_SPEC, plain);
+    const b = verifyReplay(level, DEFAULT_SPEC, painted);
+    expect(b.ok).toBe(true);
+    expect(b.finalHash).toBe(a.finalHash);
+    expect(b.timeTicks).toBe(a.timeTicks);
+    // And the two files differ in NOTHING except the block the verifier cannot
+    // see, which is what makes the claim above more than an observation.
+    const strip = (f: Record<string, unknown>): Record<string, unknown> => {
+      const out = { ...f };
+      delete out.meta;
+      return out;
+    };
+    expect(strip(painted as unknown as Record<string, unknown>))
+      .toEqual(strip(plain as unknown as Record<string, unknown>));
+    expect(specHash(DEFAULT_SPEC)).toBe(painted.specHash);
+  });
+
+  it('survives a JSON round trip and is optional both ways', () => {
+    const meta = { playerId: 'abcdefgh1234', appearance: { bike: 'cafe', paint: 'ice' } };
+    const withMeta = parseReplayFile(JSON.parse(JSON.stringify(
+      toReplayFile(r, { level: TEST_LEVEL, spec: DEFAULT_SPEC, meta }),
+    )));
+    expect(withMeta.meta).toEqual(meta);
+    // Absent is the normal state: every file recorded before this existed has
+    // none, and the pilot and solver runs in replays/ never will.
+    const without = parseReplayFile(JSON.parse(JSON.stringify(toReplayFile(r, { level: TEST_LEVEL }))));
+    expect(without.meta).toBeUndefined();
+    expect(verifyReplay(level, DEFAULT_SPEC, without).ok).toBe(true);
+  });
+
+  it('refuses a meta that is not an object rather than carrying nonsense', () => {
+    for (const bad of ['a string', 42, [1, 2, 3], null]) {
+      const parsed = parseReplayFile({ ...(r as unknown as Record<string, unknown>), meta: bad });
+      expect(parsed.meta).toBeUndefined();
+    }
+  });
+});
+
 describe('decodeInputs — the server cap', () => {
   it('is unlimited when no cap is given, exactly as it always was', () => {
     expect(decodeInputs('0*100000').length).toBe(100000);

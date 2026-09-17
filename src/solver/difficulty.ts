@@ -46,7 +46,7 @@
 // which is what a generator needs to filter on and what an editor can show live.
 // A level whose solution only a solver would ever find scores high here and may
 // simply be bad; the number is a flag to go and look, not a verdict.
-import { createSim } from '@/sim/sim.ts';
+import { getEngine, SIM_REV } from '@/sim/rev.ts';
 import type { Level } from '@/sim/level.ts';
 import type { BikeSpec } from '@/sim/spec.ts';
 import { buildEdgeIndex, nearestSurface } from './field.ts';
@@ -139,9 +139,9 @@ function mulberry32(seed: number): () => number {
 }
 
 /** Walk the winning line and measure it. */
-export function measureLine(level: Level, spec: BikeSpec, masks: readonly number[]): LineStats {
+export function measureLine(level: Level, spec: BikeSpec, masks: readonly number[], rev = SIM_REV): LineStats {
   const ix = buildEdgeIndex(level);
-  const sim = createSim(level, spec);
+  const sim = getEngine(rev).createSim(level, spec);
   const s = sim.state;
   let minClear = Infinity;
   let atX = NaN;
@@ -187,6 +187,7 @@ export function measureTolerance(
   trials = 200,
   seed = 0x5e1f,
   horizon = 192,
+  rev = SIM_REV,
 ): Tolerance {
   if (masks.length === 0) return { trials: 0, lethal: 0, finished: 0, horizon };
   const runs: { mask: number; len: number }[] = [];
@@ -216,7 +217,7 @@ export function measureTolerance(
     // Past that the run has diverged for reasons that are about chaos, not
     // about how tight the level is.
     const until = startOf[i] + runs[i].len + horizon;
-    const sim = createSim(level, spec);
+    const sim = getEngine(rev).createSim(level, spec);
     let died = false;
     for (let f = 0; f < out.length; f++) {
       sim.advance(out[f]);
@@ -239,9 +240,12 @@ export function scoreDifficulty(args: {
   routeMetres: number;
   trials?: number;
   seed?: number;
+  /** Which physics. Defaults to SIM_REV, the live rev. */
+  rev?: number;
 }): Difficulty {
-  const line = measureLine(args.level, args.spec, args.masks);
-  const tolerance = measureTolerance(args.level, args.spec, args.masks, args.trials ?? 200, args.seed);
+  const rev = args.rev ?? SIM_REV;
+  const line = measureLine(args.level, args.spec, args.masks, rev);
+  const tolerance = measureTolerance(args.level, args.spec, args.masks, args.trials ?? 200, args.seed, undefined, rev);
   const metres = args.routeMetres > 1 ? args.routeMetres : 1;
   const epm = args.expansions / metres;
   const dpe = args.expansions > 0 ? args.deaths / args.expansions : 0;

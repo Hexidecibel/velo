@@ -38,6 +38,7 @@ import { copyState } from '@/sim/step.ts';
 import type { SimState } from '@/sim/step.ts';
 import { interpolate } from './render.ts';
 import type { Pose } from './render.ts';
+import type { Appearance } from '@/shared/appearance.ts';
 
 /** Which ghost, in the order the selector offers them. */
 export type GhostKind = 'off' | 'above' | 'pb' | 'wr';
@@ -99,6 +100,16 @@ export interface GhostMeta {
   replayId: string;
   /** 1-based, when the entry came off a board. */
   rank: number | null;
+  /**
+   * THEIR BIKE, NOT YOURS — and this is the payoff the whole customisation
+   * feature is for. A ghost in the player's own colours is a second copy of
+   * yourself; a ghost in the colours the person who set it chose is a person.
+   *
+   * Presentation only, like the name, and resolved by `resolveAppearance` so a
+   * run from before any of this existed still shows up as somebody rather than
+   * as a clone.
+   */
+  appearance: Appearance;
 }
 
 /**
@@ -278,7 +289,9 @@ export function createGhost(level: Level, spec: BikeSpec, replay: Replay, meta: 
 // tool used deliberately and not something offered to a player mid-session.
 
 /** One board row, reduced to what a ghost needs. */
-export type GhostEntry = { replayId: string; name: string; timeTicks: number; playerId: string } | null;
+export type GhostEntry =
+  | { replayId: string; name: string; timeTicks: number; playerId: string; appearance?: Appearance }
+  | null;
 
 /** Where a player stands on ONE board — the shape `/api/leaderboard` returns. */
 export interface Standing {

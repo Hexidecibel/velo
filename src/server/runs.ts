@@ -27,6 +27,8 @@ import {
 } from '@/sim/replay.ts';
 import type { ReplayFile, VerifyResult } from '@/sim/replay.ts';
 import { SIM_REV } from '@/sim/rev.ts';
+import { parseAppearance } from '@/shared/appearance.ts';
+import type { Appearance } from '@/shared/appearance.ts';
 import type { Category, Entry, Placement, Standing } from './board.ts';
 import { entryFrom, isCategory, place, recordPb, sectionOf, standing } from './board.ts';
 import { levelBySimHash, OFFICIAL_SPEC, OFFICIAL_SPEC_HASH } from './levels.ts';
@@ -120,6 +122,17 @@ function rateLimited(playerId: string, now: number): boolean {
 export interface Submission {
   playerId: string;
   name: string;
+  /**
+   * What their bike looks like. PRESENTATION METADATA, keyed to the playerId
+   * exactly like the name, and — like the name — refreshed in place on every
+   * submission rather than frozen at whatever it was the first time.
+   *
+   * It reaches nothing that decides whether the run counts. `preflight` below
+   * checks `specHash` against the shipped bike and an appearance is not in that
+   * hash and cannot be: cosmetics live in their own structure precisely so that
+   * repainting a bike cannot refuse a time.
+   */
+  appearance: Appearance;
   category: Category;
   replay: ReplayFile;
 }
@@ -164,7 +177,14 @@ export function parseSubmission(raw: unknown): Submission | Rejected {
     return reject('bad-replay', `replay.hashes holds ${replay.hashes.length} entries; the cap is ${MAX_HASHES}`);
   }
 
-  return { playerId: r.playerId, name, category, replay };
+  // NEVER FATAL, and that asymmetry with everything else in this function is
+  // the point. A malformed replay is refused because the verifier cannot run on
+  // it; a malformed appearance is a hint about a colour, and a client one
+  // version newer than this server picking a livery we do not ship must not
+  // lose its run over it. `parseAppearance` falls back per axis.
+  const appearance = parseAppearance(r.appearance);
+
+  return { playerId: r.playerId, name, appearance, category, replay };
 }
 
 /**
@@ -298,6 +318,7 @@ export async function submit(raw: unknown, opts: SubmitOptions = {}): Promise<Su
       simRev: sub.replay.simRev,
       specHash: sub.replay.specHash,
       bike: sub.replay.bike,
+      appearance: sub.appearance,
       frames: sub.replay.frames,
       at,
     },

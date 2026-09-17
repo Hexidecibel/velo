@@ -277,6 +277,30 @@ export interface ReplayFile extends Replay {
   /** Presentation metadata only. The sim never reads a clock; the EXPORTER does. */
   recordedAt?: string;
   note?: string;
+  /**
+   * PRESENTATION METADATA ABOUT THE PERSON: who rode it, on what build, and —
+   * the reason this field exists — what their bike LOOKED like.
+   *
+   * NEVER READ BY THE SIM, NEVER READ BY THE VERIFIER, NEVER HASHED. It sits on
+   * `ReplayFile` and not on `Replay` precisely so that is structural rather than
+   * a rule somebody has to keep: `verifyReplay` takes a `Replay`, the periodic
+   * hash chain is over sim state, and `specHash` is over `BikeSpec`. None of
+   * them can reach this object. `replay.test.ts` asserts it directly — the same
+   * input stream with and without a `meta` block verifies to a bit-identical
+   * hash chain, which is the same assertion that already proves a muted run and
+   * a loud one produce identical replays.
+   *
+   * Deliberately untyped beyond "an object". This module is inside `src/sim`,
+   * which imports nothing, and importing the appearance catalogue here would
+   * both break that rule and put a cosmetic vocabulary inside the physics
+   * boundary. The client and the server each parse it with
+   * `parseAppearance`, which falls back per axis and cannot fail.
+   *
+   * A file recorded before this existed simply has no `meta`, and every one of
+   * the pilot and solver replays in `replays/` never will. Absent is a normal,
+   * expected state and resolves to the default bike.
+   */
+  meta?: Record<string, unknown>;
 }
 
 /** Everything that must line up before a replay can be played faithfully. */
@@ -470,6 +494,10 @@ export function parseReplayFile(raw: unknown, opts: { maxFrames?: number } = {})
   if (r.spec !== undefined && r.spec !== null) out.spec = r.spec;
   if (typeof r.recordedAt === 'string') out.recordedAt = r.recordedAt;
   if (typeof r.note === 'string') out.note = r.note;
+  // Passed through verbatim and NOT validated here. Validating it would mean
+  // this module knowing what an appearance is, which is exactly the coupling
+  // the field is shaped to avoid; the two consumers each parse it tolerantly.
+  if (r.meta && typeof r.meta === 'object' && !Array.isArray(r.meta)) out.meta = r.meta as Record<string, unknown>;
   return out;
 }
 
@@ -481,7 +509,14 @@ export function parseReplayFile(raw: unknown, opts: { maxFrames?: number } = {})
  */
 export function toReplayFile(
   r: Replay,
-  extra: { level?: unknown; levelName?: string; spec?: BikeSpec; recordedAt?: string; note?: string } = {},
+  extra: {
+    level?: unknown;
+    levelName?: string;
+    spec?: BikeSpec;
+    recordedAt?: string;
+    note?: string;
+    meta?: Record<string, unknown>;
+  } = {},
 ): ReplayFile {
   const out: ReplayFile = { ...r, fileVersion: REPLAY_FILE_VERSION };
   if (extra.level !== undefined) out.level = extra.level;
@@ -489,6 +524,7 @@ export function toReplayFile(
   if (extra.spec !== undefined) out.spec = extra.spec;
   if (extra.recordedAt !== undefined) out.recordedAt = extra.recordedAt;
   if (extra.note !== undefined) out.note = extra.note;
+  if (extra.meta !== undefined) out.meta = extra.meta;
   return out;
 }
 

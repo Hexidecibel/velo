@@ -16,6 +16,7 @@ import { MAX_FRAMES, MAX_HASHES } from './limits.ts';
 import { OFFICIAL_SPEC_HASH } from './levels.ts';
 import { ranked, sectionOf, standing } from './board.ts';
 import { listReplays, readBoard, readPlayer, readSubmissions } from './store.ts';
+import { DEFAULT_APPEARANCE } from '@/shared/appearance.ts';
 
 const REPLAY = fixture as unknown as Record<string, unknown>;
 const LEVEL_HASH = REPLAY.simHash as string;
@@ -130,6 +131,80 @@ describe('submit — the happy path', () => {
     expect(section.best.aaaaaaaa1111.name).toBe('renamed');
     expect(section.accepted).toBe(2);
     expect(readPlayer('aaaaaaaa1111')!.name).toBe('renamed');
+  });
+
+  // --- appearance: presentation metadata, all the way through ---------------
+  //
+  // THE ASSERTION THAT LICENSES THE WHOLE CUSTOMISATION FEATURE: a run recorded
+  // on a repainted bike still verifies and still counts. If a colour could
+  // reach `specHash`, repainting would produce the "this bike is not the
+  // shipped one" refusal — the message that has already confused this user
+  // twice from the tuning panel — and that is the one failure mode nobody would
+  // forgive.
+
+  it('a run with a custom appearance verifies and counts exactly the same', async () => {
+    const plain = await submit(good());
+    expect(plain.ok).toBe(true);
+    const painted = await submit(
+      good({
+        playerId: 'bbbbbbbb2222',
+        appearance: { bike: 'bobber', paint: 'acid', helmet: 'bucket', jacket: 'vest', scarf: 'none', decal: 'checks' },
+      }),
+    );
+    expect(painted.ok).toBe(true);
+    if (!plain.ok || !painted.ok) return;
+    // The SAME input stream, the same derived time, the same spec hash. The
+    // only thing that differs is what the bike looks like.
+    expect(painted.entry.timeTicks).toBe(plain.entry.timeTicks);
+    expect(painted.entry.specHash).toBe(plain.entry.specHash);
+    expect(painted.entry.specHash).toBe(OFFICIAL_SPEC_HASH);
+    expect(painted.entry.appearance).toEqual({
+      bike: 'bobber', paint: 'acid', helmet: 'bucket', jacket: 'vest', scarf: 'none', decal: 'checks',
+    });
+  });
+
+  it('a repaint refreshes the appearance in place on a slower run', async () => {
+    // EXACTLY THE BUG A TEST CAUGHT FOR THE NAME. A slower run does not
+    // displace the entry — the time, the replay and the timestamp all stay —
+    // but the denormalised presentation has to move, or repainting your bike
+    // leaves every row you already hold showing the old one and repainting
+    // looks broken while the data underneath is perfectly correct.
+    await submit(good({ appearance: { bike: 'cafe', paint: 'ice' } }));
+    const slower = await submit(
+      good({
+        appearance: { bike: 'mono', paint: 'orchid' },
+        replay: { ...REPLAY, timeTicks: TICKS },
+      }),
+    );
+    expect(slower.ok).toBe(true);
+    const section = sectionOf(readBoard(LEVEL_HASH)!, SIM_REV, 'human');
+    const held = section.best.aaaaaaaa1111;
+    expect(held.timeTicks).toBe(TICKS);
+    expect(held.appearance!.bike).toBe('mono');
+    expect(held.appearance!.paint).toBe('orchid');
+    // ...and the player file's PB carries the same refresh, for the same reason.
+    const pb = readPlayer('aaaaaaaa1111')!.pbs[LEVEL_HASH][`rev${SIM_REV}`].human;
+    expect(pb.appearance!.bike).toBe('mono');
+  });
+
+  it('a nonsense appearance is repaired rather than refusing the run', async () => {
+    // A cosmetic hint must never be able to lose somebody their time — the same
+    // posture `levelPalette` takes for a malformed `style.colors` override, and
+    // the opposite of everything else in this pipeline.
+    const r = await submit(good({ appearance: { bike: 'from-the-future', paint: 'mint', gravity: 3 } }));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.entry.appearance!.paint).toBe('mint');
+    expect(r.entry.appearance!.bike).toBe('scrambler');
+  });
+
+  it('an absent appearance is the shipped bike, not a refusal', async () => {
+    // Every client older than this feature sends none, and `bin/submit` still
+    // does. Absent must be ordinary.
+    const r = await submit(good());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.entry.appearance).toEqual(DEFAULT_APPEARANCE);
   });
 });
 

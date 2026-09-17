@@ -30,6 +30,7 @@
 //     not partition anything yet; recording it from day one is what makes a
 //     stat-varying bike a migration rather than an archaeology project.
 import type { VerifyResult } from '@/sim/replay.ts';
+import type { Appearance } from '@/shared/appearance.ts';
 
 /** The two categories, and there will not quietly be a third. */
 export const CATEGORIES = ['human', 'tas'] as const;
@@ -62,6 +63,23 @@ export interface Entry {
   simRev: number;
   specHash: string;
   bike: string;
+  /**
+   * WHAT THEIR BIKE LOOKS LIKE. Denormalised for rendering, exactly like `name`
+   * above, and with exactly the same status: PRESENTATION ONLY, never a key,
+   * never matched on, self-asserted, and entirely outside `specHash`.
+   *
+   * This is the field that makes a ghost look like the person who set it and a
+   * board row show a face instead of a number. It cannot affect whether a time
+   * counts: `preflight` compares `specHash` against the shipped bike and this
+   * is not in it, which is asserted in runs.test.ts rather than promised here.
+   *
+   * OPTIONAL ON THE WIRE, because every board file written before today has no
+   * appearance on any row and rewriting them to add one would be a migration
+   * for a colour. A row without it resolves to the stable derivation from the
+   * playerId, so an old board still renders as a set of different people —
+   * `resolveAppearance` is the one place that decision is made.
+   */
+  appearance?: Appearance;
   category: Category;
   /** ISO-8601, server clock. Presentation and tie-breaking only. */
   at: string;
@@ -158,13 +176,14 @@ export function place(board: BoardFile, entry: Entry, levelName: string): { boar
   if (pb) {
     best[entry.playerId] = entry;
   } else {
+    // Identity does not move: the key is still the playerId and `existing` is
+    // still the same run.
     // NOT a personal best, so the time, the replay and the timestamp all stay
-    // exactly as they were — but the NAME is refreshed. The name is
-    // denormalised presentation, and a rename that left every existing board
-    // entry showing the old label would make renaming look broken while the
-    // data underneath was perfectly correct. Identity does not move: the key is
-    // still the playerId and `existing` is still the same run.
-    best[entry.playerId] = { ...existing, name: entry.name };
+    // exactly as they were — but the NAME and the APPEARANCE are refreshed,
+    // because both are denormalised presentation and a change that left every
+    // existing row showing the old one would make renaming, or repainting, look
+    // broken while the data underneath was perfectly correct.
+    best[entry.playerId] = { ...existing, name: entry.name, appearance: entry.appearance };
   }
 
   const section: BoardSection = {
@@ -250,6 +269,14 @@ export interface PlayerFile {
   playerId: string;
   /** Most recent name they submitted under. PRESENTATION ONLY. Never a key. */
   name: string;
+  /**
+   * Most recent bike they submitted on. PRESENTATION ONLY, exactly like the
+   * name, and kept here for one reason: a second device claiming this player
+   * should come up looking like them rather than posting under their id wearing
+   * somebody else's livery. Optional, because every player file written before
+   * today has none.
+   */
+  appearance?: Appearance;
   updatedAt: string;
   /**
    * The slot a real account claims, when there is one. Absent or null means
@@ -281,10 +308,16 @@ export function recordPb(player: PlayerFile, simHash: string, entry: Entry): Pla
   // Same rule as the board: a faster run replaces the PB, a slower one only
   // refreshes the label on it.
   if (existing === undefined || entry.timeTicks < existing.timeTicks) byCat[entry.category] = entry;
-  else byCat[entry.category] = { ...existing, name: entry.name };
+  else byCat[entry.category] = { ...existing, name: entry.name, appearance: entry.appearance };
   byRev[rk] = byCat;
   byLevel[simHash] = byRev;
-  return { ...player, name: entry.name || player.name, updatedAt: entry.at, pbs: byLevel };
+  return {
+    ...player,
+    name: entry.name || player.name,
+    appearance: entry.appearance ?? player.appearance,
+    updatedAt: entry.at,
+    pbs: byLevel,
+  };
 }
 
 // --- turning a verified run into an entry ------------------------------------
@@ -297,6 +330,7 @@ export interface EntryInput {
   simRev: number;
   specHash: string;
   bike: string;
+  appearance: Appearance;
   frames: number;
   at: string;
 }
@@ -317,6 +351,7 @@ export function entryFrom(input: EntryInput, verified: VerifyResult): Entry {
     simRev: input.simRev,
     specHash: input.specHash,
     bike: input.bike,
+    appearance: input.appearance,
     category: input.category,
     at: input.at,
   };

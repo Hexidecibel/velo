@@ -9,6 +9,7 @@
 // So each call returns a result object, never throws, and the board UI shows
 // "offline" rather than an error dialog.
 import type { Replay } from '@/sim/replay.ts';
+import type { Appearance } from '@/shared/appearance.ts';
 
 export type Category = 'human' | 'tas';
 
@@ -21,6 +22,13 @@ export interface BoardEntry {
   simRev: number;
   specHash: string;
   bike: string;
+  /**
+   * What that player's bike looks like. Optional because every board row
+   * written before today has none; `resolveAppearance` turns an absent one into
+   * a stable derivation from the playerId rather than into the shipped default,
+   * so an old board is still a board of different people.
+   */
+  appearance?: Appearance;
   category: Category;
   at: string;
 }
@@ -138,6 +146,12 @@ export function fetchReplay(replayId: string, simHash: string): Promise<ApiResul
 export function submitRun(body: {
   playerId: string;
   name: string;
+  /**
+   * Sent on EVERY submission, not only the first, because the server refreshes
+   * it in place exactly as it refreshes the name — repainting your bike has to
+   * show on the rows you already hold, or repainting looks broken.
+   */
+  appearance: Appearance;
   category: Category;
   replay: unknown;
 }): Promise<ApiResult<SubmitOk>> {
@@ -146,6 +160,28 @@ export function submitRun(body: {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+/**
+ * One player's record, as `/api/players/:id` returns it. Only the parts a claim
+ * needs are typed: the name and the bike this device should adopt.
+ */
+export interface PlayerPayload {
+  playerId: string;
+  name: string;
+  appearance?: Appearance;
+  updatedAt: string;
+}
+
+/**
+ * Who a playerId is, for the claim panel.
+ *
+ * 404s for a player who has never posted a run, which is an ordinary state and
+ * not an error: the id is still perfectly claimable, it just has no name or
+ * bike on the server yet. The caller degrades to showing the code.
+ */
+export function fetchPlayer(playerId: string): Promise<ApiResult<PlayerPayload>> {
+  return call<PlayerPayload>(`/api/players/${playerId}`);
 }
 
 export interface Rules {

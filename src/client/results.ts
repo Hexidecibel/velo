@@ -15,6 +15,8 @@
 // ends, and the network fills itself in afterwards.
 import { ticksToSeconds } from '@/sim/replay.ts';
 import type { BoardEntry, BoardPayload } from './api.ts';
+import { resolveAppearance } from '@/shared/appearance.ts';
+import type { Appearance } from '@/shared/appearance.ts';
 
 export function fmtTime(ticks: number): string {
   return ticksToSeconds(ticks).toFixed(3);
@@ -290,6 +292,15 @@ export interface ResultRow {
   name: string;
   timeTicks: number;
   replayId: string;
+  /** Kept so the row can draw their bike beside their name. */
+  playerId: string;
+  /**
+   * What their bike looks like, ALREADY RESOLVED. A row is the last place that
+   * should be deciding what to do about a missing appearance — it is decided
+   * once, here, by `resolveAppearance`, so every surface that shows a person
+   * shows the same person.
+   */
+  appearance: Appearance;
   you: boolean;
   /**
    * True for the row appended because the player is OUTSIDE the slice shown.
@@ -313,6 +324,8 @@ export function boardRows(board: BoardPayload | null, playerId: string, limit: n
     name: e.name,
     timeTicks: e.timeTicks,
     replayId: e.replayId,
+    playerId: e.playerId,
+    appearance: resolveAppearance(e.appearance, e.playerId),
     you: e.playerId === playerId,
     detached: false,
   }));
@@ -322,6 +335,8 @@ export function boardRows(board: BoardPayload | null, playerId: string, limit: n
       name: board.you.name,
       timeTicks: board.you.timeTicks,
       replayId: board.you.replayId,
+      playerId: board.you.playerId,
+      appearance: resolveAppearance(board.you.appearance, board.you.playerId),
       you: true,
       detached: true,
     });

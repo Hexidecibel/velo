@@ -24,6 +24,17 @@
            and your best time on it. Opened with C, and never by [ or ] — those
            step levels instantly and nothing is allowed to slow that down. -->
       <div id="chooser" class="hidden"></div>
+      <!-- The customiser: six bike silhouettes, ten liveries, and what the
+           rider is wearing. Every one of them rides IDENTICALLY — same spec,
+           same colliders, one spec hash — so nothing in here can change a time
+           or stop one counting. Opened with Y. -->
+      <div id="look" class="hidden"></div>
+      <!-- Cross-device identity: a QR that makes another device the same
+           player. NOT a login — there is nothing to sign in to. It solves the
+           one problem that touch controls created: identity lives in one
+           browser's localStorage, so picking up your phone made you somebody
+           else. -->
+      <div id="claim" class="hidden"></div>
       <!-- Touch controls. Large zones, never joysticks: the sim takes a
            BITMASK, so a stick would be a four-way pad wearing a costume and
            promising a partial throttle the physics does not have. Hidden unless

@@ -98,6 +98,7 @@ export function createLegend(root: HTMLElement): void {
     '<b>ENTER</b> next level, on the results screen &#8212; <b>ESC</b> closes it<br>' +
     '<b>B</b> leaderboard and ghost &nbsp; <b>[ / ]</b> level<br>' +
     '<b>C</b> all levels &#8212; pictures, difficulty, your best times<br>' +
+    '<b>Y</b> your bike &#8212; six shapes, ten liveries, no effect on physics<br>' +
     '<b>+ / -</b> zoom &nbsp; <b>H</b> tuning sliders<br>' +
     '<b>`</b> hide the debug readout &#8212; warnings stay<br>' +
     '<b>G</b> show the true collision edge &nbsp; <b>V</b> art on / off<br>' +
