@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { parseLevel } from '@/sim/level.ts';
 import {
   alpha, CONCRETE, DEFAULT_PALETTE, derivePalette, HAZE, HAZE_A, INVERSION_MIN_CONTRAST,
-  levelPalette, LIP_MIN_CONTRAST, LIP_TOP_MIN_CONTRAST, PALETTES, paletteFaults, resolvePalette, wash,
+  levelPalette, LIP_MIN_CONTRAST, LIP_TOP_MIN_CONTRAST, PALETTES, paletteDistance, paletteFaults,
+  resolvePalette, SET_MIN_DISTANCE, wash,
 } from './palette.ts';
 import { contrast, hsl, hueDist, liftUntil, lum, mixHex, wrapHue } from './color.ts';
 import { artStrength, cloneArt, DEFAULT_ART, faceThreshold } from './params.ts';
@@ -304,3 +308,83 @@ function hueOf(hex: string): number {
   else h = (r - g) / d + 4;
   return wrapHue(h * 60);
 }
+
+// --- the twenty AS A SET -----------------------------------------------------
+//
+// THE TEST THAT COULD HAVE CAUGHT IT. Every other assertion in this file looks
+// at one palette at a time, and the failure that actually shipped was invisible
+// to all of them: twenty legible rooms that looked alike. Twenty different
+// solids sat behind twenty near-identical pale walls, each one passing
+// `paletteFaults` on its own, and the only way to see it was a contact sheet
+// somebody had to remember to render.
+//
+// This does not replace looking. It is a regression guard on the thing looking
+// discovered, so a change that quietly narrows the set fails a build instead of
+// waiting for the next sheet.
+describe('the shipped levels as a set', () => {
+  const DIR = new URL('../../../levels/', import.meta.url).pathname;
+  const FILES = readdirSync(DIR).filter((f) => /^\d\d-.*\.json$/.test(f)).sort();
+  const SET = FILES.map((f) => {
+    const level = parseLevel(JSON.parse(readFileSync(join(DIR, f), 'utf8')));
+    return { id: f.slice(0, 2), palette: levelPalette(level.style, level.simHash) };
+  });
+
+  it('has twenty levels to judge, so the assertions below are not vacuous', () => {
+    expect(SET.length).toBeGreaterThanOrEqual(20);
+  });
+
+  it('no two levels read as the same place', () => {
+    const pairs: { a: string; b: string; d: number }[] = [];
+    for (let i = 0; i < SET.length; i++) {
+      for (let j = i + 1; j < SET.length; j++) {
+        pairs.push({ a: SET[i].id, b: SET[j].id, d: paletteDistance(SET[i].palette, SET[j].palette) });
+      }
+    }
+    pairs.sort((x, y) => x.d - y.d);
+    // Named, so a failure says WHICH two rooms collapsed rather than that some
+    // did. That was the whole problem with finding this by eye.
+    const worst = pairs[0];
+    expect(`${worst.a}/${worst.b} ${worst.d.toFixed(3)}`).toBe(`${worst.a}/${worst.b} ${worst.d.toFixed(3)}`);
+    expect(worst.d).toBeGreaterThanOrEqual(SET_MIN_DISTANCE);
+  });
+
+  it('spends the whole chroma range rather than bunching at the washed end', () => {
+    // THE BUG THIS ENCODES: luminance and saturation trade against each other
+    // in sRGB, so sampling the two independently does not do what it looks
+    // like. Asking for a saturated wall at a high luminance used to hand back a
+    // near-white whatever hue it started from — "a bright wall has no colour
+    // left to have" — and the realised saturation of the twenty bunched between
+    // 0.10 and 0.30 while the code read as if it spanned 0.22 to 0.72.
+    //
+    // So this asserts the REALISED chroma of the shipped walls, which is the
+    // only number that was ever wrong. The sampled one always looked fine.
+    const sats = SET.map((s) => {
+      const n = parseInt(s.palette.wall[0].slice(1), 16);
+      const r = (n >> 16) & 255;
+      const g = (n >> 8) & 255;
+      const b = n & 255;
+      const mx = Math.max(r, g, b);
+      return mx === 0 ? 0 : (mx - Math.min(r, g, b)) / mx;
+    });
+    expect(Math.min(...sats)).toBeLessThan(0.2);
+    expect(Math.max(...sats)).toBeGreaterThan(0.75);
+    // And it must not be two clumps at the ends either: the middle has to be
+    // populated or "deep or washed, nothing between" is the new monotony.
+    expect(sats.filter((v) => v > 0.3 && v < 0.7).length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('spends the whole brightness range too, and the two are coupled', () => {
+    const lums = SET.map((s) => lum(s.palette.wall[0]));
+    expect(Math.max(...lums) - Math.min(...lums)).toBeGreaterThan(0.22);
+    // The coupling, asserted directly: a heavily saturated wall CANNOT also be
+    // a bright one, because sRGB does not have that colour. If this ever
+    // passes for a palette, `atLum` has silently thrown the chroma away again.
+    for (let seed = 0; seed < 400; seed++) {
+      const p = derivePalette(seed);
+      const n = parseInt(p.wall[0].slice(1), 16);
+      const mx = Math.max((n >> 16) & 255, (n >> 8) & 255, n & 255);
+      const s = mx === 0 ? 0 : (mx - Math.min((n >> 16) & 255, (n >> 8) & 255, n & 255)) / mx;
+      if (s > 0.8) expect(lum(p.wall[0])).toBeLessThan(0.45);
+    }
+  });
+});

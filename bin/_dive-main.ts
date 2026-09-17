@@ -1,5 +1,5 @@
 // CLI front end for the pitch rig. See bin/dive.
-import { BRAKE, SAMPLES, THROTTLE, pitchUnder } from './_dive.ts';
+import { BRAKE, SAMPLES, THROTTLE, launchFromRest, pitchUnder } from './_dive.ts';
 import { PRESETS } from '../src/client/presets.ts';
 import { cloneSpec } from '../src/sim/spec.ts';
 import type { BikeSpec } from '../src/sim/spec.ts';
@@ -42,6 +42,7 @@ function row(label: string, spec: BikeSpec): void {
   const b = pitchUnder(spec, BRAKE, { speed });
   const t = pitchUnder(spec, THROTTLE, { speed });
   const air = pitchUnder(spec, BRAKE, { speed, airborne: true });
+  const launch = launchFromRest(spec);
   const cols = (r: { at: number[] }): string => r.at.map((v) => v.toFixed(1).padStart(7)).join('');
   const tail = (r: { to30: number; peakRate: number; wentOver: boolean; upToSpeed: boolean; spread: number }): string =>
     `  +-${(r.spread / 2).toFixed(1).padStart(4)}   to -30 ${r.to30 < 0 ? '  n/a' : r.to30.toFixed(3)}   rate ${r.peakRate.toFixed(0).padStart(5)} deg/s${r.wentOver ? '   OVER THE BARS' : ''}${r.upToSpeed ? '' : '   NEVER REACHED SPEED — not a measurement'}`;
@@ -49,11 +50,21 @@ function row(label: string, spec: BikeSpec): void {
   console.log(`    brake, grounded   ${cols(b)}${tail(b)}   entry ${b.entry.toFixed(2)} m/s`);
   console.log(`    throttle, grounded${cols(t)}${tail(t)}   entry ${t.entry.toFixed(2)} m/s`);
   console.log(`    brake, AIRBORNE   ${cols(air)}${tail(air)}   (wheel reaction — a different mechanism)`);
+  // Positive here, and the only row that is: this one is nose-UP. It is also
+  // the only row in which the drive half of the inertial transfer is
+  // measurable, because at 9 m/s drive torque has already tapered against
+  // maxWheelSpin and every coefficient reads the same.
+  console.log(
+    `    throttle FROM REST${cols(launch)}` +
+      `  +- 0.0   to +30 ${launch.to30 < 0 ? '  n/a' : launch.to30.toFixed(3)}` +
+      `   rate ${launch.peakRate.toFixed(0).padStart(5)} deg/s${launch.wentOver ? '   LOOPED' : ''}` +
+      `${launch.died ? '   DIED' : ''}   (NOSE-UP; the wheelie half)`,
+  );
 }
 
 console.log('    pitch in degrees at ' + SAMPLES.map((v) => v + 's').join(' / ') + ', relative to the attitude when the input landed');
 console.log('    MEAN over 8 entries spread across the run-up\'s limit cycle; +- is half the spread at the last sample.');
-console.log('    NEGATIVE = nose down. Facing is +x throughout.');
+console.log('    NEGATIVE = nose down, EXCEPT the from-rest row, which is nose-UP. Facing is +x throughout.');
 console.log('    columns:           ' + SAMPLES.map((v) => (v + 's').padStart(7)).join(''));
 console.log('');
 

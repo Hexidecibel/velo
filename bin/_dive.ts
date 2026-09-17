@@ -240,3 +240,79 @@ function hold_(sim: Sim, mask: number, hold: number): Hold {
 
 export const BRAKE = IN_BRAKE;
 export const THROTTLE = IN_THROTTLE;
+
+// --- the standstill launch ---------------------------------------------------
+
+/**
+ * Full throttle from a dead stop: how fast does the front come up, and how far?
+ *
+ * THIS IS THE ROW THAT DISCRIMINATES THE DRIVE HALF, and the grounded-throttle
+ * row above is not. At 9 m/s the drive torque has already tapered against
+ * `maxWheelSpin`, so by the time the input lands there is very little torque
+ * left to react onto the chassis and every value of `inertialTransferDrive`
+ * reads within noise of every other. From rest the wheel is stopped, the torque
+ * is at its peak, and the coefficient is the only thing deciding whether the
+ * front comes up — which is exactly the question `inertialTransferDrive` exists
+ * to answer, and it had to be produced by hand until now.
+ *
+ * It also measures the thing that actually matters to a player: the wheelie
+ * threshold is a torque balance, so it moves with `drive.maxTorque` as well.
+ * The two are a PAIR and this is the only row that shows them as one.
+ *
+ * NO AVERAGING, and that is not an omission. The grounded rows average eight
+ * entries because a bike cruising on flat ground sits in a limit cycle and one
+ * sample measures its phase; a bike that has settled at REST has no cycle to be
+ * in. There is exactly one standstill and this measures it, so `entries` is 1
+ * and `spread` is 0 by construction — the same convention the airborne case
+ * already uses.
+ */
+export function launchFromRest(spec: BikeSpec, opts: { holdSeconds?: number } = {}): DiveResult {
+  const hold = Math.round((opts.holdSeconds ?? 1.2) * 128);
+  const sim = createSim(RIG, spec);
+  // Long enough for a soft spring to stop ringing. Launching off a bike still
+  // moving on its suspension measures the spring's phase, which is the same
+  // mistake the grounded rows average away.
+  for (let f = 0; f < 384; f++) sim.advance(0);
+
+  const st = sim.state;
+  const base = pitchDeg(st.ox, st.oy);
+  const at = SAMPLES.map(() => 0);
+  let to30 = -1;
+  let peakRate = 0;
+  let wentOver = false;
+  let died = false;
+
+  for (let f = 0; f < hold; f++) {
+    sim.advance(IN_THROTTLE);
+    const s = sim.state;
+    const t = (f + 1) / 128;
+    let d = pitchDeg(s.ox, s.oy) - base;
+    if (d > 180) d -= 360;
+    else if (d < -180) d += 360;
+    for (let i = 0; i < SAMPLES.length; i++) if (t <= SAMPLES[i] + 1 / 256) at[i] = d;
+    // POSITIVE is nose-up here, which is the opposite sign from the brake rows
+    // and is why `to30` is a different comparison rather than a shared helper.
+    if (to30 < 0 && d >= 30) to30 = t;
+    if (Math.abs(d) > 90) wentOver = true;
+    if (!wentOver) {
+      const rate = (s.w * 180) / Math.PI;
+      if (Math.abs(rate) > Math.abs(peakRate)) peakRate = rate;
+    }
+    if (s.dead) {
+      died = true;
+      break;
+    }
+  }
+  return {
+    entry: 0, at, spread: 0, to30, peakRate, wentOver,
+    grounded: true, died, upToSpeed: true, entries: 1,
+  };
+}
+
+/**
+ * Seconds of full throttle from rest before the nose reaches 30 degrees up, or
+ * -1 if it never does within the window. The one number `--sweep-drive` moves.
+ */
+export function timeToWheelie(spec: BikeSpec, holdSeconds = 1.2): number {
+  return launchFromRest(spec, { holdSeconds }).to30;
+}

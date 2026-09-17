@@ -70,13 +70,15 @@ add a script rather than running an ad-hoc command.
 | `bin/spec` | **Changes the bike from a terminal while somebody rides it.** Writes `data/spec.json`; the client picks it up within ~2 s and says what moved. |
 | `bin/replay` | **Re-simulates an exported replay file** and reports identity, hash-chain verification and a diagnostic pass. This is what turns "sometimes it gets weird" into a reproducible artifact. |
 | `bin/air` | Measures jump height and airtime off a fixed synthetic feature, per bike, in metres. Turns "it should catch more air" into a number. |
-| `bin/dive` | Measures chassis pitch under braking and under throttle, in degrees. Turns "braking should slam the front down like gassing lifts it" into a symmetry you can check. |
+| `bin/dive` | Measures chassis pitch under braking and under throttle, in degrees. Turns "braking should slam the front down like gassing lifts it" into a symmetry you can check. Includes a **full-throttle-from-rest** row, which is the only one in which the drive half of the inertial transfer is measurable at all — at 9 m/s the torque has already tapered against `maxWheelSpin` and every coefficient reads the same. |
+| `bin/hook` | **Measures whether a wheel can hook over a thin obstacle and hang there.** The answer is no, and the rig is kept so that "no" stays checkable. See *Hooking a wheel, and why it does not work*. |
+| `bin/palette-set` | **Judges the shipped levels' palettes as a SET**, which is the one thing no per-palette test can do. Prints each level's wall, solid and lit lip, the spread of wall chroma and brightness across the twenty, and the closest pairs; exits 1 if any pair falls under the floor. |
 | `bin/slope-sweep` | Sweeps a synthetic ramp across slope angle, entry speed, input strategy and transition sharpness, and prints what the bike does. |
 | `bin/audiobench` | **Measures what the sound costs a frame.** Drives a fixed input stream through the real frame loop twice — loud, and muted, which *suspends* the audio context and so really is the cost of no audio at all — interleaved so a busy box biases both equally, and reports the per-frame audio update alongside whole-frame times. `BENCH_FRAMES` and `BENCH_PASSES` lengthen it. |
 | `bin/artbench` | **Measures the art renderer's frame budget with the camera moving.** Flies the camera across a level at play speed, times the render call against the old flat renderer on the same frames, breaks the cost down layer by layer, and then drives the real game and watches real frame times. Exits 2 if a warm frame's p95 goes over 16.7 ms. Every timed pass runs at FULL detail with the adaptive system off, so "it passes" can never quietly mean "it passed by turning everything off"; what the adaptive system settles at is printed separately. `BENCH_OUT=<file>` appends each level as it finishes, so a killed sweep costs only what it had not reached. `BENCH_ART='{"props":0,...}'` overrides art parameters before measuring, which is how a before/after stays honest on one build. |
 | `bin/shots` | Screenshots several levels at the three zooms the camera reaches, with the art on, the art off, the `G` overlay up, and framed on the level's tightest ceiling. Output to `shots/` (gitignored). The A/B pair is the point: "is the collision edge still the most legible line" is a comparison, not an opinion. `SHOTS_ONLY=art-62` takes one shot per level, which is how you judge twenty levels as a SET; `SHOTS_AT=x,y,zoom` frames one exact place, which is how you find out what a prop that looked wrong in an overview actually is. |
-| `bin/board` | **Inspect, check, rebuild and prune the leaderboard store.** No arguments lists every level with its entry counts; a level id shows one board; `player <id>` shows one player's PBs; `check` is an integrity pass; `rebuild [--verify]` regenerates the boards and player files from the submission log, re-simulating every replay if asked; `prune [--apply]` removes replay blobs nothing references, and is a dry run unless you say so. |
-| `bin/submit` | **Posts a replay file to a running server.** Defaults to the **TAS** category, because anything submitted from a terminal was produced by a program and declaring that is the whole point of having the category. Takes a directory, so `bin/submit /tmp/pilot/` posts a whole `bin/level-drive --save` sweep. |
+| `bin/board` | **Inspect, check, rebuild and prune the leaderboard store.** No arguments — or `list`, which is what everybody types, since every other subcommand here is a verb — lists every level with its entry counts; a level id shows one board; `player <id>` shows one player's PBs; `check` is an integrity pass; `rebuild [--verify]` regenerates the boards and player files from the submission log, re-simulating every replay if asked; `prune [--apply]` removes replay blobs nothing references, and is a dry run unless you say so. |
+| `bin/submit` | **Posts a replay file to a running server.** Defaults to the **TAS** category, because anything submitted from a terminal was produced by a program and declaring that is the whole point of having the category. Takes a directory, so `bin/submit /tmp/pilot/` posts a whole `bin/level-drive --save` sweep. A path that does not exist (or a directory with no replays in it) is one line and a non-zero exit — a typo is the common way to get here and a raw `ENOENT` stack trace reads like the script is broken rather than like the filename is wrong. |
 | `bin/clean` | Removes `dist/` and `tsconfig.tsbuildinfo`; `--all` also removes `node_modules/`. |
 
 `bin/_chrome.mjs` is shared by the two scripts that drive headless Chrome, and
@@ -119,7 +121,6 @@ one of them on itself:
 | Esc | close it. Instantly; nothing fades and nothing has to be waited through. |
 | T | watch your run |
 | G | watch the ghost's run — *(the collision overlay everywhere else)* |
-| C | watch the TAS line, when it is offered at all |
 | B | the fuller leaderboard |
 | L | level select — *(load a replay file everywhere else)* |
 
@@ -385,8 +386,8 @@ can check that claim. Retrofitting a category split after people have competed
 is a fight. Doing it now costs one string field.
 
 **The category is not, however, a thing to watch.** A TAS time is information; a
-TAS *line* is the level's answer, and it is gated on having finished the level
-yourself. See *Watching a TAS line* under Ghosts.
+TAS *line* is the level's answer, and the client has no way to play one at all.
+See *Why a TAS line cannot be watched* under Ghosts.
 
 ### Who you are, and what that is worth
 
@@ -491,8 +492,8 @@ at it, so that the rule is stated where it is enforced and `ghost.test.ts` can
 assert the consequence directly: a level with a TAS entry and no human entry
 yields **no ghost**, for every selector setting. That matters today rather than
 in principle, because thirteen of the twenty shipped levels are currently in
-exactly that state. See *Watching a TAS line* below for why this is a spoiler
-argument and not a preference one.
+exactly that state. See *Why a TAS line cannot be watched* below for why this is
+a spoiler argument and not a preference one.
 
 Which board is on SCREEN is a separate question from which board a ghost comes
 from, and conflating them was a real bug: opening the TAS category quietly
@@ -538,10 +539,10 @@ metres** — the two clocks are identical by construction, since the ghost is
 stepped one frame for one frame with you, so a time gap would always read 0.00 s.
 What differs is where you each are.
 
-### Watching a TAS line
+### Why a TAS line cannot be watched
 
-**A TAS time may be seen. A TAS line may not — not until you have finished the
-level yourself on this rev.**
+**A TAS time may be seen. A TAS line may not — not on any condition, by anyone,
+from anywhere in the client.**
 
 The two are different things and the split is the point. Knowing a 41.7 s exists
 here is motivating, and it proves the level is completable — which has already
@@ -551,32 +552,47 @@ this game's depth**: apples come in any order and the good levels have genuinely
 different orders with different times, and a TAS entry is the output of a search
 over exactly that space. It *is* the answer. Watching it does not merely
 discourage; it deletes the puzzle, permanently, because you cannot un-see a
-route.
+route. **A time is information; a line is a solution.**
 
 So:
 
 * A TAS run is never a ghost, never auto-selected, and never the fallback when
   the human board is empty.
 * Its **time** shows on the TAS board and on the end-of-level screen.
-* Its **line** is watchable only once you have finished that level yourself —
-  local best or a human board entry of your own, either is sufficient, which is
-  what makes the gate work offline *and* survive clearing site data. After you
-  have solved it, seeing how a machine did it is a reward and a good way to find
-  out what you left on the table.
-* When it is locked the option is **absent, not greyed out**. A disabled "watch
-  the solver's run" is itself the spoiler — it tells you an optimal route exists
-  and is being kept from you, which is most of what seeing it would have told
-  you. `results.test.ts` asserts the string "TAS" does not appear in a locked
-  action list at all.
+* Its **line** has no route to a screen. No key, no button, no unlock, no
+  disabled control hinting at one. The TAS board prints times and no `watch`
+  column; the end-of-level screen prints the time and has no matching action.
 
-The gate lives in `canWatchLine` and is enforced twice: in the panel that offers
-the button, and in `watchEntry`, which is the function that actually fetches
-somebody's route. "The UI does not show it" is a presentation fact, not a rule.
+**There was a gate here and the gate was wrong.** An earlier pass made the line
+watchable once you had finished the level yourself, on the reasoning that it is
+then a reward rather than a walkthrough. That reasoning is not silly, but a gate
+keeps the thing it gates — the route was still one keypress from every player who
+had beaten a level once, which is every player the argument was about. Removing
+it is the honest version of the position the gate was already taking.
+
+What replaced `canWatchLine(category, completedThisLevel)` is
+`watchableCategory(category)`, and the **shorter signature is the guarantee**:
+nothing about the player is an input, so no state a player can reach changes the
+answer. It is enforced twice, in the panel that decides which rows get a button
+and in `watchEntry`, which is the function that actually fetches somebody's
+route — "the UI does not show it" is a presentation fact, not a rule.
+
+The tests assert **absence, not refusal**, which is the stronger claim:
+`ghost.test.ts` asserts no `canWatchLine`-shaped export exists on the module at
+all, and `results.test.ts` asserts the string "TAS" never appears in an action
+list for *any* input and that C is unbound on a full action list rather than a
+stripped one.
+
+**`bin/replay` still plays any replay file from the command line**, including a
+solver's, and that is deliberate. It is an authoring tool invoked at a terminal
+by somebody who went looking; it is not something the game offers a player in
+the middle of a session. The distinction being drawn is about what is *offered*,
+not about what is technically possible for whoever owns the box.
 
 The category itself is not going anywhere — it is proof of completability, it
 keeps machine runs out of human competition, and retrofitting the split later is
-a fight nobody wins. What changed is the framing: the solver's output is
-primarily an **authoring tool**, and only incidentally player-facing content.
+a fight nobody wins. What changed is the framing: the solver's output is an
+**authoring tool** and a **number**, and not player-facing content.
 
 ## Live tune — changing the bike from a terminal
 
@@ -631,6 +647,30 @@ effective value and *write* underneath it, so unsetting an override restores
 what you had rather than whatever the slider last showed. **Reset to preset**
 clears your tune and deliberately leaves the remote override alone: it is
 somebody else's and it is not that button's to throw away.
+
+### A renamed field is now loud rather than silent
+
+**A dotted path this build has no field for is not an error anywhere in the
+apply path.** `applySpecOverride` sets what it recognises and leaves the rest
+alone, so an override naming a field that has since been *renamed* does not
+fail — it quietly stops being in force and the bike reverts to a default nobody
+chose. `bin/spec` prints `IGNORED n unknown path(s)` at the terminal, which the
+person *playing* is not looking at.
+
+That gap cost a real session. A live override held `rider.inertialTransfer`;
+that field became the brake/drive pair; the client dropped it, fell back to 0.6
+against `maxTorque` 126 — the worst pairing available, lifting like the default
+with less power to recover — and it was ridden for twenty minutes with nothing
+on screen to explain why the bike had changed. **A rename is exactly when this
+is most dangerous, because it is also exactly when nothing looks broken.**
+
+So dropped paths now get their own toast, which **names the keys rather than
+counting them** and fires even when nothing else moved, plus a HUD line that
+stays up for as long as the file names a field this build does not have. The
+toast is the alert; the HUD line is the answer when somebody comes back to the
+screen an hour later asking why the bike feels wrong. `livetune.ts` carries them
+out as `droppedPaths` alongside `heldPaths`, which is the half that was being
+thrown away.
 
 ### Three rules it does not break
 
@@ -964,10 +1004,64 @@ One finding that only a contact sheet of all twenty could have produced:
 each other in sRGB, so a lightly saturated wall driven to 0.7 luminance comes
 out as the same near-white whatever hue it started from. The first sweep had
 twenty visibly different solids standing in front of twenty identical pale
-walls. Raising the wall's saturation floor and lowering the top of its luminance
-ramp fixed it, and neither of those is something the per-palette tests could
-have caught — they check legibility, and twenty legible rooms that look alike
-pass every one of them.
+walls, and neither the cause nor the cure is something the per-palette tests
+could have caught — they check legibility, and twenty legible rooms that look
+alike pass every one of them.
+
+**Raising the saturation floor was only half a fix, and measuring the set said
+so.** The realised chroma of the twenty walls still bunched between 0.10 and
+0.30 while the code read as though it spanned 0.22 to 0.72, and fourteen of the
+twenty sat inside one narrow luminance band. Sampling chroma and luminance
+INDEPENDENTLY does not do what it looks like: ask for a saturated wall at a high
+luminance and `atLum` hands back whatever chroma is left up there, which is
+almost none. So chroma is now a **primary axis and luminance is derived from
+it** — `lumCeil = 0.66 − 0.36 · chroma` — which lets a saturated wall be a deep
+room and a washed one be a bright one, two visibly different kinds of place
+rather than twenty samples of the same overcast afternoon. The sample is skewed
+away from the middle of that range for the same reason, the ramp's bottom is a
+fraction of its top rather than an absolute (an absolute floor under a dark top
+leaves no ramp), the ramp's hue drift went from ±32° to ±60° (at ±32 it was a
+tint, and a tint is not a second colour), and chroma now *rises* as the ramp
+darkens instead of bleeding away — a dark tone carries chroma a bright one
+cannot.
+
+**The edge-contrast floors were not touched**, because they are the one rule the
+whole look serves and they are not the thing with slack in it. Every number
+above varies *within* them, and the 400-palette assertions below still pass
+unchanged.
+
+Measured across the shipped twenty, before and after:
+
+| | closest pair | mean pair | wall chroma | wall luminance |
+| --- | --- | --- | --- | --- |
+| before | 0.281 (04/11, pale lilac over purple) | 1.107 | 0.10 – 0.80, most under 0.30 | 0.29 – 0.61 |
+| after | 0.368 (02/05) | 1.330 | 0.08 – 0.94, spread through | 0.19 – 0.49 |
+
+`bin/palette-set` prints that table and the closest pairs; `palette.test.ts`
+asserts the floor, so a change that quietly narrows the set fails a build rather
+than waiting for somebody to remember to re-render the sheet.
+
+**The contact sheet says the reported clusters are gone and one family is
+not.** 09, 11 and 13 are now periwinkle-blue, magenta and pale-lilac-over-teal —
+three places; 19 and 20 are warm beige and green, not twins. But **06/07 still
+read as two pale lavender rooms and 14/15 as two hot magenta ones**, and the
+proxy does not flag either (0.764 and 0.834, both comfortably over the floor).
+
+That is worth being honest about rather than tuning away, because it is not a
+generator fault. Twenty independent uniform hues collide: the shipped set has
+eight of twenty between 243° and 299°, and the RNG is uniform to chi-square over
+20,000 seeds, so that is the birthday problem. The only fixes are per-SET
+coordination — which would break the property the 100-level plan depends on,
+that a generated level derives its own palette with no reference to any other —
+or distorting the hue distribution, which buys nothing. What is left to do is
+make same-hue rooms differ on the axes that are not hue, which is what every
+widening above does and which is why the ramp gamma, the drift and the
+solid-hue offset are all deliberately larger than they look like they need to
+be.
+
+**It is a proxy and not a verdict.** The judgement is a contact sheet you look
+at (`SHOTS_ONLY=art-62 bin/shots <all twenty>`), and the two pairs above are the
+standing evidence that the number and the eye can disagree.
 
 **Hue alone is not enough.** A palette swap still reads as the same room
 repainted, so a level also derives a `StyleVariant`: concrete panel pitch, panel
@@ -1609,11 +1703,37 @@ because the wheelie threshold moves with drive torque — the two are a pair. Th
 `m1` comparison preset stays at 140 and therefore still wheelies on the same
 coefficient, which is the honest thing for a preset kept for comparison to do.
 
-One measurement gap to note: `bin/dive`'s grounded-throttle row does **not**
-show this. At 9 m/s the drive torque has already tapered against `maxWheelSpin`,
+That gap is now closed. `bin/dive`'s grounded-throttle row does **not** show any
+of this — at 9 m/s the drive torque has already tapered against `maxWheelSpin`,
 so there is barely any acceleration left to react to and every coefficient reads
-the same. The wheelie is a low-speed phenomenon and the rig cruises. `bin/dive`
-wants a standstill-launch row; it does not have one yet.
+the same. The wheelie is a low-speed phenomenon and that rig cruises. So there
+is a **`throttle FROM REST` row**: full throttle from a standstill, sampled at
+the same times, plus the time to 30° nose-**up**. From rest the wheel is stopped,
+the torque is at its peak, and the coefficient is the only thing deciding
+whether the front comes up.
+
+It discriminates where the cruising row does not — sweeping the drive half on
+the soft preset, pitch at 0.3 s and time to +30°:
+
+| `inertialTransferDrive` | grounded throttle at 0.3 s | from rest at 0.3 s | from rest, to +30° |
+| --- | --- | --- | --- |
+| 0 | +1.7° (±6.7) | +5.1° | never |
+| 0.3 (shipped) | +2.8° (±9.9) | +6.4° | never |
+| 0.6 | +2.2° (±8.5) | +7.9° | 0.789 s, loops |
+| 0.9 | +2.9° (±9.9) | +9.5° | 0.648 s, loops |
+| 1.2 | +2.8° (±9.9) | +11.2° | 0.563 s, loops |
+
+The cruising column is noise with a spread three times its own signal and is not
+even monotone; the from-rest column is monotone in the coefficient and its
+spread is zero by construction. **No averaging, and that is not an omission** —
+the grounded rows average eight entries because a bike cruising on flat ground
+sits in a limit cycle and one sample measures its phase, whereas a bike that has
+settled at rest has no cycle to be in. There is exactly one standstill. The
+airborne row already used the same convention for the same reason.
+
+The table also shows the pairing: at the shipped `maxTorque` 126 the front never
+reaches 30° at the shipped coefficient, which is the intended feel and is why
+the two numbers were tuned together.
 
 Because the same term also fires on **impacts**, timing a lean into a face now
 pays. Re-running the slope sweep, the technique-versus-naive gap in energy
@@ -1839,6 +1959,115 @@ corners on purpose and its slopes are kept correspondingly gentle, with one real
   The inertial reaction shipped in rev 3 for the brake-dive report, and the
   slope sweep re-run with it on shows the technique-versus-naive gap widening on
   both corner types. See "Braking dives the nose now".
+
+## Hooking a wheel, and why it does not work
+
+The idea, from the user, recalling Elasto Mania: *"hooking one tire over a thing
+and sliding — in Elastomania it would stretch your bike out. A good way to show
+is a level where the apples are underneath the poles so the user can figure it
+out."*
+
+**It does not work, there is no prototype level, and the reason is structural
+rather than a tuning miss.** `bin/hook` reproduces every number below.
+
+Geometry had already said yes — the chassis colliders keep 0.22–0.35 m of
+clearance at every nose-down pitch from 5° to 80° — and the suspension
+arithmetic said the stretch would be expressive: 10 cm hanging off one wheel,
+20 cm at +1 g, 25 cm and bottomed at a 2.5 g catch, against a 71 kg bike on a
+6500 N/m spring with 25 cm of travel. **Geometry is not dynamics.** Four
+measurements, in the order they have to be asked:
+
+### 1. A circle cannot hook. Only a vertex holds it
+
+Over 1,080 placed hangs — every pitch, every offset, both wheels, six obstacle
+shapes:
+
+| obstacle | longest hold | why |
+| --- | --- | --- |
+| blade (razor wedge) | **11.05 s** (the whole test) | the contact point is pinned to a vertex |
+| square lip | 0.30 s | the wheel rolls along the surface and off the end |
+| rounded lip | 0.30 s | same, and the normal rotates away as it goes |
+| pole, 10 cm wide | 0.25 s | the frame has nowhere to hang |
+| pole, 6 cm wide | 0.23 s | same |
+| free-floating rail | 0.30 s | same |
+
+A wheel is a circle against polygon edges, so nothing about it *hooks* the way a
+grappling shape would. The only forces available are support from below — the
+suspension is a zero-rest-length spring, so a bike hanging under a wheel pulls
+that wheel *down* onto whatever it is resting on — and friction. **On a flat lip
+the contact point slides along the surface as the wheel rolls, and nothing at
+all resists the rolling moment of a body hanging off one side.** It rolls off,
+every time. On a razor tip the contact is a *vertex*, so rolling no longer walks
+the contact anywhere, and the whole thing becomes an ordinary compound pendulum
+with its centre of mass below the pivot. That is the entire difference, and it
+is why exactly one row holds.
+
+**A pole is the wrong shape and cannot be made right.** The chassis collider is
+0.28 m in radius and hangs 0.61 m below and only ~0.21 m to the side of the
+hooked wheel, so it wants precisely the space a mast occupies. The clearance
+arithmetic says the solid below the hook point has to be gone within 0.28 m
+laterally — which no pole with a body under it is, at any width including zero.
+The same arithmetic kills grinding along a rail: to hang below a rail, the 1.2 m
+long, 0.56 m thick chassis has to be where the rail is, and in the rig the
+rider's head starts *inside* the rail and the run is over on frame one. A wheel
+can ride **on top** of a rail, which is just riding.
+
+### 2. You cannot get into one
+
+| entry | best hold | catch rate |
+| --- | --- | --- |
+| ridden off the end of a deck, 1–12 m/s, 588 approach/hold/tail combinations | 0.23 s | 2 of 768 |
+| dropped onto a blade, holding nothing | 2 s+ | **0.48 %** |
+| dropped onto a blade, holding brake | 2 s+ | **1.27 %** |
+| dropped onto a square or rounded lip, either | — | **0 of 1,650** |
+
+And no catch survives above 3 m/s of horizontal speed. A bike riding off a tip
+carries its momentum past the tip; to hook you would have to arrive at walking
+pace, which is not a thing a level can ask for and not a thing a player would
+enjoy being asked. The blade's capture cone is wide — nearly a half-plane of
+directions — and it still does not help, because the problem is the velocity you
+arrive with and not the angle.
+
+### 3. The stretch saturates, so it cannot be the readout
+
+The premise was that a slow hook hangs and a fast one visibly extends, making
+the stretch a readout of how hard you came in. **Every catch that holds bottoms
+the suspension.** Peak deflection across the successful catches is 0.245–0.250 m
+against a 0.25 m hard clamp — 2.5× the 9.8 cm static hang — from a 0.3 m drop at
+zero horizontal speed upward. The readout is pinned at the top of its scale for
+every arrival that sticks, and the settled hang then sits at ~0.158 m (1.6×
+static) regardless of how it was entered.
+
+### 4. And you cannot get out
+
+From a settled hang, seven of eight held inputs never release it — hold, brake,
+lean either way, throttle, throttle-right and flip-throttle are all still hooked
+after four seconds. Only throttle *plus* lean-left breaks free. So on the rare
+occasion somebody did catch one, the default experience is being stuck in the
+scenery.
+
+### The one part that would have worked
+
+The reach is fine. A settled hang sweeps its four apple-collecting points over
+x ∈ [−1.07, −0.04] and y ∈ [−0.86, +0.24] relative to the tip, so with the
+0.4 m pickup radius an apple is collectable anywhere down to **1.26 m below the
+tip and 1.47 m back under it**. The apples-underneath-the-poles layout is
+buildable exactly as described. There is simply no reliable way to arrive at it.
+
+### What it would need, reported and not done
+
+Not suspension travel: the suspension already bottoms out on every catch, so
+more of it changes nothing about whether a hook holds. The blockers are (a) that
+a circle on a convex surface has no rolling resistance, so a hook needs either a
+concave capture feature the wheel has to climb out of, or an explicit grab
+state, and (b) the chassis collider radius against the wheelbase, which decides
+whether a body can hang beside anything at all. Both are `src/sim` changes and
+both are considerably bigger than a tuning tweak. **`SIM_REV` stays 4.**
+
+The front-tyre hook from the plan — brake into a bump, flip, and *roll* on the
+front wheel — is a different mechanic and is untouched by any of this: it never
+leaves the ground, so none of the four failures above apply to it. It is still
+worth prototyping; this was not it.
 
 ## Determinism
 
@@ -2440,8 +2669,9 @@ src/client/         canvas renderer, input, tuning panel, record-and-replay
                     indicators. The last two are pure state and geometry so they
                     test in plain node.
                     ghost.ts is the second sim that rides beside you, the
-                    rules for choosing whose run it is (human runs only) and the
-                    gate on watching a TAS line; identity.ts is the
+                    rules for choosing whose run it is (human runs only) and
+                    watchableCategory, which is why a TAS line has no route to a
+                    screen at all; identity.ts is the
                     device-local playerId and the honest note about what it is
                     not; api.ts is the leaderboard wire, and every call in it
                     degrades to "offline" rather than failing; boardui.ts is

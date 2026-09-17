@@ -12,7 +12,7 @@
 // here.
 import { ticksToSeconds } from '@/sim/replay.ts';
 import type { BoardEntry, BoardPayload, Category } from './api.ts';
-import { canWatchLine, GHOST_KINDS, GHOST_LABELS } from './ghost.ts';
+import { GHOST_KINDS, GHOST_LABELS, watchableCategory } from './ghost.ts';
 import type { GhostKind } from './ghost.ts';
 
 export interface BoardUiCallbacks {
@@ -37,15 +37,6 @@ export interface BoardUiState {
   statusKind: 'ok' | 'warn' | 'bad' | '';
   /** Why the chosen ghost is not on screen, when it is not. */
   ghostNote: string;
-  /**
-   * Have you finished this level yourself, on this rev?
-   *
-   * It gates WATCHING a TAS line and nothing else. A TAS time is information and
-   * is always shown; a TAS line is the optimal apple order found by search, and
-   * route choice is this game's depth — watching one before you have solved the
-   * level deletes the puzzle permanently. See the note above `chooseGhost`.
-   */
-  completed: boolean;
 }
 
 export interface BoardUi {
@@ -139,9 +130,11 @@ export function createBoardUi(root: HTMLElement, cb: BoardUiCallbacks): BoardUi 
     if (b.top.length === 0) {
       list.append(el('div', 'bd-empty', 'no times on this board yet — be first'));
     }
-    // Times always. LINES only when they are yours to see: a human line always,
-    // a machine line only once you have finished the level yourself.
-    const lines = canWatchLine(b.category, s.completed);
+    // Times always, on both boards. LINES only on the human board, and on no
+    // condition at all on the TAS one — route choice is this game's depth and a
+    // searched optimal line deletes the puzzle permanently. A time is
+    // information; a line is a solution.
+    const lines = watchableCategory(b.category);
     for (let i = 0; i < b.top.length; i++) {
       const e = b.top[i];
       const row = el('div', `bd-row${e.playerId === s.playerId ? ' you' : ''}`);
@@ -161,13 +154,15 @@ export function createBoardUi(root: HTMLElement, cb: BoardUiCallbacks): BoardUi 
       // Said plainly HERE, where somebody has deliberately opened the TAS
       // category and already knows machine runs exist, rather than anywhere in
       // ordinary play. The ghost selector never mentions it at all: a note
-      // explaining what is being withheld is itself the hint.
+      // explaining what is being withheld is itself the hint. This one is not
+      // that — it says the times are the whole of what this board is, which is
+      // now simply true.
       panel.append(
         el(
           'div',
           'bd-note',
-          'these are machine runs. The times are shown; the lines stay hidden until you finish this level ' +
-            'yourself, because a solver\u2019s route is the answer to the level rather than a race.',
+          'these are machine runs \u2014 proof the level goes, and a number to chase. Only the times: a ' +
+            'solver picks the apple order by searching it, and that order is the level rather than a race.',
         ),
       );
     }

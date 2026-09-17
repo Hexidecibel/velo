@@ -319,7 +319,11 @@ function cmdPrune(): void {
 // --- dispatch ----------------------------------------------------------------
 
 const cmd = positional[0];
-if (cmd === undefined) cmdList();
+// `list` is a synonym for no arguments at all. It is not a command this script
+// ever documented, and it is the first thing everybody types, because every
+// other subcommand here is a verb — so `bin/board list` used to answer
+// `no level matches "list"`, which is a true statement and a useless one.
+if (cmd === undefined || cmd === 'list' || cmd === 'levels') cmdList();
 else if (cmd === 'check') cmdCheck();
 else if (cmd === 'rebuild') await cmdRebuild();
 else if (cmd === 'prune') cmdPrune();

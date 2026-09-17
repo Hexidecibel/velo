@@ -391,6 +391,31 @@ try {
     throw new Error(`live tune did not restart the attempt (tick ${tickBefore} -> ${live.tick})`);
   }
 
+  // A RENAMED FIELD IS LOUD, and this is the assertion that keeps it that way.
+  //
+  // `applySpecOverride` does not error on a path this build has no field for —
+  // it applies what it recognises and the bike keeps its own value — so a rename
+  // used to revert the bike in silence. That cost a real twenty-minute session
+  // once, with nothing on screen to explain it, and the bug is invisible to
+  // every unit test that does not also look at what the PAGE said.
+  liveSpec = { version: 'v1b', present: true, override: { gravity: 4.25, 'rider': { 'inertialTransfer': 0.6 } }, error: null };
+  await evalIn(cdp, `(window.velo.liveTune.poke(), true)`);
+  await new Promise((r) => setTimeout(r, 600));
+  const dropped = await evalIn(cdp, `
+    (() => ({
+      dropped: [...window.velo.liveTune.droppedPaths],
+      toast: (document.getElementById('toast').textContent || ''),
+      hud: (document.getElementById('hud')?.textContent || ''),
+    }))()
+  `);
+  console.log('    live tune, renamed field: ' + JSON.stringify({ dropped: dropped.dropped, toastHasIt: dropped.toast.includes('inertialTransfer') }));
+  if (!dropped.dropped.includes('rider.inertialTransfer')) {
+    throw new Error(`a path with no such field was not reported as dropped (${JSON.stringify(dropped.dropped)})`);
+  }
+  if (!dropped.toast.includes('inertialTransfer')) {
+    throw new Error(`no toast NAMING the dropped key (got "${dropped.toast}")`);
+  }
+
   // ...and clearing it hands the field back rather than freezing the last value.
   liveSpec = { version: 'v2', present: false, override: {}, error: null };
   await evalIn(cdp, `(window.velo.liveTune.poke(), true)`);

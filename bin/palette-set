@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Judge the shipped levels' palettes AS A SET, not one at a time.
+#
+#   bin/palette-set
+#
+# WHY: every per-palette check passes on twenty rooms that look alike, because
+# each of them is individually legible — which is exactly what shipped once.
+# The first twenty-level contact sheet was twenty different solids behind twenty
+# near-identical pale walls, and no amount of testing one palette could have
+# found it.
+#
+# Prints each level's wall, solid and lit lip, the spread of the wall's chroma
+# and brightness across the set, and the closest pairs. Exits 1 if any pair is
+# under the floor in palette.ts, which palette.test.ts also asserts.
+#
+# It is a PROXY. The judgement is still a contact sheet somebody looks at:
+#
+#   SHOTS_ONLY=art-62 bin/shots
+#
+# If two levels still read as the same place there, the generator is too timid
+# whatever this prints.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+exec "$ROOT/node_modules/.bin/tsx" "$ROOT/bin/_palette-set.ts" "$@"

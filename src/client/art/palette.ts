@@ -11,7 +11,7 @@
 // contain a literal colour, because the moment one does, a palette swap stops
 // being a palette swap.
 import type { LevelStyle } from '@/sim/level.ts';
-import { atLum, contrast, hsl, lum, wrapHue } from './color.ts';
+import { atLum, contrast, hexRgb, hsl, hueOf, lum, wrapHue } from './color.ts';
 import { rng, seedFrom } from './rng.ts';
 
 export interface Palette {
@@ -166,13 +166,27 @@ export function derivePalette(seed: number): Palette {
   // merely adjacent, which reads as a single-temperature room.
   const opposed = r() < 0.75;
   const wallH = wrapHue(lipH + (opposed ? 140 + r() * 90 : 45 + r() * 45));
-  // SATURATION HAS TO BE HIGH BECAUSE THE WALL IS BRIGHT. Luminance and
-  // saturation trade against each other in sRGB: a hue driven to a high
-  // luminance has to give up chroma to get there, so a lightly saturated wall
-  // at 0.7 luminance comes out as the same near-white whatever hue it started
-  // from. The first twenty-level contact sheet showed exactly that — twenty
-  // different solids behind twenty identical pale walls.
-  const wallS = 0.22 + r() * 0.5;
+  // CHROMA IS A PRIMARY AXIS, AND LUMINANCE FOLLOWS FROM IT. This is the one
+  // that decides whether two levels read as two places.
+  //
+  // Luminance and saturation trade against each other in sRGB: a hue driven to
+  // a high luminance has to give up chroma to get there. Sampling the two
+  // INDEPENDENTLY therefore does not do what it looks like it does — ask for
+  // saturation 0.7 at luminance 0.6 and `atLum` hands back something near 0.2,
+  // because that is all the hue can carry up there. The first twenty-level
+  // contact sheet was twenty different solids behind twenty identical pale
+  // walls for exactly this reason, and measuring the SET afterwards (see
+  // palette.test.ts and bin/_palette-set.ts) showed it only half fixed: the
+  // realised saturation of the twenty walls still bunched between 0.10 and
+  // 0.30, and fourteen of the twenty sat inside one narrow luminance band.
+  //
+  // So chroma is chosen first and the luminance ceiling is derived from it.
+  // A heavily saturated wall is allowed to be a DEEP room and a washed one is
+  // allowed to be a BRIGHT one, which is two visibly different kinds of place
+  // rather than twenty samples of the same overcast afternoon. Nothing here
+  // touches an edge-contrast floor — those are the rule the whole look serves
+  // and they are not the thing with slack in it. This varies WITHIN them.
+  const wallS = 0.12 + r() * 0.86;
 
   // EVERYTHING BELOW IS CHOSEN IN LUMINANCE, NOT IN LIGHTNESS, and that is the
   // whole trick. The readability rule is a set of contrast ratios, contrast is
@@ -183,26 +197,48 @@ export function derivePalette(seed: number): Palette {
   // could reach. Sampling luminance and solving for lightness makes the floors
   // arithmetic.
 
-  // The room's luminance range. Sampled independently, so BAND CONTRAST varies
-  // per level as much as hue does: a tight range is a flat overcast room, a wide
-  // one is a shaft with light pouring down it. This is half of why two levels
-  // with different hues still read as different places.
-  // And the top of the ramp is held lower than it was for the same reason: past
-  // about 0.7 there is no colour left to have.
-  const wallTopLum = 0.28 + r() * 0.36;
-  const wallBotLum = 0.085 + r() * 0.13;
+  // The room's luminance range, with the top of it CAPPED BY THE CHROMA above.
+  //
+  // 0.66 down to 0.30 across the chroma range is not a fudge factor: it is
+  // roughly where sRGB actually runs out, so asking for more would just be
+  // asking `atLum` to throw the chroma away again — which is the bug, not the
+  // fix. The floor rises a little with chroma for the same reason from the
+  // other end: a deeply saturated hue at luminance 0.1 is nearly black and
+  // stops being a colour.
+  const lumCeil = 0.66 - 0.36 * wallS;
+  const lumFloor = 0.15 + 0.09 * wallS;
+  // Skewed toward the ends rather than uniform, because the MIDDLE of this
+  // range is where every room looked the same. Squaring a symmetric sample
+  // pushes draws outward from the centre without ever leaving the range.
+  const skew = r() * 2 - 1;
+  const wallTopLum = lumFloor + (lumCeil - lumFloor) * 0.5 * (1 + Math.sign(skew) * skew * skew);
+  // The bottom of the ramp, as a FRACTION of the top rather than an absolute:
+  // an absolute floor under a dark top produces a flat wall with no ramp left
+  // in it. 0.10 is the hard floor, because the inversion's contrast is measured
+  // against the darkest wall tone and the solid has to fit underneath it.
+  const wallBotLum = Math.max(0.1, wallTopLum * (0.18 + r() * 0.42));
   // How the ramp falls off. Below 1 it stays bright and then drops; above 1 it
   // darkens immediately. Another axis of room character that owes nothing to
-  // hue.
-  const rampGamma = 0.7 + r() * 1.1;
+  // hue — which is the point, because hue is the axis that collides. Twenty
+  // independent uniform hues WILL put several levels in the same family (the
+  // shipped set has eight of twenty between 243 and 299 degrees, and the RNG is
+  // uniform to chi-square, so that is the birthday problem and not a bug). The
+  // only honest answer is to make two rooms that share a hue still read
+  // differently, so every non-hue axis here is deliberately wide.
+  const rampGamma = 0.55 + r() * 2.05;
   // Hue drifts as the ramp darkens, so the shadowed end of the room is a
-  // slightly different colour from the lit end rather than the same colour
-  // turned down.
-  const wallDrift = (r() - 0.5) * 65;
+  // different colour from the lit end rather than the same colour turned down.
+  // Widened from +-32 deg: at the old figure the drift was a tint, and a tint
+  // is not a second colour.
+  const wallDrift = (r() - 0.5) * 120;
   const wall: string[] = [];
   for (let i = 0; i < 7; i++) {
     const u = Math.pow(i / 6, rampGamma);
-    wall.push(atLum(wallH + wallDrift * u, wallS * (1 - 0.25 * u), wallTopLum + (wallBotLum - wallTopLum) * u));
+    // Chroma RISES as the ramp darkens rather than falling. The old ramp bled
+    // 25 % of it away toward the bottom, which is backwards: a dark tone can
+    // carry chroma a bright one cannot, and the shadowed end of a room is where
+    // the colour survives.
+    wall.push(atLum(wallH + wallDrift * u, Math.min(1, wallS * (1 + 0.35 * u)), wallTopLum + (wallBotLum - wallTopLum) * u));
   }
 
   // The solid is DARK BY LAW — the inversion is the bet the whole look rests on
@@ -215,7 +251,10 @@ export function derivePalette(seed: number): Palette {
   // side of an exact ceiling.
   const solidCeil = (lum(darkestWall) + 0.05) / (INVERSION_MIN_CONTRAST * 1.02) - 0.05;
   const solidLum = Math.min(0.012 + r() * 0.032, solidCeil);
-  const solidH = wrapHue(wallH + (r() - 0.5) * 90);
+  // Widened from +-45: the solid is near-black by law so its hue reads faintly,
+  // but "faintly" is not "not at all" and it is one more thing separating two
+  // rooms that landed on the same wall hue.
+  const solidH = wrapHue(wallH + (r() - 0.5) * 160);
   const solidS = 0.18 + r() * 0.45;
   const solid = atLum(solidH, solidS, solidLum);
 
@@ -337,6 +376,80 @@ export function levelPalette(style: LevelStyle | null | undefined, simHash: stri
   }
   return out;
 }
+
+// --- how different two palettes are ------------------------------------------
+//
+// THE FAILURE THIS EXISTS TO CATCH IS INVISIBLE TO EVERY PER-PALETTE TEST.
+// Twenty legible rooms that look alike pass `paletteFaults` twenty times over.
+// The first contact sheet was twenty different solids behind twenty identical
+// pale walls, and the only instrument that could have found it is one that
+// looks at the SET. So the set is now a thing with a number attached, asserted
+// in palette.test.ts over the shipped levels and printed by bin/_palette-set.ts.
+
+/**
+ * A palette as a point in a space where distance means "reads as a different
+ * place".
+ *
+ * The wall carries most of the weight because it is most of the screen: the
+ * solids are dark by law, so whatever hue they carry barely reads, and the wall
+ * is where a room's identity actually lives. The lips come next — they are the
+ * brightest thing in the frame and they trace every edge. Hue axes are on a
+ * circle and are scaled to sit alongside the 0-1 ones.
+ */
+function palettePoint(p: Palette): number[] {
+  const top = p.wall[0];
+  const mid = p.wall[Math.min(3, p.wall.length - 1)];
+  const bot = p.wall[p.wall.length - 1];
+  return [
+    hueOf(top) / 360, lum(top), sat(top),
+    hueOf(mid) / 360, lum(mid), sat(mid),
+    lum(bot), sat(bot),
+    hueOf(p.solid) / 360, lum(p.solid) * 6, sat(p.solid),
+    hueOf(p.lipTop) / 360, hueOf(p.lipSide) / 360,
+  ];
+}
+
+/** Which of those axes are angles, and so wrap. */
+const POINT_CIRCULAR = new Set([0, 3, 8, 11, 12]);
+const POINT_WEIGHTS = [3.0, 2.6, 2.2, 1.6, 1.2, 1.0, 0.8, 0.6, 0.7, 0.7, 0.4, 0.9, 0.5];
+
+/** Saturation as a fraction of the brightest channel — HSV's S, not HSL's. */
+function sat(hex: string): number {
+  const [r, g, b] = hexRgb(hex);
+  const mx = Math.max(r, g, b);
+  return mx === 0 ? 0 : (mx - Math.min(r, g, b)) / mx;
+}
+
+/**
+ * How differently two palettes read, as one number. Larger is more different.
+ *
+ * It is a proxy and it is worth being honest that it is one — the judgement is
+ * still a contact sheet somebody looks at. What it buys is a REGRESSION guard:
+ * a change that quietly narrows the set shows up as a number falling, months
+ * before anybody would have thought to re-render the sheet.
+ */
+export function paletteDistance(a: Palette, b: Palette): number {
+  const u = palettePoint(a);
+  const v = palettePoint(b);
+  let s = 0;
+  for (let i = 0; i < u.length; i++) {
+    let d = Math.abs(u[i] - v[i]);
+    if (POINT_CIRCULAR.has(i) && d > 0.5) d = 1 - d;
+    s += (d * POINT_WEIGHTS[i]) ** 2;
+  }
+  return Math.sqrt(s);
+}
+
+/**
+ * The floor the shipped set is held to.
+ *
+ * Measured, not chosen: before the wall's chroma and luminance were widened the
+ * closest of the 190 pairs across the twenty levels was 0.281 (04 and 11, both
+ * pale lilac over purple) and two pairs sat under 0.35. Afterwards the closest
+ * is 0.373 and none are under 0.35. The floor is set just under the measured
+ * closest, so it fails on a regression rather than on noise.
+ */
+export const SET_MIN_DISTANCE = 0.35;
 
 /**
  * How far a palette is from meeting the readability guarantee. 0 means it meets

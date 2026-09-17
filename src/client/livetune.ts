@@ -38,6 +38,26 @@ export interface LiveTune {
   readonly override: Record<string, unknown>;
   /** Dotted paths the override actually sets — what the panel greys out. */
   readonly heldPaths: ReadonlySet<string>;
+  /**
+   * Dotted paths in the file that this build has no such field for.
+   *
+   * THIS IS THE DANGEROUS CASE AND IT USED TO BE SILENT. `applySpecOverride`
+   * applies what it recognises and falls back to the local value for anything
+   * it does not, so a RENAMED field does not error — it quietly stops being
+   * overridden and the bike reverts to a default nobody chose. `bin/spec`
+   * prints "IGNORED n unknown path(s)" at the terminal, which the person
+   * PLAYING never sees.
+   *
+   * It has already cost a real session: a live override held
+   * `rider.inertialTransfer`, that field became a brake/drive pair, the client
+   * dropped it, fell back to 0.6 against `maxTorque` 126 — the worst pairing
+   * available, lifting like the default with less power to recover — and it was
+   * ridden for twenty minutes with nothing on screen to say why.
+   *
+   * A rename is exactly when this is most dangerous, because it is also exactly
+   * when nothing looks broken.
+   */
+  readonly droppedPaths: readonly string[];
   /** Last thing that went wrong, for the HUD. Null when healthy. */
   readonly error: string | null;
   setEnabled(on: boolean): void;
@@ -52,14 +72,29 @@ export interface LiveTuneHooks {
    * poll, so the caller can restart the run here without it happening twice a
    * second.
    */
-  onChange(override: Record<string, unknown>, heldPaths: ReadonlySet<string>): void;
+  onChange(
+    override: Record<string, unknown>,
+    heldPaths: ReadonlySet<string>,
+    droppedPaths: readonly string[],
+  ): void;
   /** Transport or file trouble, already made readable. Null clears it. */
   onError(message: string | null): void;
 }
 
-/** Which dotted paths an override actually sets, ignoring junk keys. */
-export function heldPathsOf(base: BikeSpec, override: Record<string, unknown>): Set<string> {
-  return new Set(applySpecOverride(base, override).applied);
+/**
+ * Which dotted paths an override sets, and which it names that do not exist.
+ *
+ * Both halves are returned because the second one is the half that bites. A
+ * path the build does not have is not an error anywhere in the apply path — the
+ * value is simply not used — so unless somebody carries it out to the UI, a
+ * renamed field silently reverts the bike and says nothing.
+ */
+export function specPathsOf(
+  base: BikeSpec,
+  override: Record<string, unknown>,
+): { held: Set<string>; dropped: string[] } {
+  const r = applySpecOverride(base, override);
+  return { held: new Set(r.applied), dropped: r.unknown };
 }
 
 export function createLiveTune(base: () => BikeSpec, hooks: LiveTuneHooks, enabled: boolean): LiveTune {
@@ -70,6 +105,7 @@ export function createLiveTune(base: () => BikeSpec, hooks: LiveTuneHooks, enabl
   let version: string | null = null;
   let override: Record<string, unknown> = {};
   let held: ReadonlySet<string> = new Set<string>();
+  let dropped: readonly string[] = [];
   let error: string | null = null;
 
   const fail = (msg: string): void => {
@@ -121,8 +157,10 @@ export function createLiveTune(base: () => BikeSpec, hooks: LiveTuneHooks, enabl
       if (payload.version === version) return;
       version = payload.version;
       override = payload.override ?? {};
-      held = heldPathsOf(base(), override);
-      hooks.onChange(override, held);
+      const paths = specPathsOf(base(), override);
+      held = paths.held;
+      dropped = paths.dropped;
+      hooks.onChange(override, held, dropped);
     } catch (e) {
       fail(`live tune: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -147,6 +185,9 @@ export function createLiveTune(base: () => BikeSpec, hooks: LiveTuneHooks, enabl
     get heldPaths() {
       return held;
     },
+    get droppedPaths() {
+      return dropped;
+    },
     get error() {
       return error;
     },
@@ -162,11 +203,12 @@ export function createLiveTune(base: () => BikeSpec, hooks: LiveTuneHooks, enabl
         version = null;
         override = {};
         held = new Set<string>();
+        dropped = [];
         if (error !== null) {
           error = null;
           hooks.onError(null);
         }
-        hooks.onChange(override, held);
+        hooks.onChange(override, held, dropped);
       } else {
         void poll();
       }

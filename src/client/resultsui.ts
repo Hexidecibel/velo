@@ -110,8 +110,8 @@ export function createResultsUi(root: HTMLElement, cb: ResultsUiCallbacks): Resu
       panel.append(list);
     }
 
-    // The TAS TIME as information. Its LINE is offered only through the action
-    // list, and only once this level has been finished — see ghost.ts.
+    // The TAS TIME as information, and that is the whole of it. There is no
+    // action anywhere that plays its LINE — see the note above `actionsFor`.
     if (m.tasTime) panel.append(el('div', 'rs-tas', `TAS ${m.tasTime}s — machine run, separate category`));
 
     // --- the actions, keyboard first ---

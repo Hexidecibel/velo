@@ -331,7 +331,7 @@ export function boardRows(board: BoardPayload | null, playerId: string, limit: n
 
 // --- the actions -------------------------------------------------------------
 
-export type ActionId = 'next' | 'retry' | 'watchRun' | 'watchGhost' | 'watchTas' | 'board' | 'levels' | 'dismiss';
+export type ActionId = 'next' | 'retry' | 'watchRun' | 'watchGhost' | 'board' | 'levels' | 'dismiss';
 
 export interface ResultAction {
   id: ActionId;
@@ -347,14 +347,15 @@ export interface ActionInput {
   nextLabel: string | null;
   /** True when there is a banked replay of the run just finished. */
   canWatchRun: boolean;
-  /** Whose human line can be watched, when one is loadable. */
-  ghostName: string | null;
   /**
-   * The TAS time on this level, when one exists on this rev. Offering its LINE
-   * is separately gated on `tasUnlocked` — see `canWatchLine` in ghost.ts.
+   * Whose human line can be watched, when one is loadable.
+   *
+   * Human is the only kind there is. There is deliberately no TAS field here:
+   * the panel shows the TAS TIME (see `ResultsModel.tasTime`) and offers no way
+   * whatsoever to play the line, because route choice is this game's depth and a
+   * searched optimal line deletes the puzzle permanently.
    */
-  tasTimeTicks: number | null;
-  tasUnlocked: boolean;
+  ghostName: string | null;
 }
 
 /**
@@ -365,10 +366,11 @@ export interface ActionInput {
  * key this game is actually played with. Everything after those two is a detour
  * and is printed as one.
  *
- * `watchTas` is ABSENT rather than disabled when it is not unlocked. A greyed
- * out "watch the solver's run" is itself the spoiler — it tells you an optimal
- * route exists and is being withheld, which is most of what you learn from
- * seeing it.
+ * There is NO action that plays a TAS line, on any condition. This screen once
+ * grew a `watchTas` on C, gated on having finished the level, and the gate was
+ * the wrong shape of answer: it still shipped the thing. A time is information;
+ * a line is a solution. `results.test.ts` asserts the string "TAS" never reaches
+ * an action list, whatever is passed in.
  */
 export function actionsFor(a: ActionInput): ResultAction[] {
   const out: ResultAction[] = [];
@@ -376,9 +378,6 @@ export function actionsFor(a: ActionInput): ResultAction[] {
   out.push({ id: 'retry', key: 'R', label: 'retry this level', primary: false });
   if (a.canWatchRun) out.push({ id: 'watchRun', key: 'T', label: 'watch your run', primary: false });
   if (a.ghostName) out.push({ id: 'watchGhost', key: 'G', label: `watch ${a.ghostName}'s run`, primary: false });
-  if (a.tasTimeTicks !== null && a.tasUnlocked) {
-    out.push({ id: 'watchTas', key: 'C', label: `watch the TAS line (${fmtTime(a.tasTimeTicks)}s)`, primary: false });
-  }
   out.push({ id: 'board', key: 'B', label: 'leaderboard', primary: false });
   out.push({ id: 'levels', key: 'L', label: 'level select', primary: false });
   out.push({ id: 'dismiss', key: 'Esc', label: 'close', primary: false });
@@ -401,8 +400,6 @@ export function actionForKey(code: string, actions: ResultAction[]): ActionId | 
       return by('watchRun');
     case 'KeyG':
       return by('watchGhost');
-    case 'KeyC':
-      return by('watchTas');
     case 'KeyB':
       return 'board';
     case 'KeyL':
@@ -423,8 +420,8 @@ export interface ResultsInput {
   submit: SubmitState;
   /** The HUMAN board. The TAS board is never the one shown here. */
   board: BoardPayload | null;
+  /** Shown as a number and nothing else — there is no way to play its line. */
   tasTimeTicks: number | null;
-  tasUnlocked: boolean;
   playerId: string;
   rowLimit: number;
   actions: ActionInput;
@@ -439,7 +436,7 @@ export interface ResultsModel {
   submit: SubmitMessage;
   standing: StandingLine | null;
   rows: ResultRow[];
-  /** The TAS time, as information. Its LINE is gated separately. */
+  /** The TAS time, as information. Its LINE is not reachable from anywhere. */
   tasTime: string | null;
   actions: ResultAction[];
 }

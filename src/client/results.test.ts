@@ -231,9 +231,7 @@ describe('the actions', () => {
   const base = {
     nextLabel: '02 — The Long Climb',
     canWatchRun: true,
-    ghostName: 'krrl',
-    tasTimeTicks: null as number | null,
-    tasUnlocked: false,
+    ghostName: 'krrl' as string | null,
   };
 
   it('puts next level first and makes it the one and only primary', () => {
@@ -252,20 +250,29 @@ describe('the actions', () => {
   });
 
   it('always offers a way out, even on a one-level build with nothing banked', () => {
-    const acts = actionsFor({ nextLabel: null, canWatchRun: false, ghostName: null, tasTimeTicks: null, tasUnlocked: false });
+    const acts = actionsFor({ nextLabel: null, canWatchRun: false, ghostName: null });
     expect(acts.map((a) => a.id)).toEqual(['retry', 'board', 'levels', 'dismiss']);
   });
 
-  it('omits the TAS line entirely when it is locked — never offers it disabled', () => {
-    // A greyed-out "watch the solver's run" IS the spoiler: it tells you an
-    // optimal route exists and is being kept from you, which is most of what
-    // seeing it would have told you.
-    const locked = actionsFor({ ...base, tasTimeTicks: 30 * SEC, tasUnlocked: false });
-    expect(locked.some((a) => a.id === 'watchTas')).toBe(false);
-    expect(JSON.stringify(locked)).not.toMatch(/TAS/);
-
-    const open = actionsFor({ ...base, tasTimeTicks: 30 * SEC, tasUnlocked: true });
-    expect(open.find((a) => a.id === 'watchTas')!.label).toMatch(/30\.000s/);
+  it('NEVER offers a TAS line — not locked, not unlockable, absent', () => {
+    // This test used to assert a gate ("locked until you finish the level").
+    // The gate is gone and so is the action, because a gate keeps the thing it
+    // gates: route choice is this game's depth and a searched optimal line
+    // deletes the puzzle permanently. A time is information; a line is a
+    // solution. The panel still PRINTS the TAS time — see `the whole model`.
+    //
+    // There is no input to this function that can bring it back, which is the
+    // point: `ActionInput` has no TAS field at all, so the assertion is over
+    // every possible call rather than over a chosen one.
+    for (const a of [
+      base,
+      { ...base, ghostName: null },
+      { nextLabel: null, canWatchRun: false, ghostName: null },
+    ]) {
+      const acts = actionsFor(a);
+      expect(JSON.stringify(acts)).not.toMatch(/tas/i);
+      expect(acts.every((x) => x.key !== 'C')).toBe(true);
+    }
   });
 
   it('names the ghost it offers, so "watch" is not a guess', () => {
@@ -273,7 +280,7 @@ describe('the actions', () => {
   });
 
   describe('key bindings', () => {
-    const acts = actionsFor({ ...base, tasTimeTicks: 30 * SEC, tasUnlocked: true });
+    const acts = actionsFor(base);
 
     it('binds Enter to next and Escape to dismissal', () => {
       expect(actionForKey('Enter', acts)).toBe('next');
@@ -284,7 +291,7 @@ describe('the actions', () => {
     it('answers R whatever else is on the panel', () => {
       // R is the key this game is played with. It is the one binding the results
       // screen may not make conditional on anything.
-      for (const set of [acts, actionsFor({ nextLabel: null, canWatchRun: false, ghostName: null, tasTimeTicks: null, tasUnlocked: false })]) {
+      for (const set of [acts, actionsFor({ nextLabel: null, canWatchRun: false, ghostName: null })]) {
         expect(actionForKey('KeyR', set)).toBe('retry');
       }
     });
@@ -296,7 +303,6 @@ describe('the actions', () => {
         KeyR: 'R',
         KeyT: 'T',
         KeyG: 'G',
-        KeyC: 'C',
         KeyB: 'B',
         KeyL: 'L',
         Escape: 'Esc',
@@ -311,8 +317,14 @@ describe('the actions', () => {
       // panel is actually showing a ghost to watch.
       const noGhost = actionsFor({ ...base, ghostName: null });
       expect(actionForKey('KeyG', noGhost)).toBeNull();
-      expect(actionForKey('KeyC', noGhost)).toBeNull();
       expect(actionForKey('KeyX', acts)).toBeNull();
+    });
+
+    it('does not bind C at all — the key the TAS line used to live on is free', () => {
+      // Asserted on a FULL action list, not a stripped one: the claim is that
+      // the binding is gone from the switch, not that this particular panel
+      // happens not to be offering it.
+      expect(actionForKey('KeyC', acts)).toBeNull();
     });
   });
 });
@@ -326,11 +338,10 @@ describe('the whole model', () => {
     previousBestTicks: 43 * SEC,
     submit: { kind: 'posting' } as SubmitState,
     board: null,
-    tasTimeTicks: null,
-    tasUnlocked: false,
+    tasTimeTicks: null as number | null,
     playerId: 'cc',
     rowLimit: 5,
-    actions: { nextLabel: null, canWatchRun: true, ghostName: null, tasTimeTicks: null, tasUnlocked: false },
+    actions: { nextLabel: null, canWatchRun: true, ghostName: null },
   };
 
   it('is complete with NO SERVER: the summary and the actions both survive it', () => {
@@ -346,12 +357,13 @@ describe('the whole model', () => {
     expect(m.actions.some((a) => a.id === 'retry')).toBe(true);
   });
 
-  it('shows a TAS TIME even while its line stays locked', () => {
-    // The time is information and proves the level is completable; the line is
-    // the answer to the level. They are different things and this is the one
-    // place both appear at once.
-    const m = buildResults({ ...input, tasTimeTicks: 38 * SEC, tasUnlocked: false });
+  it('shows a TAS TIME and offers no way whatsoever to play its line', () => {
+    // The whole of what survives the removal, asserted in one place: the time is
+    // information and proves the level is completable — which has already
+    // mattered twice here — while the line is the answer to the level and is
+    // not reachable from this screen on any condition.
+    const m = buildResults({ ...input, tasTimeTicks: 38 * SEC });
     expect(m.tasTime).toBe('38.000');
-    expect(m.actions.some((a) => a.id === 'watchTas')).toBe(false);
+    expect(JSON.stringify(m.actions)).not.toMatch(/tas/i);
   });
 });

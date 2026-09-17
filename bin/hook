@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Can a wheel hook over a thin obstacle and hang there? Measure it.
+#
+#   bin/hook              # every mode, in the order the question has to be asked
+#   bin/hook hang         # does a PLACED hang hold, per obstacle shape
+#   bin/hook catch        # can an arriving bike CATCH a tip, and how often
+#   bin/hook ride         # the entry a player would attempt: off the end of a deck
+#   bin/hook reach        # what a hang can collect, and what gets you out of one
+#
+# WHY THIS EXISTS. The idea, from the user and recalling Elasto Mania: "hooking
+# one tire over a thing and sliding — in Elastomania it would stretch your bike
+# out", with the apples underneath the poles so the mechanic teaches itself.
+# Geometry said yes: the chassis colliders do not ground out at any nose-down
+# pitch. Geometry is not dynamics, and this is the dynamics.
+#
+# THE ANSWER IS NO, and the rig is kept so that "no" stays checkable rather than
+# being a paragraph somebody has to trust. See "Hooking a wheel, and why it does
+# not work" in the README for the numbers this prints and what they mean.
+#
+# The short version:
+#   * a wheel is a CIRCLE, so it cannot hook anything. On a flat lip the contact
+#     point slides along as the wheel rolls and nothing resists the moment of a
+#     body hanging off one side, so it rolls off, every time;
+#   * only a razor-sharp blade tip holds, because a VERTEX pins the contact
+#     point — and once you are on one it holds indefinitely, with no input;
+#   * but the catch window is about 1% of plausible arrivals and closes entirely
+#     above walking pace, and a ridden run-off never catches for longer than a
+#     quarter of a second;
+#   * and every catch that holds bottoms the suspension, so the stretch cannot
+#     be a readout of how hard you came in.
+#
+# It takes a couple of minutes: the sweeps are tens of thousands of short sims.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+exec "$ROOT/node_modules/.bin/tsx" "$ROOT/bin/_hook-main.ts" "$@"

@@ -29,7 +29,7 @@ import { downloadReplay, onReplayDropped, pickReplay } from './replayio.ts';
 import { clearStoredSpec, loadBests, loadChoice, loadFlag, loadLastLevel, loadStoredSpec, recordBest, saveChoice, saveFlag, saveLastLevel, saveStoredSpec } from './store.ts';
 import { fetchBoard, fetchReplay, submitRun } from './api.ts';
 import type { BoardEntry, BoardPayload, Category } from './api.ts';
-import { canWatchLine, chooseGhost, createGhost, ghostCompat, ghostNoteFor, GHOST_KINDS, GHOST_LABELS } from './ghost.ts';
+import { chooseGhost, createGhost, ghostCompat, ghostNoteFor, GHOST_KINDS, GHOST_LABELS, watchableCategory } from './ghost.ts';
 import type { Ghost, GhostKind, Standing } from './ghost.ts';
 import { hasName, loadIdentity, setName } from './identity.ts';
 import { createBoardUi } from './boardui.ts';
@@ -428,7 +428,11 @@ function setLocalSpec(next: BikeSpec, opts: { persist: boolean; carry: boolean }
  * concentrating on a run is the worst possible outcome: they conclude they have
  * lost their touch rather than that the numbers moved.
  */
-function applyRemote(override: Record<string, unknown>, held: ReadonlySet<string>): void {
+function applyRemote(
+  override: Record<string, unknown>,
+  held: ReadonlySet<string>,
+  dropped: readonly string[],
+): void {
   const before = spec;
   remoteOverride = override;
   recomputeSpec(false);
@@ -437,10 +441,39 @@ function applyRemote(override: Record<string, unknown>, held: ReadonlySet<string
   panel.sync();
 
   const changes = diffSpec(before, spec);
+
+  // THE DROPPED PATHS COME FIRST, and they get their own toast even when
+  // nothing else moved.
+  //
+  // A path this build has no field for is not an error anywhere: the value is
+  // simply not applied and the bike keeps the local default. `bin/spec` says
+  // "IGNORED n unknown path(s)" at the TERMINAL, which the person playing is
+  // not looking at. That gap has already cost a real session — an override held
+  // `rider.inertialTransfer`, the field became a brake/drive pair, the client
+  // dropped it, fell back to 0.6 against maxTorque 126 (lifts like the default,
+  // less power to recover) and it was ridden for twenty minutes with nothing on
+  // screen to explain it.
+  //
+  // A rename is exactly when this matters most, because it is also exactly when
+  // nothing looks broken, so this is deliberately loud: its own toast, its own
+  // HUD line, and it names the keys rather than counting them.
+  if (dropped.length > 0) {
+    const names = dropped.slice(0, 3).join(', ');
+    const more = dropped.length > 3 ? ` and ${dropped.length - 3} more` : '';
+    toast(
+      `data/spec.json sets ${names}${more}, which this build has no such field for — ` +
+        'those keys are NOT in force and the bike is using its own value. Renamed? Check bin/spec.',
+      'live tune',
+    );
+  }
+
   if (changes.length === 0) return;
   const shown = changes.slice(0, 4).map((c) => `${c.path} ${fmtNum(c.from)} → ${fmtNum(c.to)}`);
   if (changes.length > shown.length) shown.push(`and ${changes.length - shown.length} more`);
-  toast(shown.join('   '), 'live tune');
+  // Two toasts in one frame would clobber each other; the dropped-key warning is
+  // the one that must survive, so the change list joins it rather than
+  // replacing it.
+  if (dropped.length === 0) toast(shown.join('   '), 'live tune');
   replayNote = `live tune: ${shown.join(', ')} — attempt restarted`;
 }
 
@@ -536,20 +569,6 @@ function boardStatusSet(text: string, kind: 'ok' | 'warn' | 'bad' | '' = 'warn')
   syncBoardUi();
 }
 
-/**
- * Have you finished THIS level on THIS rev?
- *
- * Two independent witnesses, either of which is sufficient: a local best (which
- * `store.ts` keys by rev, so a rev bump retires it automatically) or a human
- * board entry of your own. The local one is what makes the gate work with no
- * server at all; the board one is what makes it survive clearing site data.
- *
- * It gates one thing: whether a TAS LINE may be watched. Never a time.
- */
-function completedThisLevel(): boolean {
-  return bests[level.simHash] !== undefined || humanBoard?.you != null;
-}
-
 function syncBoardUi(): void {
   boardUi.update({
     visible: boardVisible,
@@ -561,7 +580,6 @@ function syncBoardUi(): void {
     status: boardStatus,
     statusKind: boardStatusKind,
     ghostNote,
-    completed: completedThisLevel(),
   });
 }
 
@@ -814,15 +832,18 @@ function onNameChosen(raw: string): void {
 /**
  * Watch one board entry's run from the start, with the normal playback path.
  *
- * The category gate is enforced HERE as well as in the panel that offers the
- * button, because "the UI does not show it" is a presentation fact and this is
- * the function that actually fetches somebody's route.
+ * HUMAN RUNS ONLY, and the refusal is enforced HERE as well as in the panel that
+ * decides which rows get a button, because "the UI does not show it" is a
+ * presentation fact and this is the function that actually fetches somebody's
+ * route. There is no unlock: route choice is this game's depth and a searched
+ * optimal line deletes the puzzle permanently. A time is information; a line is
+ * a solution.
  */
 function watchEntry(e: BoardEntry): void {
-  if (!canWatchLine(e.category, completedThisLevel())) {
+  if (!watchableCategory(e.category)) {
     boardStatusSet(
-      'that is a machine run. Its time is on the board; its line stays hidden until you finish this ' +
-        'level yourself — a solver picked the apple order by searching for it, and route choice is the level.',
+      'that is a machine run — its time is the whole of what this board shows. A solver picked the apple ' +
+        'order by searching for it, and that order is the level.',
       'warn',
     );
     return;
@@ -896,18 +917,12 @@ function syncResults(): void {
     submit: results.submit,
     board: humanBoard,
     tasTimeTicks: tasTicks,
-    // Always true in practice on this screen — you are reading it because you
-    // just finished — but computed rather than assumed, so the rule stays one
-    // rule and not a special case that drifts.
-    tasUnlocked: canWatchLine('tas', completedThisLevel()),
     playerId: identity.playerId,
     rowLimit: RESULTS_ROWS,
     actions: {
       nextLabel: next?.label ?? null,
       canWatchRun: lastReplay !== null,
       ghostName: ghostEntry?.name ?? null,
-      tasTimeTicks: tasTicks,
-      tasUnlocked: canWatchLine('tas', completedThisLevel()),
     },
   });
   resultsUi.update(resultsModel);
@@ -939,12 +954,6 @@ function resultsAction(id: ActionId): void {
       break;
     case 'watchGhost': {
       const e = resultsGhostEntry();
-      closeResults();
-      if (e) watchEntry(e);
-      break;
-    }
-    case 'watchTas': {
-      const e = tasBoard?.top[0] ?? null;
       closeResults();
       if (e) watchEntry(e);
       break;
@@ -1334,6 +1343,14 @@ function updateHud(): void {
       : liveTune.enabled
         ? `<span class="k">live tune</span> on${liveTune.heldPaths.size ? `, holding ${liveTune.heldPaths.size} field(s)` : ', no override'}`
         : '<span class="k">live tune</span> off',
+    // Stays up for as long as the file names a field this build does not have,
+    // rather than being a toast that expires. The toast is the alert; this is
+    // the answer when somebody comes back to the screen an hour later asking
+    // why the bike feels wrong.
+    liveTune.droppedPaths.length > 0
+      ? `<span class="bad">data/spec.json: ${liveTune.droppedPaths.join(', ')} — no such field in this build, NOT applied` +
+        ' (renamed? bin/spec lists the real paths)</span>'
+      : '',
     // The panel is closed by default now, so the two things it would otherwise
     // be shouting about have to be visible without it. A stale hand-tune or a
     // remote override that nobody can SEE is how somebody spends an afternoon
@@ -1477,7 +1494,7 @@ panel.setTuned(specIsTuned);
 // spec file that is already in place is in force before the first frame the
 // player sees rather than two seconds into their first run.
 const liveTune = createLiveTune(() => localSpec, {
-  onChange: (override, held) => applyRemote(override, held),
+  onChange: (override, held, dropped) => applyRemote(override, held, dropped),
   onError: (msg) => {
     liveTuneError = msg;
   },

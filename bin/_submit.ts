@@ -69,11 +69,33 @@ if (args.category === 'human') {
   console.log('');
 }
 
+/**
+ * Turn the paths given into a list of replay files.
+ *
+ * The `statSync` is wrapped because a TYPO is the overwhelmingly common way to
+ * get here with a bad path, and an unhandled ENOENT dumps a raw Node stack
+ * trace — which reads like the script is broken rather than like the filename
+ * is wrong. Every other failure in this script already says its piece in one
+ * line and exits; this was the one hole in that.
+ */
 function expand(paths: string[]): string[] {
   const out: string[] = [];
   for (const p of paths) {
-    if (statSync(p).isDirectory()) {
-      for (const f of readdirSync(p).sort()) if (f.endsWith('.json')) out.push(join(p, f));
+    let st;
+    try {
+      st = statSync(p);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') die(`no such file or directory: ${p}`);
+      if (code === 'EACCES') die(`cannot read ${p}: permission denied`);
+      die(`cannot read ${p}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    if (st.isDirectory()) {
+      const found = readdirSync(p).filter((f) => f.endsWith('.json')).sort();
+      // An empty directory is a typo too, just a quieter one: without this it
+      // prints "0 file(s)" and exits 0, which looks like a successful sweep.
+      if (found.length === 0) die(`${p} is a directory with no .json replay files in it`);
+      for (const f of found) out.push(join(p, f));
     } else {
       out.push(p);
     }

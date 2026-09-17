@@ -10,7 +10,8 @@ import { TEST_LEVEL } from '@/sim/testlevel.ts';
 import { parseLevel } from '@/sim/level.ts';
 import { cloneSpec, DEFAULT_SPEC } from '@/sim/spec.ts';
 import { IN_LEAN_R, IN_THROTTLE } from '@/sim/consts.ts';
-import { canWatchLine, chooseGhost, createGhost, ghostCompat, ghostNoteFor, GHOST_KINDS } from './ghost.ts';
+import { chooseGhost, createGhost, ghostCompat, ghostNoteFor, GHOST_KINDS, watchableCategory } from './ghost.ts';
+import * as ghostModule from './ghost.ts';
 import type { Standing } from './ghost.ts';
 
 const LEVEL = parseLevel(TEST_LEVEL);
@@ -239,16 +240,32 @@ describe('a machine run is never a ghost', () => {
   });
 });
 
-describe('canWatchLine', () => {
-  it('always allows a human line', () => {
-    expect(canWatchLine('human', false)).toBe(true);
-    expect(canWatchLine('human', true)).toBe(true);
+describe('a TAS line cannot be watched at all', () => {
+  // THE ROUTE IS GONE, NOT LOCKED.
+  //
+  // There was a gate here once — watch the machine line once you had finished
+  // the level yourself — and these tests asserted the gate held. A gate was the
+  // wrong answer, because it kept the thing it was gating. Route choice is this
+  // game's depth: a searched optimal line deletes the puzzle permanently, and
+  // you cannot un-see a route. A time is information; a line is a solution.
+  //
+  // So these assert ABSENCE, which is a different and stronger claim than "the
+  // gate returns false": there is no state, no unlock, no argument a caller can
+  // pass that produces a machine line in the client.
+
+  it('has no unlockable gate function left to call', () => {
+    // The old `canWatchLine(category, completedThisLevel)` is gone, not merely
+    // returning false. If it ever comes back this fails and somebody has to
+    // read the paragraph above before shipping it.
+    expect('canWatchLine' in ghostModule).toBe(false);
+    expect(Object.keys(ghostModule).filter((k) => /unlock|canWatch/i.test(k))).toEqual([]);
   });
 
-  it('allows a TAS line only after you have finished the level yourself', () => {
-    // Before: a walkthrough nobody asked for. After: a reward, and a good way
-    // to find out what you left on the table.
-    expect(canWatchLine('tas', false)).toBe(false);
-    expect(canWatchLine('tas', true)).toBe(true);
+  it('answers on the category alone — there is no second argument to unlock', () => {
+    expect(watchableCategory('human')).toBe(true);
+    expect(watchableCategory('tas')).toBe(false);
+    // The signature itself is the guarantee: nothing about the player is an
+    // input, so no amount of finishing the level changes the answer.
+    expect(watchableCategory.length).toBe(1);
   });
 });

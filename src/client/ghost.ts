@@ -209,9 +209,13 @@ export function createGhost(level: Level, spec: BikeSpec, replay: Replay, meta: 
 //     when the human board is empty. "No ghost yet, be the first" is a perfectly
 //     good state and an honest one.
 //
-// Watching a TAS replay deliberately is gated on `canWatchLine` below, not on
-// the ghost selector, because after you have solved a level yourself, seeing how
-// a machine did it is a reward rather than a walkthrough.
+// AND THERE IS NO OTHER DOOR. There was once a gate — watch the machine line
+// once you had finished the level yourself — and a gate was the wrong answer,
+// because it kept the thing it was gating. A time is information; a line is a
+// solution, and a searched optimal line deletes the puzzle permanently. So the
+// client has no route to a TAS line at all: no key, no button, no unlock. The
+// only thing that plays one is `bin/replay` at a terminal, which is an authoring
+// tool used deliberately and not something offered to a player mid-session.
 
 /** One board row, reduced to what a ghost needs. */
 export type GhostEntry = { replayId: string; name: string; timeTicks: number; playerId: string } | null;
@@ -296,18 +300,13 @@ export function ghostNoteFor(
 /**
  * May this player watch the LINE of a run in this category?
  *
- * Human lines: always. Somebody else riding it by hand is the whole social half
- * of the board, and it is how people learn from each other.
+ * Human lines only, unconditionally. Somebody else riding it by hand is the
+ * whole social half of the board, and it is how people learn from each other.
  *
- * TAS lines: only after you have finished the level yourself on this rev. Before
- * that it is a walkthrough nobody asked for; after it, it is a reward. The gate
- * is on WATCHING, never on seeing the time — a time is information, a line is
- * the answer.
- *
- * The caller must make the option ABSENT rather than disabled when this returns
- * false. A greyed-out "watch the solver's run" button is itself the spoiler that
- * something optimal exists to be seen.
+ * A TAS line is never watchable in the client — see the block above
+ * `chooseGhost`. There is no second argument here on purpose: there is no state
+ * a player can reach that turns a machine line on, so there is nothing to pass.
  */
-export function canWatchLine(category: 'human' | 'tas', completedThisLevel: boolean): boolean {
-  return category === 'human' || completedThisLevel;
+export function watchableCategory(category: 'human' | 'tas'): boolean {
+  return category === 'human';
 }
