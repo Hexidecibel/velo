@@ -5,6 +5,12 @@
 #   bin/shots                                  # the four levels that matter most
 #   bin/shots 04-switchback 13-reservoir
 #   SHOTS_OUT=/tmp/x SHOTS_W=1920 SHOTS_H=1080 bin/shots
+#   SHOTS_QUERY=touch=1 bin/shots 01-first-light   # the phone thumb pads, which
+#                                              # are page elements and therefore
+#                                              # in the screenshot
+#   SHOTS_MONTAGE=24 bin/shots 20-close-quarters   # the end-of-level montage:
+#                                              # does the winning line still
+#                                              # read against the crowd
 #   SHOTS_ONLY=art-62 bin/shots 01-first-light 02-the-long-climb ...
 #                                              # one shot per level, for judging
 #                                              # the twenty AS A SET

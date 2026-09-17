@@ -28,6 +28,20 @@ const PREVENT_DEFAULT_COMMANDS = new Set(['Tab']);
 
 export interface Input {
   mask(): number;
+  /**
+   * Add another producer of sim bits — the touch pads, today.
+   *
+   * IT GOES THROUGH `mask()` RATHER THAN AROUND IT, and that is the whole of
+   * why a phone run and a desktop run are the same kind of thing. The fixed
+   * step loop samples `mask()` once per input frame at 128 Hz, the recorder
+   * captures what the sim was advanced with, and neither learns where a bit came
+   * from. A touch-played run therefore records a byte-identical stream to the
+   * same buttons pressed on a keyboard and re-verifies on the server the same
+   * way — which would not be true of a second mask OR-ed in at the call site,
+   * because there are three call sites and one of them would eventually be
+   * missed.
+   */
+  addSource(fn: () => number): void;
   /** Commands that are not part of the sim's input stream. */
   onCommand(fn: (code: string) => void): void;
   /**
@@ -43,6 +57,8 @@ export interface Input {
 
 export function createInput(target: HTMLElement | Window = window): Input {
   let held = 0;
+  /** Other producers of sim bits, OR-ed into every sample. See `addSource`. */
+  const sources: (() => number)[] = [];
   const commands: ((code: string) => void)[] = [];
   const releases: ((code: string) => void)[] = [];
   // Command keys currently down, so a release can be reported for exactly the
@@ -97,7 +113,12 @@ export function createInput(target: HTMLElement | Window = window): Input {
   window.addEventListener('blur', blur);
 
   return {
-    mask: () => held,
+    mask: () => {
+      let m = held;
+      for (const src of sources) m |= src();
+      return m;
+    },
+    addSource: (fn) => sources.push(fn),
     onCommand: (fn) => commands.push(fn),
     onCommandUp: (fn) => releases.push(fn),
     detach: () => {

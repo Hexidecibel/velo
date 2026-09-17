@@ -296,6 +296,11 @@ const CAMERA_GROUPS: Group<CameraParams>[] = [
         hint: 'Hard guarantee, applied after the smoothing: the bike never leaves this fraction of the half-frame. 1 disables it and lets a fast reversal outrun the camera.',
         get: (c) => c.safeBox, set: (c, v) => { c.safeBox = v; },
       },
+      {
+        label: 'screen bias up', min: 0, max: 0.4, step: 0.01,
+        hint: 'Pushes the bike UP the frame. 0 on a desktop; the touch controls raise it, because in landscape your hands cover the bottom corners — which is exactly where a grounded bike sits when the camera centres it.',
+        get: (c) => c.screenBiasY, set: (c, v) => { c.screenBiasY = v; },
+      },
     ],
   },
 ];

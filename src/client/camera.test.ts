@@ -6,7 +6,7 @@
 // are correctness, and both are silently broken by the obvious implementation
 // (a fixed per-frame lerp with no clamp).
 import { describe, it, expect } from 'vitest';
-import { DEFAULT_CAMERA, cloneCamera, createCamera } from './camera.ts';
+import { DEFAULT_CAMERA, MAX_SCREEN_BIAS, cloneCamera, createCamera } from './camera.ts';
 
 const VIEW = { w: 1200, h: 800 };
 
@@ -139,5 +139,60 @@ describe('camera', () => {
     // And the next frame does not lurch back toward the old lead.
     cam.update({ x: 99, y: -5, vx: 0, vy: 0 }, 1 / 60, VIEW.w, VIEW.h);
     expect(Math.abs(cam.x - 99)).toBeLessThan(0.01);
+  });
+});
+
+describe('the thumb bias', () => {
+  // Landscape on a phone puts hands over the BOTTOM CORNERS, which is exactly
+  // where a centred camera puts a grounded bike — so the one thing the
+  // readability rule says must always be legible ends up under a thumb.
+  const withBias = (bias: number) => {
+    const p = cloneCamera(DEFAULT_CAMERA);
+    p.screenBiasY = bias;
+    const cam = createCamera(p);
+    cam.snap({ x: 0, y: 0, vx: 0, vy: 0 });
+    const t = { x: 0, y: 0, vx: 0, vy: 0 };
+    for (let i = 0; i < 120; i++) cam.update(t, 1 / 60, VIEW.w, VIEW.h);
+    return cam;
+  };
+
+  it('is off by default — a desktop has nothing covering the screen', () => {
+    expect(DEFAULT_CAMERA.screenBiasY).toBe(0);
+    expect(withBias(0).y).toBeCloseTo(0, 6);
+  });
+
+  it('puts the bike HIGHER in the frame, which means the camera goes lower', () => {
+    // World y is up and the renderer flips, so dropping the camera's centre is
+    // what raises the bike on screen. Getting this sign backwards would bury
+    // the bike under the thumbs it is supposed to escape, and it would look
+    // deliberate.
+    const cam = withBias(0.17);
+    expect(cam.y).toBeLessThan(0);
+    const halfH = VIEW.h * 0.5 / cam.zoom;
+    expect(-cam.y).toBeCloseTo(0.17 * halfH, 6);
+  });
+
+  it('CANNOT push the bike off the edge, however hard it is asked to', () => {
+    // The safe box is a guarantee and it outranks the comfort. `safeBox +
+    // screenBiasY` is how far off centre the bike can end up, and at 1 it is at
+    // the very edge; the clamp leaves the last 15% for the bike's own size and
+    // the ground under it.
+    const cam = withBias(5);
+    const halfH = VIEW.h * 0.5 / cam.zoom;
+    const offset = -cam.y / halfH;
+    expect(offset).toBeLessThanOrEqual(MAX_SCREEN_BIAS - DEFAULT_CAMERA.safeBox + 1e-9);
+    expect(offset + DEFAULT_CAMERA.safeBox).toBeLessThanOrEqual(MAX_SCREEN_BIAS + 1e-9);
+  });
+
+  it('fades out under the overview — there is no corner to hide in there', () => {
+    const p = cloneCamera(DEFAULT_CAMERA);
+    p.screenBiasY = 0.17;
+    const cam = createCamera(p);
+    cam.snap({ x: 0, y: 0, vx: 0, vy: 0 });
+    const t = { x: 0, y: 0, vx: 0, vy: 0 };
+    for (let i = 0; i < 60; i++) {
+      cam.update(t, 1 / 60, VIEW.w, VIEW.h, { x: 0, y: 20, zoom: 10, blend: 1 });
+    }
+    expect(cam.y).toBeCloseTo(20, 6);
   });
 });

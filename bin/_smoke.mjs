@@ -635,6 +635,77 @@ try {
     throw new Error(`the panel did not offer next-on-Enter and retry-on-R (${rs.finish.actions})`);
   }
   if (!rs.dismissed.hidden || rs.dismissed.model) throw new Error('Escape did not dismiss the results panel');
+  if (!rs.finish.actions.includes('montage:A')) {
+    throw new Error(`the panel did not offer the montage after two attempts (${rs.finish.actions})`);
+  }
+
+  // --- the montage, end to end ---------------------------------------------
+  //
+  // Two attempts exist by now — the death above and the finish — so pressing A
+  // must stand up a crowd and ride it. What this proves that the unit tests
+  // cannot: the attempts really are RETAINED across a restart in the live
+  // client (the recorder used to throw each run away), the riders really do
+  // step in the real frame loop, and a restart really does clear them.
+  const mont = await evalIn(cdp, `
+    (async () => {
+      const raf = () => new Promise((r) => requestAnimationFrame(r));
+      const before = window.velo.attempts.length;
+      window.velo.startMontage();
+      const started = window.velo.montage;
+      const at0 = started ? started.riding : -1;
+      for (let i = 0; i < 20; i++) await raf();
+      const running = window.velo.montage;
+      window.velo.restart(false);
+      return {
+        attempts: before,
+        count: started ? started.count : 0,
+        coarse: started ? started.alpha : 0,
+        ridingAtStart: at0,
+        ridingLater: running ? running.riding : -1,
+        clearedByRestart: window.velo.montage === null,
+      };
+    })()
+  `);
+  console.log('    montage: ' + JSON.stringify(mont));
+  if (mont.attempts < 2) throw new Error('the attempt log did not RETAIN both runs — the montage has nothing to show');
+  if (mont.count < 1) throw new Error('pressing the montage action stood up no riders');
+  if (mont.ridingAtStart < 1) throw new Error('the montage riders started already finished');
+  if (!(mont.coarse > 0 && mont.coarse <= 0.3)) throw new Error(`montage alpha out of range (${mont.coarse})`);
+  if (!mont.clearedByRestart) throw new Error('a restart did not clear the montage — faint bikes over a live run');
+
+  // --- the touch controls come up on a coarse pointer -----------------------
+  //
+  // The layout and the bitmask are unit-tested in plain node; what cannot be
+  // tested there is the wiring — that the overlay exists in the built page,
+  // that `?touch=1` turns it on, that every pad is actually in the DOM, and
+  // that the body class which hides the desktop chrome is applied. All four are
+  // the kind of thing that breaks silently in a bundle and not in a test.
+  await cdp.send('Page.navigate', { url: url + '?level=01-first-light&touch=1' });
+  await cdp.waitFor('Page.loadEventFired', 15000);
+  await new Promise((r) => setTimeout(r, 1500));
+  const tc = await evalIn(cdp, `
+    (() => {
+      const root = document.getElementById('touch');
+      const ids = [...root.querySelectorAll('.tc-zone')].map((e) => e.className.split(' ')[1]);
+      return {
+        visible: !root.classList.contains('hidden'),
+        bodyClass: document.body.classList.contains('touch'),
+        ids,
+        biasY: window.velo.cam.params.screenBiasY,
+        zoomBias: window.velo.cam.zoomBias,
+      };
+    })()
+  `);
+  console.log('    touch: ' + JSON.stringify(tc));
+  if (!tc.visible || !tc.bodyClass) throw new Error('?touch=1 did not bring the touch controls up');
+  for (const want of ['tc-throttle', 'tc-brake', 'tc-leanL', 'tc-leanR', 'tc-flip', 'tc-restart']) {
+    if (!tc.ids.includes(want)) throw new Error(`the touch overlay is missing ${want} (${tc.ids})`);
+  }
+  // Thumbs cover the bottom corners, which is where a grounded bike sits when
+  // the camera centres it; and 1.7 m of bike on a phone is under two
+  // centimetres. Both corrections have to actually be in force.
+  if (!(tc.biasY > 0)) throw new Error('the touch camera did not bias the bike up the frame');
+  if (!(tc.zoomBias > 1)) throw new Error('the touch camera did not zoom in for a small screen');
 
   cdp.close();
 } catch (e) {

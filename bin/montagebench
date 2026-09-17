@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# What the Super Meat Boy montage costs a frame, and therefore what the cap is.
+#
+# Usage:
+#   bin/montagebench                          # 20-close-quarters, the tight one
+#   bin/montagebench 10-cathedral 20-close-quarters
+#   BENCH_COUNTS=0,25,50 bin/montagebench     # which rider counts to sweep
+#   BENCH_W=1920 BENCH_H=1080 bin/montagebench
+#
+# Why: the plan estimated 50 riders at ~3.7 ms from the SIM benchmark alone.
+# That arithmetic is right and it is half the bill — a rider also has to be
+# drawn, and on the art renderer a bike is not free. So MONTAGE_CAP is measured
+# rather than derived, and it is measured on 20-close-quarters by default
+# because that is the level where nothing culls: the whole crowd dies in the
+# same few metres, so every rider is on screen at once.
+#
+# The numbers are a FLOOR: this box has no GPU, so Chrome rasterises on the CPU.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+echo "==> build"
+"$ROOT/bin/build" >/dev/null
+echo "==> montage frame cost"
+exec "$NODE" "$ROOT/bin/_montagebench.mjs" "$@"

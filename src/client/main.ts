@@ -13,14 +13,15 @@ import type { Replay, ReplayFile } from '@/sim/replay.ts';
 import { SIM_REV } from '@/sim/rev.ts';
 import { IN_BRAKE, IN_FLIP, IN_LEAN_L, IN_LEAN_R, IN_THROTTLE } from '@/sim/consts.ts';
 import { createInput } from './input.ts';
+import { createTouch, wantsTouch } from './touch.ts';
 import { createLoop } from './loop.ts';
 import { interpolate, render } from './render.ts';
-import type { Pose } from './render.ts';
+import type { GhostDraw, Pose } from './render.ts';
 import { createCamera, cloneCamera, DEFAULT_CAMERA } from './camera.ts';
 import { cloneOverview, createOverview, DEFAULT_OVERVIEW, overviewFrame } from './overview.ts';
 import { createPanel } from './panel.ts';
 import { BOOT_PRESET, PRESETS } from './presets.ts';
-import { createAttemptLog, createRecorder, verify } from './recorder.ts';
+import { createAttemptLog, createRecorder, MIN_BANKED_FRAMES, verify } from './recorder.ts';
 import { crossCheck } from '@/sim/crosscheck.ts';
 import { LEVELS, adoptLevel, findBySimHash, resolveLevel } from './levels.ts';
 import type { LevelEntry } from './levels.ts';
@@ -29,8 +30,9 @@ import { downloadReplay, onReplayDropped, pickReplay } from './replayio.ts';
 import { clearStoredSpec, loadBests, loadChoice, loadFlag, loadLastLevel, loadStoredSpec, recordBest, saveChoice, saveFlag, saveLastLevel, saveStoredSpec } from './store.ts';
 import { fetchBoard, fetchReplay, submitRun } from './api.ts';
 import type { BoardEntry, BoardPayload, Category } from './api.ts';
-import { chooseGhost, createGhost, ghostCompat, ghostNoteFor, GHOST_KINDS, GHOST_LABELS, watchableCategory } from './ghost.ts';
-import type { Ghost, GhostKind, Standing } from './ghost.ts';
+import { chooseGhost, createGhost, createRider, ghostCompat, ghostNoteFor, GHOST_KINDS, GHOST_LABELS, watchableCategory } from './ghost.ts';
+import type { Ghost, GhostKind, Rider, Standing } from './ghost.ts';
+import { montageAlpha, montageLabel, MONTAGE_MIN, selectMontage, visibleRiders } from './montage.ts';
 import { hasName, loadIdentity, setName } from './identity.ts';
 import { createBoardUi } from './boardui.ts';
 import { createResultsUi } from './resultsui.ts';
@@ -55,6 +57,7 @@ const toastRoot = document.getElementById('toast') as HTMLElement;
 const legendRoot = document.getElementById('legend') as HTMLElement;
 const boardRoot = document.getElementById('board') as HTMLElement;
 const resultsRoot = document.getElementById('results') as HTMLElement;
+const touchRoot = document.getElementById('touch') as HTMLElement;
 const ctx = canvas.getContext('2d', { alpha: false }) as CanvasRenderingContext2D;
 
 // --- which level ------------------------------------------------------------
@@ -133,6 +136,24 @@ let bests = loadBests();
 let lastReplay: Replay | null = null;
 let replayNote = '';
 let playback: { masks: number[]; at: number } | null = null;
+
+/**
+ * THE MONTAGE, while it is riding. Null the rest of the time, which is almost
+ * always — it is a thing you press A for on the results screen and it ends the
+ * moment you restart.
+ *
+ * The riders here are the FAILURES. The winning line is the player's own sim
+ * running the ordinary playback path, which is what makes the camera follow it
+ * and what makes it the only bike on screen at full strength.
+ */
+interface MontageRun {
+  riders: Rider[];
+  /** What each failure is drawn at. montage.ts owns the curve. */
+  alpha: number;
+  /** "37 attempts (31 dead, 5 given up on)" — the HUD line and the toast. */
+  label: string;
+}
+let montage: MontageRun | null = null;
 
 // --- leaderboard and ghosts -------------------------------------------------
 //
@@ -298,8 +319,38 @@ const input = createInput();
 
 // --- run lifecycle ----------------------------------------------------------
 
+/**
+ * Bank the attempt in progress as one that was GIVEN UP ON.
+ *
+ * `finishRun` banks the attempts that ended themselves — a death or a finish.
+ * This banks the third kind, the one where you saw it going wrong and hit R,
+ * and it is worth keeping for exactly the reason the montage exists: the giving
+ * up is part of the story of learning a level, and a montage missing every run
+ * you abandoned would be missing the runs where you already knew.
+ *
+ * CALLED BEFORE ANYTHING MOVES, always. It builds from the CURRENT level, spec
+ * and sim, so calling it after a level switch would bank this level's buttons
+ * against the next level's identity — which is why `setLevel` calls it at the
+ * very top rather than leaving it to the `restart` it ends with. Resetting the
+ * recorder here is what makes the second call a no-op.
+ */
+function bankAbandoned(): void {
+  if (recorder.frames < MIN_BANKED_FRAMES) return;
+  if (sim.state.dead || sim.state.finished) return;
+  const r = recorder.build(level, spec, sim);
+  if (r) attempts.add(r);
+  recorder.reset();
+}
+
 function restart(keepReplay = true): void {
   if (!keepReplay) lastReplay = null;
+  bankAbandoned();
+  // Auto-throttle goes back to waiting for a tap. See `TouchControls.arm`.
+  touch.disarm();
+  // The montage is over the moment you ride again. It is a thing you watch,
+  // and leaving forty faint bikes on screen over a live attempt would be the
+  // exact opposite of the readability rule the whole art direction rests on.
+  montage = null;
   // Instant, and first. R is the key this game is played with and the results
   // screen must never be felt as something standing between the line and the
   // next attempt.
@@ -332,6 +383,8 @@ function setLevel(next: LevelEntry, note = ''): void {
     replayNote = `"${next.label}" does not load: ${next.error ?? '?'}`;
     return;
   }
+  // BEFORE the level moves under it. See `bankAbandoned`.
+  bankAbandoned();
   entry = next;
   level = next.level;
   baked = null;
@@ -392,9 +445,12 @@ function recomputeSpec(carry: boolean): void {
   const p = PRESETS.find((x) => x.id === presetId);
   specIsTuned = p ? specHash(localSpec) !== specHash(p.spec) : true;
   panel.setTuned(specIsTuned);
+
   // A ghost is a run on a SPECIFIC bike. Once the bike moves, those inputs
   // describe a line nobody rode, so the ghost goes rather than lying quietly.
   if (ghost) dropGhost('the bike changed, so the ghost was dropped — it was a run on a different bike');
+  // The montage is forty of the same argument.
+  montage = null;
   syncBoardUi();
 }
 
@@ -549,6 +605,8 @@ function startPlayback(): void {
     replayNote = 'nothing recorded yet — drive, then die or finish';
     return;
   }
+  // Pressing T mid-run gives that run up, so it banks like any other giving up.
+  bankAbandoned();
   const v = verify(level, spec, lastReplay);
   replayNote = v.result.ok
     ? `replay verified: ${lastReplay.frames} frames, hash ${v.result.finalHash}`
@@ -559,6 +617,72 @@ function startPlayback(): void {
   recorder.reset();
   playback = { masks: decodeInputs(lastReplay.inputs), at: 0 };
   cam.snap({ x: level.start.x, y: level.start.y, vx: 0, vy: 0 });
+}
+
+// --- the montage -------------------------------------------------------------
+//
+// Every attempt of the session, at once, over the one that worked.
+//
+// The shape is the cheap one and it is cheap for a day-one reason: a replay is
+// an INPUT STREAM, so a rider is a second sim fed buttons rather than a
+// trajectory played back, and forty of them is forty sims stepping in parallel
+// — which the sim has supported since the first commit because the solver
+// needed it to be cheap to instantiate and steppable headlessly.
+//
+// The WINNING LINE IS NOT ONE OF THE RIDERS. It runs on the player's own sim
+// through the ordinary playback path, which is what makes the camera follow it,
+// what makes it the only bike drawn at full strength, and what means this
+// function adds no second idea of what "watching a run" is.
+
+/** How many attempts the montage would ride right now. Null when not worth it. */
+function montageCount(): number | null {
+  const sel = selectMontage(attempts.all, {
+    simHash: level.simHash,
+    specHash: specHash(spec),
+    winner: results?.replay ?? lastReplay,
+  });
+  return sel.picks.length >= MONTAGE_MIN ? sel.picks.length : null;
+}
+
+function startMontage(): void {
+  const hero = results?.replay ?? lastReplay;
+  if (!hero) {
+    replayNote = 'nothing to ride against yet — finish the level first';
+    return;
+  }
+  const sel = selectMontage(attempts.all, {
+    simHash: level.simHash,
+    specHash: specHash(spec),
+    winner: hero,
+  });
+  if (sel.picks.length < MONTAGE_MIN) {
+    replayNote =
+      sel.incompatible > 0
+        ? `only one attempt can ride: ${sel.incompatible} of this session's runs were on a different bike or a different sim rev`
+        : 'only one attempt so far — the montage needs a few failures to be worth watching';
+    return;
+  }
+
+  // The failures only. The winner rides the player's sim, below.
+  const riders: Rider[] = [];
+  for (const p of sel.picks) {
+    if (p.winner) continue;
+    riders.push(createRider(level, spec, decodeInputs(p.replay.inputs)));
+  }
+
+  // The hero goes through the SAME playback path T uses. `startPlayback` resets
+  // the sim and the camera, so the montage is built after it and every rider
+  // starts on the line together with the player's own.
+  lastReplay = hero;
+  closeResults();
+  startPlayback();
+  montage = { riders, alpha: montageAlpha(riders.length + 1), label: montageLabel(sel) };
+  // `startPlayback` verifies the hero's hash chain and says so. A DESYNC there
+  // is the loudest thing this client can report and it must not be quietly
+  // overwritten by a caption — so the caption goes after it rather than over it.
+  const desync = replayNote.startsWith('REPLAY DESYNC') ? `${replayNote} — ` : '';
+  replayNote = `${desync}montage — ${montage.label}. R rides again, ] is the next level.`;
+  toast(montage.label, 'every attempt');
 }
 
 // --- the leaderboard, and the ghost --------------------------------------------
@@ -923,9 +1047,14 @@ function syncResults(): void {
       nextLabel: next?.label ?? null,
       canWatchRun: lastReplay !== null,
       ghostName: ghostEntry?.name ?? null,
+      montageCount: montageCount(),
     },
   });
   resultsUi.update(resultsModel);
+  // The panel's own buttons are UNDER the pads and they are the only way a
+  // phone reaches "next level". The controls stay live — dismissing the panel
+  // puts them straight back — they just get out of the way.
+  touch.setHidden(true);
 }
 
 function closeResults(): void {
@@ -933,6 +1062,7 @@ function closeResults(): void {
   results = null;
   resultsModel = null;
   resultsUi.hide();
+  touch.setHidden(false);
 }
 
 function resultsAction(id: ActionId): void {
@@ -958,6 +1088,10 @@ function resultsAction(id: ActionId): void {
       if (e) watchEntry(e);
       break;
     }
+    case 'montage':
+      // It closes the panel itself, after it has read the finishing run off it.
+      startMontage();
+      break;
     case 'board':
       // The fuller view. The results panel stays up: they are on opposite sides
       // of the screen and B is a toggle everywhere else in the game.
@@ -1141,6 +1275,18 @@ function step(): void {
   if (overview.mode === 'intro' && input.mask() !== 0) overview.skipIntro();
   if (overview.frozen) return;
 
+  // THE MONTAGE, ONE FRAME FOR ONE FRAME, and above every branch below so that
+  // it keeps riding after the winning line has crossed the finish. The failures
+  // are not all shorter than the run that worked — a long doomed attempt is
+  // exactly the kind the montage is worth watching for — and a rider frozen
+  // mid-air because the hero got there first would be a lie about when it died.
+  //
+  // `advance()` is a no-op once a rider is done, so the stopped ones cost
+  // nothing and stay exactly where they stopped. That pile IS the story.
+  if (montage) {
+    for (const r of montage.riders) r.advance();
+  }
+
   if (playback) {
     if (playback.at >= playback.masks.length) {
       playback = null;
@@ -1205,6 +1351,39 @@ function step(): void {
   }
 }
 
+/**
+ * The montage's riders, posed and culled, or null when none is running.
+ *
+ * CULLS THE DRAW AND NEVER THE SIM — the riders were all advanced in `step`
+ * whatever this returns. On a sprawling level most of the crowd is nowhere near
+ * the camera and drawing a bike costs more than stepping one, so this is where
+ * the frame budget is actually won; on a tight level like 20-close-quarters it
+ * saves nothing at all, because they are all in the same few metres, which is
+ * the case `MONTAGE_CAP` was measured against.
+ */
+function montageDraws(
+  alpha: number,
+  view: { x: number; y: number; zoom: number },
+  cssW: number,
+  cssH: number,
+): GhostDraw[] | null {
+  if (!montage) return null;
+  const box = {
+    x: view.x,
+    y: view.y,
+    halfW: cssW * 0.5 / view.zoom,
+    halfH: cssH * 0.5 / view.zoom,
+  };
+  const out: GhostDraw[] = [];
+  for (const i of visibleRiders(montage.riders, box)) {
+    const r = montage.riders[i];
+    // ALWAYS the silhouette tier. Readability and cost both say so, and
+    // montage.ts carries the measurement and the cliff it avoids.
+    out.push({ pose: r.pose(alpha), facing: r.facing, alpha: montage.alpha, coarse: true });
+  }
+  return out;
+}
+
 function draw(alpha: number, dtMs: number): void {
   fps += (1000 / Math.max(dtMs, 1) - fps) * 0.08;
   recordFrame(performance.now(), dtMs);
@@ -1221,8 +1400,13 @@ function draw(alpha: number, dtMs: number): void {
   const ghostPose: Pose | null = ghost ? ghost.pose(alpha) : null;
   const opts = {
     debug,
-    ghost: ghostPose,
+    // THE LEADERBOARD GHOST STANDS DOWN DURING A MONTAGE. It is somebody else's
+    // line and the montage is about yours; one more faint bike, drawn at the
+    // same alpha as the forty, would read as a forty-first attempt that you
+    // never made.
+    ghost: montage ? null : ghostPose,
     ghostFacing: ghost?.facing,
+    ghosts: montageDraws(alpha, cam, cssW, cssH),
     overview: overview.blend,
     // Indicators are for driving, not for the overview — while the whole level
     // is on screen there is nothing off it to point at, and eight arrows
@@ -1362,6 +1546,22 @@ function updateHud(): void {
     // The ghost gets a HUD line of its own because it is the thing on screen
     // that is easiest to mistake for a bug: a second bike appears, and if you
     // cannot see whose it is and how far ahead, it reads as a rendering fault.
+    // The montage gets its own line for as long as it is riding, because a
+    // screen with forty faint bikes on it needs to say what they are — and
+    // because when it stops, the thing you are looking at is a still picture of
+    // where the level beat you, which deserves a caption.
+    montage
+      ? (() => {
+          const riding = montage.riders.filter((r) => !r.done).length;
+          return (
+            `<span class="k">montage</span> ${montage.label}   ` +
+            (riding > 0
+              ? `<span class="v">${riding} still riding</span>`
+              : '<span class="warn">all stopped — this is where the level beat you</span>') +
+            '   <span class="k">R rides again</span>'
+          );
+        })()
+      : '',
     ghost
       ? `<span class="k">ghost</span> ${ghost.meta.name}${ghost.meta.rank !== null ? ` (#${ghost.meta.rank})` : ''} ` +
         `<span class="v">${ticksToSeconds(ghost.timeTicks).toFixed(3)}s</span>  ` +
@@ -1489,6 +1689,73 @@ const panel = createPanel(panelRoot, localSpec, () => spec, cam.params, overview
 });
 panel.setTuned(specIsTuned);
 
+// --- touch controls ----------------------------------------------------------
+//
+// LARGE ZONES, NEVER JOYSTICKS. The argument is at the top of touch.ts and it
+// comes down to one fact: the sim takes a BITMASK, so a stick is a four-way pad
+// wearing a costume and promising a partial throttle the physics does not have.
+//
+// Everything below is wiring. The pads produce sim bits, those bits go into
+// `input.mask()` through `addSource` — the same function the fixed-step loop
+// samples at 128 Hz for the keyboard — and nothing downstream of that can tell
+// the difference. A phone run records the same stream and verifies the same way,
+// which `touch.test.ts` asserts by pushing a thumb-shaped stream through the
+// real verifier.
+
+/**
+ * What the camera does when there are hands on the screen.
+ *
+ * TWO CHANGES AND BOTH ARE ABOUT A PHONE BEING A PHONE.
+ *
+ * `screenBiasY` — in landscape, hands cover the bottom corners, which is exactly
+ * where a centred camera puts a grounded bike. The one thing the readability
+ * rule says must always be legible would be under a thumb. Pushing the bike up
+ * the frame moves it into the clear, and the ground it is about to hit comes
+ * with it.
+ *
+ * `zoomBias` — the bike is 1.7 m at a 62 px/m base camera, and on a 12 cm-wide
+ * screen that is under two centimetres of actual bike. The collision-edge
+ * readability the whole art direction rests on is much harder at that size, so
+ * the touch default zooms in. 1.25x is 77 px/m, well inside the range `maxZoom`
+ * was raised to 150 for, and +/- still works from there because the bias is a
+ * multiplier on the auto zoom rather than a zoom value.
+ */
+const TOUCH_CAMERA = { screenBiasY: 0.17, zoomBias: 1.25 };
+
+// Remembered, and OFF by default: the plan's own framing is that some people
+// will strongly prefer each, which makes it an option rather than a default.
+const autoThrottleDefault = loadFlag('autothrottle', false);
+const touch = createTouch(
+  touchRoot,
+  {
+    // There is no R key on a phone and this is a die-and-retry game, so the
+    // restart has to be on the glass. Top-centre, away from both thumbs: a
+    // restart you can brush by accident is worse than no restart at all.
+    onRestart: () => restart(false),
+    onAutoThrottle: (on) => {
+      saveFlag('autothrottle', on);
+      touch.setAutoThrottle(on);
+      toast(
+        on
+          ? 'gas is held for you — lean, flip, and brake to stop. Tap to start.'
+          : 'gas is yours again — the big pad in the bottom-right corner',
+        'controls',
+      );
+    },
+  },
+  {
+    enabled: wantsTouch(location.search, (q) => window.matchMedia(q).matches),
+    autoThrottle: autoThrottleDefault,
+  },
+);
+// ONE mask, assembled in one place. See `Input.addSource`.
+input.addSource(() => touch.mask());
+if (touch.enabled) {
+  cam.params.screenBiasY = TOUCH_CAMERA.screenBiasY;
+  cam.zoomBias = TOUCH_CAMERA.zoomBias;
+  panel.sync();
+}
+
 // Live tune. Created after the panel, because a poll that lands before the
 // panel exists has nothing to grey out. The first poll fires immediately, so a
 // spec file that is already in place is in force before the first frame the
@@ -1539,6 +1806,12 @@ input.onCommand((code) => {
       break;
     case 'KeyT':
       startPlayback();
+      break;
+    case 'KeyA':
+      // The same montage the results screen offers, reachable after it has been
+      // dismissed. A is unbound everywhere else, so this is not a mode: it does
+      // the same thing whether the panel is up or not.
+      startMontage();
       break;
     case 'KeyE':
       exportReplay();
@@ -1596,7 +1869,14 @@ input.onCommandUp((code) => {
 
 // Clicking anywhere also ends the opening peek — "skippable by any input" has
 // to mean any input, or the one person who reaches for the mouse sits through it.
-window.addEventListener('pointerdown', () => overview.skipIntro());
+window.addEventListener('pointerdown', () => {
+  overview.skipIntro();
+  // TAP TO START. Auto-throttle withholds the gas until the first touch since
+  // the last restart, so that a level does not begin with the bike already
+  // driving off the line before anybody has looked at it. The gesture that
+  // means "I am ready" is the one that already skipped the opening peek.
+  touch.arm();
+});
 
 loop.start();
 syncBoardUi();
@@ -1632,6 +1912,71 @@ interface VeloWindow extends Window {
   },
   get attempts() {
     return attempts.all;
+  },
+  /** What the montage is doing, for bin/smoke and for devtools. */
+  get montage() {
+    return montage
+      ? {
+          count: montage.riders.length,
+          alpha: montage.alpha,
+          label: montage.label,
+          riding: montage.riders.filter((r) => !r.done).length,
+        }
+      : null;
+  },
+  startMontage,
+  /**
+   * Stand up a montage of `count` synthetic riders on this level, for
+   * bin/montagebench.
+   *
+   * SYNTHETIC ON PURPOSE. The cost of a rider is the cost of its own sim
+   * stepping and its own bike being drawn, and neither depends on where the
+   * buttons came from — so generating a stream beats grinding forty real
+   * attempts out of a headless browser to measure the same two numbers. It uses
+   * a fixed seed so two runs of the bench measure the same work.
+   *
+   * It does NOT start a playback: the bench wants a stable frame to time, not
+   * a run going past.
+   */
+  montageBench(count: number, frames = 2048) {
+    // ONE STREAM PER RIDER, and the seed is the rider's index.
+    //
+    // They shared a stream at first, and that was wrong in a way a number would
+    // never have shown: identical inputs are identical trajectories, so
+    // twenty-four riders were twenty-four bikes in exactly the same place,
+    // overdrawing the same pixels and — the half that mattered — making a
+    // screenshot of the montage look like a montage of one. A real crowd is
+    // spread out, culls differently and occludes differently.
+    const streamFor = (seed: number): number[] => {
+      const masks: number[] = [];
+      let x = (0x5eed + seed * 7919) & 0x7fffffff;
+      for (let i = 0; i < frames; i++) {
+        x = (x * 1103515245 + 12345) & 0x7fffffff;
+        // Held for eight frames at a time, like a hand on a keyboard rather
+        // than a coin flipped at 128 Hz — which matters, because a bike being
+        // driven travels and a bike twitching stays in one place and culls.
+        masks.push(i % 8 === 0 ? x % 32 : masks[masks.length - 1]);
+      }
+      return masks;
+    };
+    const t0 = performance.now();
+    const riders: Rider[] = [];
+    for (let i = 0; i < count; i++) riders.push(createRider(level, spec, streamFor(i)));
+    const buildMs = performance.now() - t0;
+    montage = count > 0
+      ? { riders, alpha: montageAlpha(count), label: `bench: ${count} synthetic riders` }
+      : null;
+    return { count, buildMs };
+  },
+  /** Time `frames` input frames of the montage stepping. Milliseconds, total. */
+  montageStepBench(frames: number) {
+    if (!montage) return 0;
+    for (const r of montage.riders) r.reset();
+    const t0 = performance.now();
+    for (let f = 0; f < frames; f++) {
+      for (const r of montage.riders) r.advance();
+    }
+    return performance.now() - t0;
   },
   // The leaderboard half, exposed for bin/smoke — which drives the real bundle
   // against a real server and is the only check that can see the board fetch,
@@ -1695,13 +2040,27 @@ interface VeloWindow extends Window {
    * sim and rewriting the HUD. It renders exactly what the frame renders, at a
    * camera position the caller chooses.
    */
-  renderAt(x: number, y: number, zoom: number, o?: { art?: boolean; debug?: boolean; overview?: number }) {
+  renderAt(
+    x: number,
+    y: number,
+    zoom: number,
+    o?: { art?: boolean; debug?: boolean; overview?: number; montage?: boolean },
+  ) {
     const { cssW, cssH } = resize();
     const pose = interpolate(prevState, sim.state, 1);
     const view = { x, y, zoom };
     const opts = {
       debug: o?.debug ?? false,
       ghost: null,
+      // The montage is part of what a frame costs, so it is part of what this
+      // renders — bin/montagebench measures the real draw through this call and
+      // an instrument that quietly left the crowd out would answer a question
+      // nobody asked.
+      // `montage: false` draws the same frame WITHOUT the crowd, which is how
+      // bin/montagebench gets an honest delta on a loaded machine: it pairs the
+      // two inside one loop rather than timing them in separate passes that a
+      // load spike can land on unequally.
+      ghosts: o?.montage === false ? null : montageDraws(1, view, cssW, cssH),
       overview: o?.overview ?? 0,
       markers: null,
     };

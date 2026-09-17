@@ -20,6 +20,11 @@
            and already has instant restart, and a panel in front of that would
            ruin the loop. Enter goes onward, R retries, Escape closes. -->
       <div id="results" class="hidden"></div>
+      <!-- Touch controls. Large zones, never joysticks: the sim takes a
+           BITMASK, so a stick would be a four-way pad wearing a costume and
+           promising a partial throttle the physics does not have. Hidden unless
+           the primary pointer is coarse, or ?touch=1 says otherwise. -->
+      <div id="touch" class="hidden"></div>
       <!-- Live-tune notifications. A bike that changes under a player who is
            concentrating must SAY so, or they conclude they lost their touch. -->
       <div id="toast"></div>

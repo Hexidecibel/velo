@@ -476,3 +476,81 @@ body:has(#panel.hidden) #results { margin-left: 0; }
 }
 #results .rs-act.primary kbd { border-color: var(--edge); }
 #results .rs-act-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* --- touch controls ------------------------------------------------------ */
+/* LARGE ZONES, NOT JOYSTICKS. The sim takes a bitmask — throttle is on or off,
+   lean is on or off — so a stick would add a dead zone, make the thumb travel,
+   and promise a partial throttle the physics cannot deliver.
+
+   Everything below is drawn in the chrome's own drab palette for the same
+   reason the rest of it is: the player and the collision edge are the highest
+   contrast things on screen and a control overlay does not get to compete. */
+#touch {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  /* The container is transparent to the pointer; only the pads take input, so a
+     tap in the play area still reaches the canvas and the level bar. */
+  pointer-events: none;
+  /* The browser's own gestures are the enemy of a multi-touch game: a drag is a
+     scroll and two fingers is a pinch-zoom, and either one eats an input. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+#touch.hidden { display: none; }
+/* Out of the way without being off: the results panel's own buttons sit under
+   the pads and have to be tappable. */
+#touch.tc-away { opacity: 0; pointer-events: none; }
+#touch.tc-away .tc-zone { pointer-events: none; }
+
+#touch .tc-zone {
+  position: absolute;
+  pointer-events: auto;
+  touch-action: none;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 6px;
+  border: 1px solid #ffffff1c;
+  border-radius: 6px;
+  color: #ffffff3d;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  font-size: 11px;
+  background: #ffffff06;
+  /* No transition. A pad that faded in after the press would report the input
+     late, and this game is decided in tenths of a second. */
+}
+/* The pressed state is the ONLY feedback a finger gets, because the finger is
+   covering the pad. It is a border and a wash rather than a fill: a lit block
+   under the bike would be the brightest thing on screen, which is exactly what
+   the readability rule forbids. */
+#touch .tc-zone.on {
+  border-color: var(--edge);
+  background: #29d9f21f;
+  color: #29d9f2b0;
+}
+/* Throttle is the biggest, lowest target and it says so. */
+#touch .tc-throttle { align-items: center; font-size: 13px; }
+#touch .tc-flip { align-items: center; }
+#touch .tc-leanL, #touch .tc-leanR { align-items: center; }
+/* The two commands, small and at the top, away from the thumbs and away from
+   the bottom corners the hands cover. */
+#touch .tc-cmd {
+  align-items: center;
+  font-size: 9px;
+  letter-spacing: .06em;
+  background: #17132ecc;
+  color: var(--dim);
+}
+
+/* On a phone the dev chrome is noise: the HUD is nine lines of telemetry, the
+   legend lists keys there is no keyboard for, and the leaderboard panel sits
+   exactly where the left thumb goes. The level bar stays — changing level is
+   navigation and there is no other way to do it. */
+body.touch #hud, body.touch #legend, body.touch #board { display: none; }
+body.touch #levelbar { top: 6px; right: 6px; max-width: 46vw; }
+body.touch #levelbar .lb-note { display: none; }
+body.touch #results { max-height: 78vh; }

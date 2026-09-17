@@ -145,6 +145,13 @@ export function renderArt(
   }
   drawFlower(ctx, level.flower.x, level.flower.y, state.applesLeft === 0, t, P, px);
 
+  // THE MONTAGE, UNDER EVERYTHING ELSE. Every attempt of the session riding at
+  // once, each at the alpha montage.ts chose for the size of the crowd, so the
+  // winning line — the player's own sim, at full strength two lines below —
+  // reads against the failures rather than being lost in them.
+  if (opts.ghosts) {
+    for (const g of opts.ghosts) drawBike(ctx, g.pose, spec, px, P, g.facing, t, g.alpha, g.coarse);
+  }
   if (opts.ghost) drawBike(ctx, opts.ghost, spec, px, P, opts.ghostFacing ?? state.facing, t, 0.3);
   if (!state.dead && !state.finished) drawFX(ctx, pose, state, P, px, t);
   drawBike(ctx, pose, spec, px, P, state.facing, t, 1);
@@ -958,7 +965,7 @@ export const TIERS = { playMinPx: PLAY_MIN_PX, fineOn: FINE_ON, fineOff: FINE_OF
  */
 function drawBike(
   ctx: CanvasRenderingContext2D, p: Pose, spec: BikeSpec, px: number, P: Palette,
-  facing: number, t: number, a: number,
+  facing: number, t: number, a: number, coarse = false,
 ): void {
   const wr = spec.wheel.radius;
   const hx = p.px + spec.rider.armLength * p.ax;
@@ -970,7 +977,12 @@ function drawBike(
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
-  if (blobTier(detail)) {
+  // `coarse` forces the silhouette tier, and it BYPASSES `blobTier` rather than
+  // faking a small `detail` into it. That function is a hysteresis LATCH shared
+  // by every bike in the frame — one controller for the whole canvas, on
+  // purpose — so forty montage riders driving it would flip the PLAYER'S bike
+  // to blobs and back, which is exactly the shimmer the latch exists to stop.
+  if (coarse || blobTier(detail)) {
     // Overview tier. Three ink-outlined blobs and a link: at this size anything
     // finer is mush, and the only question the frame has to answer is "where am
     // I and which way up".

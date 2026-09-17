@@ -75,6 +75,24 @@ export function interpolate(prev: SimState, cur: SimState, a: number): Pose {
   };
 }
 
+/** One extra bike in the frame, with its own facing and its own alpha. */
+export interface GhostDraw {
+  pose: Pose;
+  facing: number;
+  alpha: number;
+  /**
+   * Draw the silhouette tier rather than the full bike.
+   *
+   * NOT A NEW IDIOM — it is the renderer's OWN coarse tier, the one a bike
+   * already drops to when it is small on screen, asked for explicitly. A crowd
+   * of forty full-detail bikes is both the expensive half of the montage's
+   * frame and the reason the winning line stops reading: chrome, panel lines
+   * and exhaust smoke times forty is a texture, not a crowd. The art renderer
+   * honours it; the flat one is simple strokes already and ignores it.
+   */
+  coarse?: boolean;
+}
+
 export interface RenderOpts {
   debug: boolean;
   ghost: Pose | null;
@@ -86,6 +104,17 @@ export interface RenderOpts {
    * what every call site did before ghosts came from a leaderboard.
    */
   ghostFacing?: number;
+  /**
+   * THE MONTAGE: every attempt of the session, riding at once.
+   *
+   * A list rather than one more optional pose, because there can be forty of
+   * them and each carries its OWN facing and its own alpha — facing for the
+   * same reason the single ghost does, alpha because the crowd fades as it
+   * grows (montage.ts owns that arithmetic). Drawn under both the leaderboard
+   * ghost and the player: the winning line has to read against the failures,
+   * which is the whole point of the picture.
+   */
+  ghosts?: readonly GhostDraw[] | null;
   /**
    * 0..1 — how far the camera is into the wide overview framing. Drives the
    * bike locator, because at 9 px/m the bike is fifteen pixels of thin line in
@@ -186,6 +215,9 @@ export function render(
   ctx.stroke();
   ctx.globalAlpha = 1;
 
+  if (opts.ghosts) {
+    for (const g of opts.ghosts) drawBike(ctx, g.pose, spec, px, g.alpha, g.facing);
+  }
   if (opts.ghost) drawBike(ctx, opts.ghost, spec, px, 0.25, opts.ghostFacing ?? state.facing);
   drawBike(ctx, pose, spec, px, 1, state.facing);
 

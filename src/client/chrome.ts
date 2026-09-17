@@ -91,6 +91,7 @@ export function createLegend(root: HTMLElement): void {
     '<b>SPACE</b> flip direction — this is how you double back<br>' +
     '<b>TAB</b> hold to see the whole level (time stops)<br>' +
     '<b>R</b> restart &nbsp; <b>T</b> replay &nbsp; <b>E</b> export replay<br>' +
+    '<b>A</b> watch every attempt of this session at once<br>' +
     '<b>ENTER</b> next level, on the results screen &#8212; <b>ESC</b> closes it<br>' +
     '<b>B</b> leaderboard and ghost &nbsp; <b>[ / ]</b> level<br>' +
     '<b>+ / -</b> zoom &nbsp; <b>H</b> tuning sliders<br>' +

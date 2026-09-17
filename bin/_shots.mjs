@@ -37,6 +37,26 @@ const only = (process.env.SHOTS_ONLY || '').split(',').map((x) => x.trim()).filt
  * like" is a question the bike-follows-the-level framing cannot answer.
  */
 const at = (process.env.SHOTS_AT || '').split(',').map(Number).filter((n) => Number.isFinite(n));
+/**
+ * Extra query string on every page load — `SHOTS_QUERY=touch=1`.
+ *
+ * The screenshot is of the PAGE and not of the canvas, so this is what makes
+ * the touch controls photographable: whether the thumb zones sit where a hand
+ * actually is, and whether they compete with the collision edge, are both
+ * comparisons rather than opinions, and neither can be judged from a unit test
+ * that knows only the fractions.
+ */
+const QUERY = process.env.SHOTS_QUERY || '';
+/**
+ * Stand up N montage riders before shooting — `SHOTS_MONTAGE=24`.
+ *
+ * The one question a montage screenshot has to answer is whether the winning
+ * line still READS against the crowd, and that is the whole acceptance
+ * criterion for the feature's look. It uses the same synthetic riders
+ * bin/montagebench does, because a real montage would mean grinding real
+ * attempts out of a headless browser to photograph the same pile of bikes.
+ */
+const MONTAGE = Number(process.env.SHOTS_MONTAGE || 0);
 
 await mkdir(OUT, { recursive: true });
 const serve = createServer(async (req, res) => {
@@ -68,7 +88,7 @@ try {
   await cdp.send('Runtime.enable');
   await cdp.send('Page.enable');
   for (const lv of want) {
-    await cdp.send('Page.navigate', { url: `${url}?level=${lv}` });
+    await cdp.send('Page.navigate', { url: `${url}?level=${lv}${QUERY ? `&${QUERY}` : ''}` });
     await new Promise((r) => setTimeout(r, 2600));
     // Drive for a moment so the bike is mid-level and moving, then freeze the
     // loop: a still of a bike sitting on the start line says nothing about
@@ -85,6 +105,11 @@ try {
     // the drive above, but a still taken to judge the art must show the art
     // rather than whatever the last two seconds of frame times asked for.
     await ev(cdp, '(()=>{window.velo.art.adaptive=0;window.velo.art.quality=1;return 1})()');
+    if (MONTAGE > 0) {
+      // Stepped on so the crowd is spread through the level the way a real
+      // montage is, rather than stacked on the start line.
+      await ev(cdp, `(()=>{window.velo.montageBench(${MONTAGE});window.velo.montageStepBench(400);return 1})()`);
+    }
 
     const where = await ev(cdp, 'JSON.stringify({x:window.velo.sim.state.px,y:window.velo.sim.state.py})');
     const { x, y } = JSON.parse(where);

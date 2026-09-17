@@ -232,6 +232,7 @@ describe('the actions', () => {
     nextLabel: '02 — The Long Climb',
     canWatchRun: true,
     ghostName: 'krrl' as string | null,
+    montageCount: null as number | null,
   };
 
   it('puts next level first and makes it the one and only primary', () => {
@@ -250,7 +251,7 @@ describe('the actions', () => {
   });
 
   it('always offers a way out, even on a one-level build with nothing banked', () => {
-    const acts = actionsFor({ nextLabel: null, canWatchRun: false, ghostName: null });
+    const acts = actionsFor({ nextLabel: null, canWatchRun: false, ghostName: null, montageCount: null });
     expect(acts.map((a) => a.id)).toEqual(['retry', 'board', 'levels', 'dismiss']);
   });
 
@@ -267,12 +268,39 @@ describe('the actions', () => {
     for (const a of [
       base,
       { ...base, ghostName: null },
-      { nextLabel: null, canWatchRun: false, ghostName: null },
+      { nextLabel: null, canWatchRun: false, ghostName: null, montageCount: null },
     ]) {
       const acts = actionsFor(a);
       expect(JSON.stringify(acts)).not.toMatch(/tas/i);
       expect(acts.every((x) => x.key !== 'C')).toBe(true);
     }
+  });
+
+  it('OFFERS the montage rather than forcing it, below retry, on its own key', () => {
+    // The screen's standing rule: the fastest path back into the game is the
+    // default. The montage is a reward, so it is an action you choose — never
+    // something that plays at you before you can hit Enter — and it must not
+    // displace `next` or `retry` at the top of the list.
+    const acts = actionsFor({ ...base, montageCount: 37 });
+    const m = acts.find((a) => a.id === 'montage')!;
+    expect(m.key).toBe('A');
+    expect(m.primary).toBe(false);
+    expect(m.label).toBe('watch all 37 attempts at once');
+    expect(acts.findIndex((a) => a.id === 'montage')).toBeGreaterThan(
+      acts.findIndex((a) => a.id === 'retry'),
+    );
+    expect(acts[0].id).toBe('next');
+  });
+
+  it('does not offer a montage of one attempt, or of none', () => {
+    for (const n of [null, 0, 1]) {
+      expect(actionsFor({ ...base, montageCount: n }).some((a) => a.id === 'montage')).toBe(false);
+    }
+  });
+
+  it('binds A to the montage only when the montage is on the panel', () => {
+    expect(actionForKey('KeyA', actionsFor({ ...base, montageCount: 4 }))).toBe('montage');
+    expect(actionForKey('KeyA', actionsFor(base))).toBe(null);
   });
 
   it('names the ghost it offers, so "watch" is not a guess', () => {
@@ -291,7 +319,7 @@ describe('the actions', () => {
     it('answers R whatever else is on the panel', () => {
       // R is the key this game is played with. It is the one binding the results
       // screen may not make conditional on anything.
-      for (const set of [acts, actionsFor({ nextLabel: null, canWatchRun: false, ghostName: null })]) {
+      for (const set of [acts, actionsFor({ nextLabel: null, canWatchRun: false, ghostName: null, montageCount: null })]) {
         expect(actionForKey('KeyR', set)).toBe('retry');
       }
     });
@@ -341,7 +369,7 @@ describe('the whole model', () => {
     tasTimeTicks: null as number | null,
     playerId: 'cc',
     rowLimit: 5,
-    actions: { nextLabel: null, canWatchRun: true, ghostName: null },
+    actions: { nextLabel: null, canWatchRun: true, ghostName: null, montageCount: null },
   };
 
   it('is complete with NO SERVER: the summary and the actions both survive it', () => {

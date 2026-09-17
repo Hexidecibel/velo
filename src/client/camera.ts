@@ -55,7 +55,34 @@ export interface CameraParams {
    * the middle 80% of the frame; 1.0 disables the guarantee.
    */
   safeBox: number;
+  /**
+   * Push the bike UP the frame by this fraction of the half-viewport. 0 centres
+   * it, which is right on a desktop and wrong in a hand.
+   *
+   * IT EXISTS FOR THUMBS. In landscape on a phone, hands cover the bottom
+   * corners of the screen — which is exactly where a grounded bike sits when
+   * the camera centres it, so the one thing the readability rule says must
+   * always be legible is under a thumb. Biasing the view down moves the bike up
+   * into the clear part of the frame, and the ground it is about to hit comes
+   * with it.
+   *
+   * It is a PRESENTATION offset and nothing else: it moves the published view,
+   * never the follow, so the safe-box guarantee below still holds against the
+   * play framing and the sim never learns it happened. The effective bound on
+   * the bike's screen position becomes `safeBox + screenBiasY`, which is why
+   * this is clamped so the two together can never put it off the edge.
+   */
+  screenBiasY: number;
 }
+
+/**
+ * The most the bike may be pushed off centre, as a fraction of the half-frame.
+ *
+ * `safeBox + screenBiasY` is how far from the middle the bike can end up, and
+ * at 1 it is at the very edge of the frame. 0.85 leaves the last 15% for the
+ * bike's own size plus the ground under it.
+ */
+export const MAX_SCREEN_BIAS = 0.85;
 
 export const DEFAULT_CAMERA: CameraParams = {
   followHalfLife: 0.09,
@@ -85,6 +112,9 @@ export const DEFAULT_CAMERA: CameraParams = {
   zoomOutHalfLife: 0.35,
   zoomInHalfLife: 0.9,
   safeBox: 0.42,
+  // Zero on a desktop, where nothing is covering the screen. main.ts raises it
+  // when the touch controls come up — see TOUCH_CAMERA there.
+  screenBiasY: 0,
 };
 
 export function cloneCamera(p: CameraParams): CameraParams {
@@ -230,16 +260,25 @@ export function createCamera(params: CameraParams): Camera {
       fy = clamp(fy, t.y - boxY, t.y + boxY);
 
       // --- publish ------------------------------------------------------
+      // The thumb bias, applied to the PUBLISHED view only. World y is up and
+      // the renderer flips, so dropping the camera's centre raises the bike on
+      // screen. Clamped against the safe box so the two together can never put
+      // the bike off the edge — the guarantee above outranks the comfort.
+      const bias = clamp(p.screenBiasY, 0, MAX_SCREEN_BIAS - clamp(p.safeBox, 0, MAX_SCREEN_BIAS));
+      const shift = bias * halfH;
       const b = ov ? clamp(ov.blend, 0, 1) : 0;
       if (b <= 0) {
         cam.x = fx;
-        cam.y = fy;
+        cam.y = fy - shift;
         cam.zoom = fzoom;
         return;
       }
       const o = ov as OverviewView;
       cam.x = fx + (o.x - fx) * b;
-      cam.y = fy + (o.y - fy) * b;
+      // The bias fades out with the overview: the whole level on screen has no
+      // bottom corner the bike is hiding in, and an off-centre framing there is
+      // just a crooked picture.
+      cam.y = (fy - shift * (1 - b)) + (o.y - (fy - shift * (1 - b))) * b;
       // GEOMETRIC, not linear. Zoom is a scale factor, and a linear blend from
       // 62 px/m to 6 px/m spends most of its travel in the high numbers and
       // then plummets — it reads as a lurch at the far end. Blending the

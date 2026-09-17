@@ -331,7 +331,7 @@ export function boardRows(board: BoardPayload | null, playerId: string, limit: n
 
 // --- the actions -------------------------------------------------------------
 
-export type ActionId = 'next' | 'retry' | 'watchRun' | 'watchGhost' | 'board' | 'levels' | 'dismiss';
+export type ActionId = 'next' | 'retry' | 'watchRun' | 'watchGhost' | 'montage' | 'board' | 'levels' | 'dismiss';
 
 export interface ResultAction {
   id: ActionId;
@@ -356,6 +356,18 @@ export interface ActionInput {
    * searched optimal line deletes the puzzle permanently.
    */
   ghostName: string | null;
+  /**
+   * How many of this session's attempts on this level can ride at once, or
+   * null when there is nothing worth showing.
+   *
+   * OFFERED, NEVER FORCED, and that is why it is an action rather than
+   * something the panel does on its own. The montage is a reward — every
+   * attempt of the session replayed over the line that worked — and this
+   * screen's standing rule is that the fastest path back into the game is the
+   * default. So it sits below `retry` in the list, on its own key, and a player
+   * who wants Enter never learns it is there.
+   */
+  montageCount: number | null;
 }
 
 /**
@@ -377,6 +389,14 @@ export function actionsFor(a: ActionInput): ResultAction[] {
   if (a.nextLabel) out.push({ id: 'next', key: 'Enter', label: `next: ${a.nextLabel}`, primary: true });
   out.push({ id: 'retry', key: 'R', label: 'retry this level', primary: false });
   if (a.canWatchRun) out.push({ id: 'watchRun', key: 'T', label: 'watch your run', primary: false });
+  if (a.montageCount !== null && a.montageCount >= 2) {
+    out.push({
+      id: 'montage',
+      key: 'A',
+      label: `watch all ${a.montageCount} attempts at once`,
+      primary: false,
+    });
+  }
   if (a.ghostName) out.push({ id: 'watchGhost', key: 'G', label: `watch ${a.ghostName}'s run`, primary: false });
   out.push({ id: 'board', key: 'B', label: 'leaderboard', primary: false });
   out.push({ id: 'levels', key: 'L', label: 'level select', primary: false });
@@ -400,6 +420,8 @@ export function actionForKey(code: string, actions: ResultAction[]): ActionId | 
       return by('watchRun');
     case 'KeyG':
       return by('watchGhost');
+    case 'KeyA':
+      return by('montage');
     case 'KeyB':
       return 'board';
     case 'KeyL':

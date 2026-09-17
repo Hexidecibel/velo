@@ -101,21 +101,30 @@ export interface GhostMeta {
   rank: number | null;
 }
 
-export interface Ghost {
-  readonly meta: GhostMeta;
-  /** Total input frames in the ghost's run. */
+/**
+ * ONE INPUT STREAM, RIDING ITS OWN SIM. The primitive under both a leaderboard
+ * ghost and a montage rider.
+ *
+ * It exists as its own thing because the montage needs fifty of them and a
+ * montage rider has no name, no rank and no replay id — everything `GhostMeta`
+ * carries. Giving each of the fifty a synthetic meta would have been inventing
+ * a fiction to satisfy a type; splitting the primitive out instead means the
+ * isolation argument above is made ONCE and both callers inherit it.
+ */
+export interface Rider {
+  /** Total input frames in the run. */
   readonly frames: number;
   /** How many have been played. */
   readonly at: number;
-  /** True once the ghost's run has ended — it stops, it does not vanish. */
+  /** True once the run has ended — it stops, it does not vanish. */
   readonly done: boolean;
-  /** Ticks the ghost's run took, for the label. */
-  readonly timeTicks: number;
-  /** Which way the ghost's own bike is facing. NOT the player's. */
+  /** Which way this bike is facing. Its own, never the player's. */
   readonly facing: number;
-  /** True once the ghost's own sim reports the run over. */
+  /** True once this rider's own sim reports the run finished. */
   readonly finished: boolean;
-  /** Where the ghost's chassis is, for the gap readout. Read-only, obviously. */
+  /** True once this rider's own sim reports the head hit something. */
+  readonly dead: boolean;
+  /** Where the chassis is. Read-only, obviously. */
   readonly x: number;
   readonly y: number;
   advance(): void;
@@ -124,14 +133,14 @@ export interface Ghost {
 }
 
 /**
- * Build a ghost. Throws on an incompatible replay rather than quietly drawing
- * something wrong — call `ghostCompat` first; the UI does.
+ * Build a rider from a decoded input stream.
+ *
+ * NO COMPATIBILITY CHECK HERE, deliberately: this takes masks, not a replay, so
+ * it has nothing to check them against. Every caller that starts from a
+ * `Replay` must run `ghostCompat` first — `createGhost` does, and `montage.ts`
+ * filters on exactly the same three fields before it gets this far.
  */
-export function createGhost(level: Level, spec: BikeSpec, replay: Replay, meta: GhostMeta): Ghost {
-  const compat = ghostCompat(level, spec, replay);
-  if (!compat.ok) throw new Error(compat.reason);
-
-  const masks = decodeInputs(replay.inputs);
+export function createRider(level: Level, spec: BikeSpec, masks: readonly number[]): Rider {
   // Its own sim, built from the same level and spec the player is riding.
   // `createWorld` clones the spec, so this shares no mutable object with the
   // player's bike; the level is read-only to both.
@@ -140,9 +149,7 @@ export function createGhost(level: Level, spec: BikeSpec, replay: Replay, meta: 
   let at = 0;
 
   return {
-    meta,
     frames: masks.length,
-    timeTicks: replay.timeTicks,
     get at() {
       return at;
     },
@@ -154,6 +161,9 @@ export function createGhost(level: Level, spec: BikeSpec, replay: Replay, meta: 
     },
     get finished() {
       return sim.state.finished;
+    },
+    get dead() {
+      return sim.state.dead;
     },
     get x() {
       return sim.state.px;
@@ -178,12 +188,62 @@ export function createGhost(level: Level, spec: BikeSpec, replay: Replay, meta: 
     },
 
     pose(alpha: number): Pose {
-      // A finished ghost interpolates against itself, which pins it at its final
-      // pose. Stopping where it stopped is the point: the cluster of ghosts
-      // halted at the hard part IS the story, and a ghost that vanished at its
+      // A finished rider interpolates against itself, which pins it at its final
+      // pose. Stopping where it stopped is the point: the cluster of bikes
+      // halted at the hard part IS the story, and one that vanished at its
       // death tick would erase it.
       return interpolate(prev, sim.state, at >= masks.length ? 1 : alpha);
     },
+  };
+}
+
+export interface Ghost extends Rider {
+  readonly meta: GhostMeta;
+  /** Ticks the ghost's run took, for the label. */
+  readonly timeTicks: number;
+}
+
+/**
+ * Build a ghost. Throws on an incompatible replay rather than quietly drawing
+ * something wrong — call `ghostCompat` first; the UI does.
+ */
+export function createGhost(level: Level, spec: BikeSpec, replay: Replay, meta: GhostMeta): Ghost {
+  const compat = ghostCompat(level, spec, replay);
+  if (!compat.ok) throw new Error(compat.reason);
+  const rider = createRider(level, spec, decodeInputs(replay.inputs));
+  // Delegated property by property rather than spread. Every live field on a
+  // Rider is a GETTER, and `{ ...rider }` would copy the values they happened
+  // to have at construction — a ghost frozen at frame 0 that still claimed to
+  // be advancing. Ghost is Rider plus two constants, and this is the whole of
+  // the difference.
+  return {
+    meta,
+    timeTicks: replay.timeTicks,
+    frames: rider.frames,
+    get at() {
+      return rider.at;
+    },
+    get done() {
+      return rider.done;
+    },
+    get facing() {
+      return rider.facing;
+    },
+    get finished() {
+      return rider.finished;
+    },
+    get dead() {
+      return rider.dead;
+    },
+    get x() {
+      return rider.x;
+    },
+    get y() {
+      return rider.y;
+    },
+    advance: () => rider.advance(),
+    reset: () => rider.reset(),
+    pose: (alpha: number) => rider.pose(alpha),
   };
 }
 

@@ -91,6 +91,18 @@ export interface Attempt {
  */
 export const MAX_ATTEMPTS = 200;
 
+/**
+ * Below this, nothing happened and it was not an attempt.
+ *
+ * 32 input frames is a quarter of a second. It exists because the third kind of
+ * attempt — the one you GAVE UP ON by pressing R — is banked from the restart
+ * path, and a die-and-retry player taps R twice in a row often enough that
+ * without a floor the log fills with three-frame stubs of a bike falling off
+ * the start line. Deaths and finishes are banked whatever their length; they
+ * ended something.
+ */
+export const MIN_BANKED_FRAMES = 32;
+
 export interface AttemptLog {
   readonly all: readonly Attempt[];
   /** Attempts on one level, oldest first. Keyed by simHash — the level's identity. */
