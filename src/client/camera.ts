@@ -67,7 +67,19 @@ export const DEFAULT_CAMERA: CameraParams = {
   // 38 px/m puts the 1.7 m bike at ~65 px and the 0.25 m wheel at ~10 px, which
   // is the point where a wheel-sized gap in the floor is still unmistakable.
   minZoom: 38,
-  maxZoom: 110,
+  // Raised from 110 on request — the user wants room to get close, and manual
+  // zoom with +/- is a feature rather than a debug affordance.
+  //
+  // Cheap in both directions. Higher zoom means LESS world on screen, so fewer
+  // edges and fewer art chunks to draw: the Phase 1 bench measured the art at
+  // 110 px/m costing less than at 62, not more. And the bike's detail tiers have
+  // headroom — at 150 px/m a wheel is 37.5 px against a fine-detail threshold of
+  // about 12, so nothing changes tier.
+  //
+  // `minZoom` is the one that must not move: it is the readability floor that
+  // keeps the collision edge legible while driving, and the bike's LOD dead
+  // bands are derived from it.
+  maxZoom: 150,
   zoomFromSpeed: 6,
   zoomToSpeed: 20,
   zoomOutHalfLife: 0.35,
