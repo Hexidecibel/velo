@@ -15,8 +15,11 @@ import { parseLevel } from '@/sim/level.ts';
 import { cloneSpec, DEFAULT_SPEC } from '@/sim/spec.ts';
 import { IN_BRAKE, IN_FLIP, IN_LEAN_L, IN_LEAN_R, IN_MASK, IN_THROTTLE } from '@/sim/consts.ts';
 import { createInput } from './input.ts';
-import { hitZone, slideZone, touchZones, wantsTouch, zoneMask } from './touch.ts';
-import type { ZoneId } from './touch.ts';
+import {
+  PINCH_DEAD, PINCH_MIN_SPREAD, hitZone, pinchPair, pinchScale, playAreaPointers, slideZone,
+  spread, touchZones, wantsTouch, zoneMask, zoomLabel,
+} from './touch.ts';
+import type { Pointer, ZoneId } from './touch.ts';
 
 /** A landscape phone, in CSS pixels. */
 const W = 844;
@@ -290,5 +293,134 @@ describe('a touch run is the same kind of thing as a keyboard run', () => {
     expect(input.mask()).toBe(0);
     input.detach();
     if (!had) delete g.window;
+  });
+});
+
+
+describe('the pinch, against a game where two fingers is the normal case', () => {
+  // THE HARD PART HERE IS NOT THE ARITHMETIC. Gas and lean is most of the game
+  // and gas, lean and flip is three fingers, so a recogniser that watched raw
+  // touch points would fire constantly while driving. The rule is structural:
+  // a pointer that LANDED ON A PAD is a control for as long as it is down, so
+  // controls and gesture fingers are disjoint sets and neither can take the
+  // other's input away. All of that is decidable from plain objects, which is
+  // the half that would actually have gone wrong.
+  const Z = touchZones(false);
+  const at = (id: number, fx: number, fy: number): Pointer => ({ id, x: fx * W, y: fy * H });
+  const free = (pts: Pointer[]) => playAreaPointers(Z, pts, W, H);
+
+  // Where the thumbs actually are, in ordinary play.
+  const GAS = at(1, 0.92, 0.80);
+  const LEAN_L = at(2, 0.05, 0.80);
+  const LEAN_R = at(3, 0.22, 0.80);
+  const FLIP = at(4, 0.80, 0.35);
+
+  it('is NOT two thumbs on the pads — which is how this game is played', () => {
+    expect(free([GAS, LEAN_L])).toEqual([]);
+    expect(free([GAS, LEAN_R])).toEqual([]);
+    expect(free([GAS, LEAN_L, FLIP])).toEqual([]);
+    expect(pinchPair(free([GAS, LEAN_L]))).toBe(null);
+    expect(pinchPair(free([GAS, LEAN_L, FLIP]))).toBe(null);
+  });
+
+  it('is NOT a thumb on the gas plus one stray touch in the play area', () => {
+    // One free finger is not a gesture, however far it moves.
+    const stray = at(5, 0.5, 0.5);
+    expect(free([GAS, stray])).toEqual([stray]);
+    expect(pinchPair(free([GAS, stray]))).toBe(null);
+  });
+
+  it('is NOT two fingers that happen to land next to each other', () => {
+    // A hand resting, a palm edge, or the two-finger tap somebody uses to skip
+    // the opening peek. Dividing by a tiny starting spread is also what makes a
+    // jittery gesture multiply the zoom by ten.
+    const a: Pointer = { id: 6, x: 400, y: 200 };
+    const b: Pointer = { id: 7, x: 400 + PINCH_MIN_SPREAD - 1, y: 200 };
+    expect(pinchPair(free([a, b]))).toBe(null);
+    b.x = 400 + PINCH_MIN_SPREAD + 1;
+    expect(pinchPair(free([a, b]))).not.toBe(null);
+  });
+
+  it('IS two fingers that both started in the play area, and nothing else', () => {
+    const a = at(8, 0.35, 0.30);
+    const b = at(9, 0.60, 0.30);
+    const pair = pinchPair(free([a, b]));
+    expect(pair).not.toBe(null);
+    expect(pair!.map((p) => p.id)).toEqual([8, 9]);
+  });
+
+  it('cannot be started by a thumb that slid OFF a pad into the play area', () => {
+    // The latch: a drifting thumb keeps the throttle, which means it is still a
+    // control and still not a pinch finger. It never enters the free set at
+    // all, because that is decided once, where the finger landed.
+    const drifted = at(10, 0.5, 0.2);
+    expect(slideZone(Z, 'throttle', drifted.x, drifted.y, W, H)).toBe('throttle');
+    const other = at(11, 0.3, 0.2);
+    // Only the one that landed in the play area is a candidate; the drifted
+    // thumb is held by the pad, not by this list.
+    expect(pinchPair(free([other]))).toBe(null);
+  });
+
+  it('is not disturbed by a third finger arriving, on a pad or off one', () => {
+    // A gesture that died because of a knuckle would be the same silent failure
+    // the pads were designed to avoid. `pinchPair` is consulted at the START
+    // and never again; the pair is tracked by id from there.
+    const a = at(12, 0.35, 0.30);
+    const b = at(13, 0.60, 0.30);
+    const pair = pinchPair(free([a, b]))!;
+    expect(pair).not.toBe(null);
+    // and the pads keep working meanwhile: the mask is over held ZONES, which
+    // the gesture never touches.
+    expect(zoneMask(['throttle', 'leanR'], false)).toBe(IN_THROTTLE | IN_LEAN_R);
+  });
+
+  it('does nothing until the fingers have actually moved, and then moves smoothly', () => {
+    // A RUBBER BAND, not a threshold that arms: the scale is continuous across
+    // the edge of the dead band, so the picture cannot jump at the moment the
+    // gesture is recognised.
+    const d0 = 200;
+    expect(pinchScale(d0, d0)).toBe(1);
+    expect(pinchScale(d0, d0 * (1 + PINCH_DEAD))).toBe(1);
+    expect(pinchScale(d0, d0 * (1 - PINCH_DEAD))).toBe(1);
+    expect(pinchScale(d0, d0 * (1 + PINCH_DEAD + 1e-9))).toBeCloseTo(1, 6);
+    expect(pinchScale(d0, d0 * (1 - PINCH_DEAD - 1e-9))).toBeCloseTo(1, 6);
+    // Spread to zoom in, pinch to zoom out — the universal direction.
+    expect(pinchScale(d0, d0 * 2)).toBeGreaterThan(1.7);
+    expect(pinchScale(d0, d0 * 0.5)).toBeLessThan(0.6);
+    // Monotone, so the picture tracks the fingers rather than lagging them.
+    let prev = 0;
+    for (let d = 40; d < 600; d += 10) {
+      const k = pinchScale(d0, d);
+      expect(k).toBeGreaterThanOrEqual(prev);
+      prev = k;
+    }
+  });
+
+  it('survives nonsense without producing nonsense', () => {
+    // Two pointers reported at the same place, a zero spread, a lifted finger
+    // still in the list: none of these may produce a NaN zoom.
+    expect(pinchScale(0, 100)).toBe(1);
+    expect(pinchScale(100, 0)).toBe(1);
+    expect(spread({ id: 0, x: 3, y: 4 }, { id: 1, x: 0, y: 0 })).toBe(5);
+  });
+
+  it('prints what it is doing, and the pad that undoes it is always there', () => {
+    // A gesture that goes wrong mid-run needs a way back that is not another
+    // gesture — and the pad is also the only thing on the screen that says
+    // pinch exists at all.
+    const z = touchZones(false, 1.4);
+    const pad = z.find((x) => x.id === 'zoom')!;
+    expect(pad.command).toBe(true);
+    expect(pad.label).toBe('zoom 1.4\u00d7');
+    expect(zoomLabel(1)).toBe('zoom 1.0\u00d7');
+    // Present in both modes, because it is never rebuilt: rebuilding the
+    // overlay mid-run drops pointer capture and would release a held throttle.
+    expect(touchZones(true).some((x) => x.id === 'zoom')).toBe(true);
+    // A command, so it cannot be slid into by a thumb on its way somewhere and
+    // it contributes no sim bit.
+    expect(slideZone(z, 'leanL', pad.x * W + 4, pad.y * H + 4, W, H)).toBe('leanL');
+    expect(zoneMask(['zoom'], false)).toBe(0);
+    // And it is out of the play area, so it cannot be half of a pinch.
+    expect(hitZone(z, (pad.x + pad.w / 2) * W, (pad.y + pad.h / 2) * H, W, H)).toBe('zoom');
   });
 });

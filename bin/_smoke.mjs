@@ -772,14 +772,104 @@ try {
   `);
   console.log('    touch: ' + JSON.stringify(tc));
   if (!tc.visible || !tc.bodyClass) throw new Error('?touch=1 did not bring the touch controls up');
-  for (const want of ['tc-throttle', 'tc-brake', 'tc-leanL', 'tc-leanR', 'tc-flip', 'tc-restart']) {
+  for (const want of ['tc-throttle', 'tc-brake', 'tc-leanL', 'tc-leanR', 'tc-flip', 'tc-restart', 'tc-zoom']) {
     if (!tc.ids.includes(want)) throw new Error(`the touch overlay is missing ${want} (${tc.ids})`);
   }
   // Thumbs cover the bottom corners, which is where a grounded bike sits when
-  // the camera centres it; and 1.7 m of bike on a phone is under two
-  // centimetres. Both corrections have to actually be in force.
+  // the camera centres it, so the bias has to actually be in force.
   if (!(tc.biasY > 0)) throw new Error('the touch camera did not bias the bike up the frame');
-  if (!(tc.zoomBias > 1)) throw new Error('the touch camera did not zoom in for a small screen');
+  // AND THE ZOOM IS NOT TOUCHED. There used to be a 1.25x zoom-IN here, on the
+  // reasoning that the bike looks small on a phone. The bike was never the
+  // problem: a fixed px/m showed a phone less than half the level a desktop
+  // saw, and zooming in made that worse. The framing is derived from the
+  // viewport for everybody now, and the manual bias starts at 1.
+  if (tc.zoomBias !== 1) throw new Error(`the touch camera moved the manual zoom bias (${tc.zoomBias})`);
+
+  // --- the framing follows the viewport ------------------------------------
+  //
+  // The derivation is unit-tested in plain node; what cannot be tested there is
+  // that a REAL resize reaches it. The camera reads the canvas every frame
+  // rather than listening for anything, so an emulated phone is the honest test
+  // of the case that matters — a rotated phone, an address bar collapsing, a
+  // keyboard sliding up — and it proves the easing lands somewhere sane too.
+  const framing = async (label) => {
+    const f = await evalIn(cdp, `
+      (() => {
+        const w = document.getElementById('view').clientWidth;
+        return { w, zoom: window.velo.cam.zoom, metres: w / window.velo.cam.zoom };
+      })()
+    `);
+    console.log(`    framing ${label}: ` + JSON.stringify(f));
+    return f;
+  };
+  // THE OPENING PEEK IS AN OVERVIEW, and the overview is the one thing allowed
+  // to ignore the readability floor. Measuring the play framing while it is
+  // still easing in measures the wrong camera entirely.
+  await evalIn(cdp, `(() => { window.velo.overview.skipIntro(); return 1; })()`);
+  await new Promise((r) => setTimeout(r, 2000));
+  const wide = await framing('desktop');
+  await cdp.send('Emulation.setDeviceMetricsOverride', {
+    width: 844, height: 390, deviceScaleFactor: 2, mobile: true,
+  });
+  await new Promise((r) => setTimeout(r, 2000));
+  const phone = await framing('844x390');
+
+  // --- the pinch, driven by two real fingers -------------------------------
+  //
+  // Which pointers constitute a pinch is unit-tested in plain node, because
+  // that is the part that would actually go wrong. What node cannot see is the
+  // wiring, and it is unusually easy to get silently wrong here: the overlay is
+  // `pointer-events: none`, so a play-area touch never reaches its handlers at
+  // all and the gesture has to be recognised on the window — with a filter that
+  // keeps it off the canvas's own panels. A typo in that filter is a feature
+  // that simply never fires, on a device the developer is not holding.
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+  const finger = (x, y, id) => ({ x, y, id, radiusX: 8, radiusY: 8, force: 1 });
+  const touchSeq = async (frames) => {
+    for (const [type, points] of frames) {
+      await cdp.send('Input.dispatchTouchEvent', { type, touchPoints: points });
+      await new Promise((r) => setTimeout(r, 60));
+    }
+  };
+  // Both fingers land in the play area, well clear of every pad, and spread
+  // from 200 px apart to 440.
+  await touchSeq([
+    ['touchStart', [finger(300, 80, 1), finger(500, 80, 2)]],
+    ['touchMove', [finger(260, 80, 1), finger(560, 80, 2)]],
+    ['touchMove', [finger(200, 80, 1), finger(640, 80, 2)]],
+    ['touchEnd', []],
+  ]);
+  const pinched = await evalIn(cdp, `
+    (() => ({ bias: window.velo.cam.zoomBias, label: document.querySelector('.tc-zoom span').textContent }))()
+  `);
+  console.log('    pinch: ' + JSON.stringify(pinched));
+  if (!(pinched.bias > 1.5)) throw new Error(`a two-finger spread did not zoom (bias ${pinched.bias})`);
+  if (!pinched.label.includes(pinched.bias.toFixed(1))) {
+    throw new Error(`the zoom pad printed ${pinched.label} for a bias of ${pinched.bias}`);
+  }
+  // And the way back, which is the whole reason the pad is there: a gesture
+  // that went wrong mid-run must not need another gesture to undo it.
+  await touchSeq([
+    ['touchStart', [finger(63, 88, 3)]],
+    ['touchEnd', []],
+  ]);
+  const reset = await evalIn(cdp, `window.velo.cam.zoomBias`);
+  console.log('    zoom reset: ' + reset);
+  if (reset !== 1) throw new Error(`the zoom pad did not reset the zoom (${reset})`);
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  await cdp.send('Emulation.clearDeviceMetricsOverride');
+  if (!(phone.w > 800 && phone.w < 900)) throw new Error(`the canvas did not follow the viewport (${phone.w}px)`);
+  // The numbers the fix is FOR: a landscape phone used to see 10.9 m of level
+  // against a desktop's 25.8. Anything in this band is the derivation working;
+  // outside it is either the old fixed px/m or a floor that has been quietly
+  // lowered to make the number look good.
+  if (!(phone.metres > 15 && phone.metres < 24)) {
+    throw new Error(`a phone-sized viewport framed ${phone.metres.toFixed(1)} m of level`);
+  }
+  if (!(wide.metres > phone.metres)) throw new Error('the wider viewport did not show more world');
+  if (!(wide.metres / phone.metres < wide.w / phone.w)) {
+    throw new Error('the framing scaled with the viewport as if the zoom were still fixed');
+  }
 
   cdp.close();
 } catch (e) {

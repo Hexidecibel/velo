@@ -133,6 +133,27 @@ export function saveFlag(name: string, on: boolean): void {
 }
 
 /**
+ * A remembered NUMBER, validated on the way back.
+ *
+ * The zoom bias is the one of these: screens differ, people differ, and a
+ * player who found their zoom should not have to find it again on every load.
+ * It is clamped by the CALLER against the camera's own range rather than here,
+ * because what is a legal zoom depends on the viewport — and a value stored on
+ * a tablet must not be able to put a phone below the readability floor.
+ */
+export function loadNum(name: string, dflt: number): number {
+  const v = read(`num.${name}`);
+  if (v === null) return dflt;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : dflt;
+}
+
+export function saveNum(name: string, value: number): void {
+  if (!Number.isFinite(value)) return;
+  write(`num.${name}`, String(value));
+}
+
+/**
  * A remembered choice from a fixed set — the leaderboard category, which ghost
  * to race. Validated against `allowed` on the way back rather than trusted,
  * because a value stored by an older build (or by hand, in devtools) must not

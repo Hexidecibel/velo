@@ -232,7 +232,7 @@ const BIKE_GROUPS: Group<BikeSpec>[] = [
 const CAMERA_GROUPS: Group<CameraParams>[] = [
   {
     title: 'Camera',
-    why: 'Not physics — the sim never sees any of this, and it must not, or a time would depend on how somebody framed their screen. The one rule that outranks framing: the collision edge must stay readable, so min zoom is a hard floor.',
+    why: 'Not physics — the sim never sees any of this, and it must not, or a time would depend on how somebody framed their screen. The unit that matters is METRES OF WORLD ON SCREEN, not px/m: the base zoom is an anchor measured on one window width and every other viewport derives from it, so a phone and an ultrawide see comparable amounts of level. The one rule that outranks that: the collision edge must stay readable, so min zoom is a hard floor and a narrow screen sees less world rather than a mushier edge.',
     fields: [
       {
         label: 'follow half-life (s)', min: 0.01, max: 0.6, step: 0.005,
@@ -259,12 +259,23 @@ const CAMERA_GROUPS: Group<CameraParams>[] = [
         get: (c) => c.maxLeadY, set: (c, v) => { c.maxLeadY = v; },
       },
       {
-        label: 'base zoom (px/m)', min: 20, max: 140, step: 1,
+        label: 'base zoom (px/m @ ref)', min: 20, max: 140, step: 1,
+        hint: 'An ANCHOR, not the zoom: px/m on a reference-width window. Every other viewport derives from it, so what the number really sets is how many metres of level are on screen — 1600 / 62 = 25.8 m, which is what the levels were authored at.',
         get: (c) => c.baseZoom, set: (c, v) => { c.baseZoom = v; },
       },
       {
+        label: 'reference width (px)', min: 320, max: 3840, step: 10,
+        hint: 'The window width the base zoom was measured on. 1600 px, because that is the window all twenty levels were played at while they were being tuned.',
+        get: (c) => c.refWidth, set: (c, v) => { c.refWidth = v; },
+      },
+      {
+        label: 'viewport exponent', min: 0, max: 1, step: 0.05,
+        hint: '0 = fixed px/m, so a phone sees half the level a desktop does (this is what was wrong). 1 = fixed world width, which asks a phone for less than the readability floor. 0.5 is the geometric mean of "same level visible" and "same apparent size", and it is what ships.',
+        get: (c) => c.widthExp, set: (c, v) => { c.widthExp = v; },
+      },
+      {
         label: 'MIN zoom (px/m)', min: 20, max: 140, step: 1,
-        hint: 'The readability floor and the highest-priority rule here. Below ~34 the 1.7 m bike is under 58 px and you are guessing at clearances.',
+        hint: 'The readability floor and the highest-priority rule here. Below ~34 the 1.7 m bike is under 58 px and you are guessing at clearances. It is also the ratio the speed zoom-out uses: min/base is how far out speed takes you on ANY viewport, floored by this same number.',
         get: (c) => c.minZoom, set: (c, v) => { c.minZoom = v; },
       },
       {

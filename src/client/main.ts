@@ -33,7 +33,7 @@ import { createThumbs } from './thumbs.ts';
 import { persistentBadges } from './hudmode.ts';
 import type { HudWarnState } from './hudmode.ts';
 import { downloadReplay, onReplayDropped, pickReplay } from './replayio.ts';
-import { clearStoredSpec, loadBests, loadChoice, loadFlag, loadLastLevel, loadStoredSpec, recordBest, saveChoice, saveFlag, saveLastLevel, saveStoredSpec } from './store.ts';
+import { clearStoredSpec, loadBests, loadChoice, loadFlag, loadLastLevel, loadNum, loadStoredSpec, recordBest, saveChoice, saveFlag, saveLastLevel, saveNum, saveStoredSpec } from './store.ts';
 import { fetchBoard, fetchPlayer, fetchReplay, submitRun } from './api.ts';
 import type { BoardEntry, BoardPayload, Category } from './api.ts';
 import { chooseGhost, createGhost, createRider, ghostCompat, ghostNoteFor, GHOST_KINDS, GHOST_LABELS, watchableCategory } from './ghost.ts';
@@ -310,6 +310,12 @@ let results: ResultsState | null = null;
 let resultsModel: ResultsModel | null = null;
 
 const cam = createCamera(cloneCamera(DEFAULT_CAMERA));
+// THE ZOOM IS DERIVED FROM THE VIEWPORT, so the camera needs one before the
+// first snap. Every frame after this sets it again from `resize()`, which is
+// what handles a window drag and a rotated phone; this is only the boot case,
+// and without it the first frame on a phone starts at the desktop's framing and
+// visibly eases out — on the one screen the whole derivation exists for.
+cam.setViewport(canvas.clientWidth);
 cam.snap({ x: level.start.x, y: level.start.y, vx: 0, vy: 0 });
 // Hold-to-overview, and the start-of-level peek. It owns the freeze: while
 // `overview.frozen` is true, `step()` returns before touching the sim, so no
@@ -1740,7 +1746,7 @@ function updateHud(): void {
       (best !== undefined ? `   <span class="k">best</span> ${ticksToSeconds(best).toFixed(3)}s` : ''),
     `<span class="k">speed</span> ${Math.sqrt(s.vx * s.vx + s.vy * s.vy).toFixed(2)} m/s   <span class="k">spin</span> ${s.wspin[0].toFixed(1)} / ${s.wspin[1].toFixed(1)}   <span class="k">ground</span> ${s.grounded === 3 ? 'both' : s.grounded === 1 ? 'rear' : s.grounded === 2 ? 'front' : 'air'}`,
     `<span class="k">keys </span> ${keys}`,
-    `<span class="k">facing</span> ${s.facing > 0 ? '+x' : '-x'}   <span class="k">contacts</span> ${sim.world.contactCount}   <span class="k">zoom</span> ${cam.zoom.toFixed(0)} px/m   <span class="k">fps</span> ${fps.toFixed(0)}` +
+    `<span class="k">facing</span> ${s.facing > 0 ? '+x' : '-x'}   <span class="k">contacts</span> ${sim.world.contactCount}   <span class="k">zoom</span> ${cam.zoom.toFixed(0)} px/m (${(canvas.clientWidth / Math.max(cam.zoom, 1e-6)).toFixed(1)} m${cam.zoomBias === 1 ? '' : `, ${cam.zoomBias.toFixed(2)}\u00d7`})   <span class="k">fps</span> ${fps.toFixed(0)}` +
     `   <span class="k">worst</span> ${worstMs.toFixed(1)}ms` +
     (overCount > 0 ? `   <span class="bad">${overCount} dropped</span>` : ''),
     '',
@@ -2266,18 +2272,29 @@ panel.setTuned(specIsTuned);
  * the frame moves it into the clear, and the ground it is about to hit comes
  * with it.
  *
- * `zoomBias` — the bike is 1.7 m at a 62 px/m base camera, and on a 12 cm-wide
- * screen that is under two centimetres of actual bike. The collision-edge
- * readability the whole art direction rests on is much harder at that size, so
- * the touch default zooms in. 1.25x is 77 px/m, well inside the range `maxZoom`
- * was raised to 150 for, and +/- still works from there because the bias is a
- * multiplier on the auto zoom rather than a zoom value.
+ * THE ZOOM IS NOT ONE OF THEM ANY MORE, and that was my mistake rather than the
+ * previous agent's. There used to be a `zoomBias: 1.25` here, reasoned from "the
+ * bike is only 6.6% of the screen width, so a phone wants to be closer". The
+ * measurement says the opposite: at 62 px/m a 1600 px desktop sees 25.8 m of
+ * level and an 844 px phone sees 13.6 m, and zooming IN took that to 10.9 m.
+ * The bike being small was never the problem — the phone was being shown less
+ * than half the world, and the fix is that the zoom is now derived from the
+ * viewport for everybody (see `baseZoomFor`). The happy part is that deriving
+ * it makes the bike bigger on a phone anyway, as a consequence rather than as
+ * an aim: ~45 px/m at 844 px is 9.1% of the width against the desktop's 6.6%.
  */
-const TOUCH_CAMERA = { screenBiasY: 0.17, zoomBias: 1.25 };
+const TOUCH_CAMERA = { screenBiasY: 0.17 };
 
 // Remembered, and OFF by default: the plan's own framing is that some people
 // will strongly prefer each, which makes it an option rather than a default.
 const autoThrottleDefault = loadFlag('autothrottle', false);
+// REMEMBERED PER DEVICE, like every other preference here. Screens differ and
+// people differ, so the derived base zoom is a good default rather than an
+// answer — and somebody who found their zoom on a phone should not have to find
+// it again on every load. Clamped against this viewport's range on the way in:
+// a value stored on a tablet must not be able to put a phone below the
+// readability floor.
+const storedZoom = loadNum('zoomBias', 1);
 const touch = createTouch(
   touchRoot,
   {
@@ -2295,17 +2312,44 @@ const touch = createTouch(
         'controls',
       );
     },
+    // The pinch, and the zoom pad's reset. The gesture asks; the camera decides,
+    // because what is a legal zoom depends on the viewport and on the
+    // readability floor. What it decided is what the pad prints.
+    onZoom: (bias) => applyZoom(bias),
+    // Persisted when the fingers come off and not before: a pinch fires this
+    // path on every pointermove, and writing localStorage sixty times a second
+    // for a value nobody has finished choosing is not a preference, it is a
+    // syscall in the frame budget.
+    onZoomEnd: () => saveNum('zoomBias', cam.zoomBias),
   },
   {
     enabled: wantsTouch(location.search, (q) => window.matchMedia(q).matches),
     autoThrottle: autoThrottleDefault,
+    zoom: storedZoom,
+    // The play area IS the canvas. A pinch finger has to have landed on it, so
+    // a two-finger gesture on the results screen, the level chooser or the
+    // level bar stays theirs.
+    surface: canvas,
   },
 );
+
+/**
+ * One way in for every manual zoom — the keys, the pinch and the reset pad.
+ *
+ * The bias is clamped against the zoom range ON THIS VIEWPORT rather than to a
+ * fixed 0.35..3, so the gesture stops exactly where the picture does instead of
+ * banking travel it has to give back. Returns what was applied.
+ */
+function applyZoom(bias: number): number {
+  const applied = cam.setZoomBias(bias);
+  touch.setZoom(applied);
+  return applied;
+}
+applyZoom(storedZoom);
 // ONE mask, assembled in one place. See `Input.addSource`.
 input.addSource(() => touch.mask());
 if (touch.enabled) {
   cam.params.screenBiasY = TOUCH_CAMERA.screenBiasY;
-  cam.zoomBias = TOUCH_CAMERA.zoomBias;
   panel.sync();
 }
 
@@ -2448,12 +2492,19 @@ input.onCommand((code) => {
     case 'Equal':
     case 'NumpadAdd':
       // A bias on top of the auto zoom rather than a zoom value, so the
-      // speed-driven zoom keeps working around whatever you chose.
-      cam.zoomBias = Math.min(3, cam.zoomBias * 1.15);
+      // speed-driven zoom keeps working around whatever you chose. The same
+      // variable the pinch drives — one concept, two ways to say it.
+      saveNum('zoomBias', applyZoom(cam.zoomBias * 1.15));
       break;
     case 'Minus':
     case 'NumpadSubtract':
-      cam.zoomBias = Math.max(0.35, cam.zoomBias / 1.15);
+      saveNum('zoomBias', applyZoom(cam.zoomBias / 1.15));
+      break;
+    case 'Digit0':
+    case 'Numpad0':
+      // The way back. A zoom that went wrong is annoying to undo by feel, and
+      // it is remembered, so without this it is wrong on the next load too.
+      saveNum('zoomBias', applyZoom(1));
       break;
     default:
       break;

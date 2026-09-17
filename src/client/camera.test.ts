@@ -6,7 +6,10 @@
 // are correctness, and both are silently broken by the obvious implementation
 // (a fixed per-frame lerp with no clamp).
 import { describe, it, expect } from 'vitest';
-import { DEFAULT_CAMERA, MAX_SCREEN_BIAS, cloneCamera, createCamera } from './camera.ts';
+import {
+  BIAS_MAX, BIAS_MIN, DEFAULT_CAMERA, MAX_SCREEN_BIAS, baseZoomFor, clampZoomBias, cloneCamera,
+  createCamera, wideZoomFor,
+} from './camera.ts';
 
 const VIEW = { w: 1200, h: 800 };
 
@@ -194,5 +197,165 @@ describe('the thumb bias', () => {
       cam.update(t, 1 / 60, VIEW.w, VIEW.h, { x: 0, y: 20, zoom: 10, blend: 1 });
     }
     expect(cam.y).toBeCloseTo(20, 6);
+  });
+});
+
+
+describe('the framing is metres of world, not pixels per metre', () => {
+  // THE BUG THIS REPLACES: a fixed px/m answers "how big is the bike", which is
+  // not a question anybody asks while playing. "How much of the level can I
+  // see" is, and at 62 px/m the answer depended entirely on the window — 25.8 m
+  // on the 1600 px desktop the levels were authored at, 55.5 m on an ultrawide
+  // and 13.6 m on a landscape phone. Nobody chose the second two, and the third
+  // is the one a player reported as hard to play.
+  const P = DEFAULT_CAMERA;
+  const metres = (cssW: number) => cssW / baseZoomFor(P, cssW);
+
+  it('is EXACTLY unchanged at the reference viewport', () => {
+    // The whole scheme is anchored on one measured, human-approved framing. If
+    // this moves, every level was tuned against a camera that no longer exists.
+    expect(baseZoomFor(P, P.refWidth)).toBeCloseTo(P.baseZoom, 9);
+    expect(metres(1600)).toBeCloseTo(25.806, 3);
+  });
+
+  it('shows a phone MORE of the level than it used to, not less', () => {
+    // The mistake being undone: the touch camera used to multiply the zoom by
+    // 1.25, which took an 844 px phone from 13.6 m to 10.9 m — under half the
+    // desktop's 25.8 m. Deriving it gives ~18.7 m instead.
+    expect(metres(844)).toBeGreaterThan(17);
+    expect(metres(844)).toBeLessThan(21);
+    // And the happy consequence nobody asked for: the bike is a LARGER fraction
+    // of a small screen than of the desktop, because the phone gave up some
+    // world rather than all of it.
+    const bikeOnPhone = 1.7 * baseZoomFor(P, 844) / 844;
+    const bikeOnDesktop = 1.7 * baseZoomFor(P, 1600) / 1600;
+    expect(bikeOnPhone).toBeGreaterThan(bikeOnDesktop);
+  });
+
+  it('is monotone: a wider screen always sees more world, and never proportionally more', () => {
+    // Between the two extremes and committed to neither. Fixed px/m would make
+    // the ratio equal to the width ratio; fixed world width would make it 1.
+    let prev = 0;
+    for (const w of [390, 780, 844, 1024, 1280, 1600, 1920, 2560, 3440]) {
+      const m = metres(w);
+      expect(m).toBeGreaterThanOrEqual(prev - 1e-9);
+      prev = m;
+    }
+    expect(metres(3440) / metres(1600)).toBeLessThan(3440 / 1600);
+    expect(metres(3440) / metres(1600)).toBeGreaterThan(1);
+  });
+
+  it('lets the READABILITY FLOOR win on a screen too narrow to satisfy', () => {
+    // The floor outranks framing, and this is where that gets paid for: a
+    // portrait phone would want 31 px/m and gets 38, so it sees LESS world than
+    // the rule asked for rather than a mushier collision edge.
+    expect(P.baseZoom * Math.pow(390 / P.refWidth, P.widthExp)).toBeLessThan(P.minZoom);
+    expect(baseZoomFor(P, 390)).toBe(P.minZoom);
+    for (const w of [200, 390, 844, 1600, 5120, 0, -1]) {
+      expect(baseZoomFor(P, w)).toBeGreaterThanOrEqual(P.minZoom);
+      expect(baseZoomFor(P, w)).toBeLessThanOrEqual(P.maxZoom);
+    }
+  });
+
+  it('keeps the speed zoom-out proportional instead of aiming at a fixed number', () => {
+    // `minZoom` was both the floor AND what speed zoomed out to, which was one
+    // number only because there was one base zoom. Left fixed, an ultrawide
+    // would zoom out 2.4x at speed and show 90 m of level.
+    expect(wideZoomFor(P, P.refWidth)).toBeCloseTo(P.minZoom, 9);
+    const ratio = (w: number) => baseZoomFor(P, w) / wideZoomFor(P, w);
+    expect(ratio(3440)).toBeCloseTo(ratio(1600), 6);
+    // On a phone the floor takes most of it away, which is the floor doing its
+    // job rather than a bug: there is no room below 38 px/m to zoom out into.
+    expect(wideZoomFor(P, 844)).toBe(P.minZoom);
+    expect(ratio(844)).toBeLessThan(ratio(1600));
+  });
+
+  it('follows a resize and a rotation without being told', () => {
+    // The common case on a phone, and it arrives through `update` like
+    // everything else: the viewport is an input to the zoom on every frame, so
+    // a rotation EASES rather than jumping, and nothing has to listen.
+    const cam = createCamera(cloneCamera(DEFAULT_CAMERA));
+    cam.setViewport(844);
+    cam.snap({ x: 0, y: 0, vx: 0, vy: 0 });
+    expect(cam.zoom).toBeCloseTo(baseZoomFor(DEFAULT_CAMERA, 844), 6);
+    const t = { x: 0, y: 0, vx: 0, vy: 0 };
+    // Rotated to portrait.
+    cam.update(t, 1 / 60, 390, 844);
+    expect(cam.zoom).toBeGreaterThan(baseZoomFor(DEFAULT_CAMERA, 390));
+    // Ten seconds of frames each way, because easing is the point: a rotation
+    // that snapped the zoom would be the one discontinuity in a camera whose
+    // whole design rule is that there are none.
+    for (let i = 0; i < 600; i++) cam.update(t, 1 / 60, 390, 844);
+    expect(cam.zoom).toBeCloseTo(baseZoomFor(DEFAULT_CAMERA, 390), 2);
+    for (let i = 0; i < 600; i++) cam.update(t, 1 / 60, 844, 390);
+    expect(cam.zoom).toBeCloseTo(baseZoomFor(DEFAULT_CAMERA, 844), 2);
+  });
+
+  it('snaps to the viewport it was told about, not to the reference', () => {
+    // A restart on a phone must not flash the desktop's framing for a few
+    // frames. There is no resize event on a restart, so `snap` has to already
+    // know.
+    const cam = createCamera(cloneCamera(DEFAULT_CAMERA));
+    cam.setViewport(844);
+    cam.snap({ x: 1, y: 2, vx: 0, vy: 0 });
+    expect(cam.zoom).toBeLessThan(DEFAULT_CAMERA.baseZoom);
+    expect(cam.zoom).toBeCloseTo(844 / 18.7, 0);
+  });
+});
+
+describe('the manual zoom bias', () => {
+  // Driven by the +/- keys and by the pinch, which are the same variable on
+  // purpose: a second concept for "the player asked for a different zoom" is
+  // two things to keep in step for no gain.
+  const P = DEFAULT_CAMERA;
+
+  it('clamps against the ZOOM RANGE, not against a fixed pair of numbers', () => {
+    // The old keys clamped the bias to 0.35..3 and let the camera clamp the
+    // zoom afterwards, so the bias could wind up to 3 while the zoom sat pinned
+    // at maxZoom — and then several presses of `-` did nothing at all. A pinch
+    // makes that much worse: the gesture banks travel it has to give back.
+    const hi = clampZoomBias(P, 1600, 99);
+    expect(P.baseZoom * hi).toBeCloseTo(P.maxZoom, 6);
+    const lo = clampZoomBias(P, 1600, 0.01);
+    expect(P.baseZoom * lo).toBeCloseTo(P.minZoom, 6);
+  });
+
+  it('is tighter on a phone, because there is less room under it', () => {
+    // 844 px derives ~45 px/m against a 38 px/m floor, so zooming out has 16%
+    // to give and no more. Saying so is the point: the floor is not quietly
+    // lowered to make a gesture feel better.
+    const lo = clampZoomBias(P, 844, 0.1);
+    expect(baseZoomFor(P, 844) * lo).toBeCloseTo(P.minZoom, 6);
+    expect(lo).toBeGreaterThan(0.8);
+    expect(lo).toBeLessThan(1);
+  });
+
+  it('never leaves the sanity rails', () => {
+    for (const w of [390, 844, 1600, 3440]) {
+      for (const v of [-5, 0, 0.001, 1, 7, 1e9, NaN, Infinity]) {
+        const b = clampZoomBias(P, w, v);
+        expect(Number.isFinite(b)).toBe(true);
+        expect(b).toBeGreaterThanOrEqual(BIAS_MIN);
+        expect(b).toBeLessThanOrEqual(BIAS_MAX);
+      }
+    }
+  });
+
+  it('is applied through the camera, and reports what it actually did', () => {
+    const cam = createCamera(cloneCamera(DEFAULT_CAMERA));
+    cam.setViewport(844);
+    expect(cam.setZoomBias(1.2)).toBeCloseTo(1.2, 9);
+    expect(cam.zoomBias).toBeCloseTo(1.2, 9);
+    // On a phone it is the sanity rail that bites first — a derived 45 px/m
+    // times 3 is still short of the 150 px/m ceiling — and either way the
+    // request is cut down to something the camera can actually show.
+    const asked = cam.setZoomBias(50);
+    expect(asked).toBe(BIAS_MAX);
+    expect(baseZoomFor(DEFAULT_CAMERA, 844) * asked).toBeLessThanOrEqual(DEFAULT_CAMERA.maxZoom);
+    // And it still cannot break the floor, at any speed.
+    cam.setZoomBias(0.01);
+    cam.snap({ x: 0, y: 0, vx: 0, vy: 0 });
+    for (let i = 0; i < 200; i++) cam.update({ x: 0, y: 0, vx: 60, vy: 0 }, 1 / 60, 844, 390);
+    expect(cam.zoom).toBeGreaterThanOrEqual(DEFAULT_CAMERA.minZoom - 1e-9);
   });
 });

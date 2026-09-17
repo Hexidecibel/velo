@@ -13,6 +13,13 @@
 //      where the ground is has failed at the only job that matters. That is why
 //      `minZoom` is a hard floor and not a suggestion: below roughly 30 px/m
 //      the bike is under 50 px long and you are guessing at clearances.
+//   1b. THE UNIT OF FRAMING IS METRES OF WORLD, NOT PIXELS PER METRE. A fixed
+//      px/m shows a 3440 px monitor more than twice the level a 844 px phone
+//      gets, which is a design decision nobody made — and the phone end of it
+//      is the one that hurts, because the level is what you are trying to read.
+//      So `baseZoom` is an anchor measured on ONE viewport and every other
+//      viewport derives from it — see `baseZoomFor`. The floor above still
+//      outranks this: on a narrow screen the floor wins and you see less world.
 //   2. NEVER LOSE THE BIKE. Smoothing is a lag, and a lag during a fast
 //      direction change can put the bike off-screen. `safeBox` is a hard
 //      constraint applied after the smoothing: the bike is never allowed
@@ -39,8 +46,32 @@ export interface CameraParams {
   maxLeadY: number;
   /** Half-life of the lead vector itself. This is what stops a reversal lurching. */
   leadHalfLife: number;
-  /** Pixels per metre when standing still. */
+  /**
+   * Pixels per metre when standing still ON A `refWidth`-WIDE VIEWPORT. It is
+   * an anchor, not the zoom: `baseZoomFor` derives the actual base zoom for
+   * whatever viewport is in front of the player.
+   */
   baseZoom: number;
+  /** The viewport width, in CSS pixels, `baseZoom` was measured on. */
+  refWidth: number;
+  /**
+   * How much a wider viewport is spent on MORE WORLD rather than on a bigger
+   * picture. `zoom = baseZoom * (cssW / refWidth) ** widthExp`, so:
+   *
+   *   0  — fixed px/m. Every screen draws the bike the same size and a phone
+   *        sees half the level a desktop does. This is what was here before.
+   *   1  — fixed world width. Every screen sees exactly `refWidth / baseZoom`
+   *        metres across, and the bike shrinks to nothing on a small screen.
+   *
+   * Neither extreme is right and the answer is not taste: 0 is what a phone
+   * player complained about, and 1 asks a 844 px screen for 33 px/m, which is
+   * below the readability floor — the floor would simply overrule it. 0.5 is
+   * the geometric mean of the two defensible targets (same LEVEL visible as the
+   * desktop reference, and same APPARENT scale as it — a phone subtends about
+   * 55% of the visual angle a monitor does), and it lands within 2% of that
+   * compromise across the range of screens anybody plays this on.
+   */
+  widthExp: number;
   /** HARD floor. Below this the collision edge stops being readable. */
   minZoom: number;
   maxZoom: number;
@@ -91,6 +122,13 @@ export const DEFAULT_CAMERA: CameraParams = {
   maxLeadY: 2.2,
   leadHalfLife: 0.22,
   baseZoom: 62,
+  // MEASURED, NOT CHOSEN. 62 px/m on a 1600 px window is the framing all twenty
+  // levels were authored and played at, and it is the one framing a human has
+  // called good — 25.8 m of world across the screen. Everything else in the
+  // game now derives from that pair, so a phone and an ultrawide are asking the
+  // same question ("how much level is that?") rather than two different ones.
+  refWidth: 1600,
+  widthExp: 0.5,
   // 38 px/m puts the 1.7 m bike at ~65 px and the 0.25 m wheel at ~10 px, which
   // is the point where a wheel-sized gap in the floor is still unmistakable.
   minZoom: 38,
@@ -159,8 +197,23 @@ export interface Camera {
   /** Pixels per metre. */
   zoom: number;
   params: CameraParams;
-  /** Manual zoom bias from the +/- keys, as a multiplier on the auto zoom. */
+  /** Manual zoom bias from the +/- keys and the pinch, as a multiplier. */
   zoomBias: number;
+  /**
+   * Set the manual bias, clamped against the zoom range on the CURRENT
+   * viewport. Returns what was actually applied, which is what the caller
+   * should persist and print — the request and the result differ at the ends.
+   */
+  setZoomBias(v: number): number;
+  /**
+   * Tell the camera how wide the viewport is without driving a frame.
+   *
+   * `update` does this every frame, so this exists for the one case that is not
+   * a frame: `snap` at boot, before anything has been drawn. Without it the
+   * first frame on a phone would start at the desktop's zoom and visibly ease
+   * out, which looks like a bug on the one screen the derivation exists for.
+   */
+  setViewport(cssW: number): void;
   /** Place the camera on the target immediately. Restart, level change, load. */
   snap(t: CameraTarget): void;
   /** One rendered frame. `dt` in seconds; never the sim's dt. */
@@ -182,6 +235,76 @@ export function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
 
+/**
+ * The most and least the manual zoom may be asked for, before the readability
+ * floor and the ceiling get their say. They are a sanity rail on the gesture
+ * and the keys, not the real limit — `clampZoomBias` is.
+ */
+export const BIAS_MIN = 0.35;
+export const BIAS_MAX = 3;
+
+/**
+ * THE BASE ZOOM FOR A PARTICULAR SCREEN, and the whole of fix 1.
+ *
+ * A camera parameterised in pixels-per-metre answers "how big is the bike",
+ * which is not the question anybody asks while playing. The question is "how
+ * much of the level can I see", and the answer used to depend entirely on how
+ * wide the window happened to be: at a fixed 62 px/m a 1600 px desktop saw
+ * 25.8 m, a 3440 px ultrawide saw 55.5 m and a landscape phone saw 13.6 m of
+ * the same level. Two of those three nobody chose.
+ *
+ * So the anchor is a MEASURED pair — `baseZoom` px/m at `refWidth` CSS px — and
+ * every other viewport is derived from it by `widthExp`. Clamped to the same
+ * floor and ceiling as everything else, because the floor outranks framing: on
+ * a viewport narrow enough to demand less than `minZoom`, the floor wins and
+ * the player sees less world rather than a mushier edge.
+ */
+export function baseZoomFor(p: CameraParams, cssW: number): number {
+  const ref = p.refWidth > 0 ? p.refWidth : 1600;
+  const w = cssW > 0 ? cssW : ref;
+  const scale = Math.pow(w / ref, clamp(p.widthExp, 0, 1));
+  return clamp(p.baseZoom * scale, p.minZoom, p.maxZoom);
+}
+
+/**
+ * Where the speed-driven zoom-out is heading on this screen.
+ *
+ * `minZoom` used to be both the readability floor AND the thing speed zoomed
+ * out to, which was the same number only because there was one base zoom. Once
+ * the base is derived, a fixed target is wrong in both directions: an ultrawide
+ * would zoom out 2.4x at speed (90 px/m down to 38, showing 90 m of level) and
+ * a phone would have almost nothing left to give. So the zoom-out is a RATIO —
+ * the one the reference framing already implies, `minZoom / baseZoom` — and the
+ * floor is applied afterwards, as a floor.
+ *
+ * At the reference viewport this is exactly `minZoom`, so nothing about the
+ * desktop feel moves.
+ */
+export function wideZoomFor(p: CameraParams, cssW: number): number {
+  const ratio = p.baseZoom > 0 ? p.minZoom / p.baseZoom : 1;
+  return clamp(baseZoomFor(p, cssW) * ratio, p.minZoom, p.maxZoom);
+}
+
+/**
+ * The manual zoom bias, clamped so it cannot ask for a zoom that does not
+ * exist.
+ *
+ * The keys used to clamp the BIAS to 0.35..3 and let the camera clamp the zoom
+ * afterwards, which meant the bias could wind up to 3 while the zoom sat pinned
+ * at `maxZoom` — and then several presses of `-` did nothing at all before the
+ * picture moved. A pinch makes that far worse, because a gesture that keeps
+ * spreading would bank travel it then has to give back before anything happens.
+ * Clamping against the actual zoom range is what makes the gesture feel
+ * attached to the screen.
+ */
+export function clampZoomBias(p: CameraParams, cssW: number, bias: number): number {
+  const base = baseZoomFor(p, cssW);
+  if (!(base > 0) || !Number.isFinite(bias)) return 1;
+  const lo = Math.max(BIAS_MIN, p.minZoom / base);
+  const hi = Math.min(BIAS_MAX, p.maxZoom / base);
+  return clamp(bias, Math.min(lo, hi), hi);
+}
+
 export function createCamera(params: CameraParams): Camera {
   let leadX = 0;
   let leadY = 0;
@@ -192,21 +315,34 @@ export function createCamera(params: CameraParams): Camera {
   // recover from anything.
   let fx = 0;
   let fy = 0;
-  let fzoom = params.baseZoom;
+  // The viewport the zoom is derived against. Defaults to the reference width,
+  // so a camera that is snapped before it has ever been drawn is framed exactly
+  // as the reference desktop until the first frame says otherwise.
+  let viewW = params.refWidth;
+  let fzoom = baseZoomFor(params, viewW);
 
   const cam: Camera = {
     x: 0,
     y: 0,
-    zoom: params.baseZoom,
+    zoom: fzoom,
     params,
     zoomBias: 1,
+
+    setZoomBias(v: number): number {
+      cam.zoomBias = clampZoomBias(cam.params, viewW, v);
+      return cam.zoomBias;
+    },
+
+    setViewport(cssW: number): void {
+      if (cssW > 0) viewW = cssW;
+    },
 
     snap(t: CameraTarget): void {
       leadX = 0;
       leadY = 0;
       fx = t.x;
       fy = t.y;
-      fzoom = clamp(cam.params.baseZoom * cam.zoomBias, cam.params.minZoom, cam.params.maxZoom);
+      fzoom = clamp(baseZoomFor(cam.params, viewW) * cam.zoomBias, cam.params.minZoom, cam.params.maxZoom);
       cam.x = fx;
       cam.y = fy;
       cam.zoom = fzoom;
@@ -217,6 +353,13 @@ export function createCamera(params: CameraParams): Camera {
       // A tab that was backgrounded hands back a huge dt. Clamping it here means
       // the camera eases back in rather than teleporting on the first frame.
       const dt = clamp(dtSec, 0, 0.1);
+      // RESIZE AND ROTATION ARE HANDLED BY BEING READ, not by a listener. The
+      // viewport is an input to the zoom on every single frame, so a window
+      // drag, a rotated phone, a keyboard sliding up and an address bar
+      // collapsing all arrive the same way and all ease rather than jump —
+      // `approach` below is already the right behaviour for a framing that
+      // changed underneath the player.
+      if (cssW > 0) viewW = cssW;
 
       // --- lead ---------------------------------------------------------
       // From velocity, never from `facing`: facing is the one discrete thing a
@@ -234,7 +377,12 @@ export function createCamera(params: CameraParams): Camera {
       const speed = Math.sqrt(t.vx * t.vx + t.vy * t.vy);
       const span = Math.max(p.zoomToSpeed - p.zoomFromSpeed, 1e-6);
       const k = clamp((speed - p.zoomFromSpeed) / span, 0, 1);
-      const want = clamp((p.baseZoom + (p.minZoom - p.baseZoom) * k) * cam.zoomBias, p.minZoom, p.maxZoom);
+      // Both ends of the speed ramp are derived from the viewport, so the
+      // amount of LEVEL the zoom-out buys is the same everywhere rather than
+      // depending on the width of somebody's monitor.
+      const base = baseZoomFor(p, viewW);
+      const wide = wideZoomFor(p, viewW);
+      const want = clamp((base + (wide - base) * k) * cam.zoomBias, p.minZoom, p.maxZoom);
       fzoom = approach(fzoom, want, want < fzoom ? p.zoomOutHalfLife : p.zoomInHalfLife, dt);
 
       // --- follow -------------------------------------------------------

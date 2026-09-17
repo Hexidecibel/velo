@@ -113,7 +113,7 @@ reap any Chrome holding one of their own profile directories before they start.
 | Y | **your bike** — six silhouettes, ten liveries, and what the rider is wearing. None of it changes how the bike rides. |
 | H | show/hide the tuning panel — **closed by default**, remembered once you open it |
 | `` ` `` | **hide the debug readout.** Remembered. The level card, clock and apple counter stay — they are drawn in the canvas and they are the game talking — and so do the two warnings that are not telemetry. |
-| `+` / `-` | zoom bias |
+| `+` / `-` / `0` | zoom in, zoom out, back to the default. A multiplier on the derived framing, remembered per device, and clamped so it can never ask for a zoom outside `minZoom`..`maxZoom`. On a phone the same variable is driven by a two-finger pinch. |
 | P | pause |
 
 **On the end-of-level screen** — which appears on a finish and never on a death
@@ -1032,7 +1032,8 @@ a stick expects it to mean partial throttle and it cannot.
 | **brake** | inboard of it, same row, narrower: you reach for it in bursts |
 | **lean ↺ / lean ↻** | bottom-left, two zones **sharing an edge** |
 | **FLIP** | up and inboard of the right cluster |
-| restart, gas mode | small, at the top, away from both thumbs |
+| restart, gas mode | small, top-left, away from both thumbs |
+| zoom 1.0x | under them: prints the manual zoom, and a tap puts it back to 1.0x |
 
 **Multi-touch is the normal case, not an edge case.** Throttle plus lean is most
 of the game and throttle plus lean plus flip — three fingers — is how you save a
@@ -1095,12 +1096,90 @@ two together are clamped so they can never put the bike off the edge. It fades
 out under the overview, where there is no corner to hide in and an off-centre
 framing is just a crooked picture.
 
-**The bike is small on a phone.** 1.7 m at a 62 px/m base camera is under two
-centimetres of actual bike on a 12 cm screen, and the collision-edge readability
-the whole art direction rests on is much harder at that size. So the touch
-default zooms in — `zoomBias` 1.25, about 77 px/m, well inside the range
-`maxZoom` was raised to 150 for — and `+`/`-` still work from there, because the
-bias is a multiplier on the auto zoom rather than a zoom value.
+**The phone was being shown less than half the level, and that was the real
+bug.** There used to be a `zoomBias: 1.25` here, reasoned from "the bike is only
+6.6% of the screen width on a desktop, so a small screen wants to be closer".
+The measurement says the opposite. A fixed px/m does not frame a level at all —
+it frames a *bike* — and what it actually decides is how much world is on
+screen, which then depends entirely on how wide the window happens to be:
+
+| viewport | at a fixed 62 px/m | world visible |
+| --- | --- | --- |
+| desktop, 1600 px | 62 px/m | 25.8 m |
+| ultrawide, 3440 px | 62 px/m | 55.5 m |
+| landscape phone, 844 px | 62 px/m | 13.6 m |
+| the same phone, x1.25 | 78 px/m | **10.9 m** |
+
+Nobody chose the second and third rows, and the fourth made the complaint worse.
+So **the base zoom is derived from the viewport**: `baseZoom` is an anchor
+measured on one window — 62 px/m at 1600 px, which is the framing all twenty
+levels were authored and played at — and every other screen solves for it with
+`zoom = baseZoom * (cssW / refWidth) ** widthExp`.
+
+`widthExp` is 0.5 and the two extremes are why. At 0 you have the old fixed
+px/m. At 1 every screen sees exactly 25.8 m, which asks an 844 px phone for 33
+px/m — *below* the readability floor, so the floor would overrule it anyway. 0.5
+is the geometric mean of the two defensible targets: the same amount of LEVEL as
+the reference desktop (25.8 m) and the same APPARENT scale as it (a phone
+subtends about 55% of the visual angle a monitor does, so ~14 m), and it lands
+within 2% of that compromise.
+
+| viewport | derived zoom | world visible | was |
+| --- | --- | --- | --- |
+| 780 x 360 phone | 43.3 px/m | 18.0 m | 10.1 m |
+| 844 x 390 phone | 45.0 px/m | 18.7 m | 10.9 m |
+| 1280 x 800 laptop | 55.5 px/m | 23.1 m | 20.6 m |
+| 1600 x 900 (the reference) | 62.0 px/m | 25.8 m | 25.8 m |
+| 1920 x 1080 | 67.9 px/m | 28.3 m | 31.0 m |
+| 3440 x 1440 ultrawide | 90.9 px/m | 37.8 m | 55.5 m |
+| 390 x 844 portrait | **38 px/m, floored** | 10.3 m | 5.0 m |
+
+**The floor still outranks the framing, and it is not quietly lowered to make
+the numbers look better.** A portrait phone wants 31 px/m and gets `minZoom`, so
+it sees less world rather than a mushier collision edge — the bike's LOD dead
+bands are derived from that floor too. The same thing happens to the speed
+zoom-out on a phone: it is a *ratio* now (`minZoom / baseZoom`, so the same 1.63x
+everywhere rather than a fixed 38 px/m that would zoom an ultrawide out to 90 m
+of level), and on an 844 px screen the floor takes most of that away, because
+there is no room underneath 38 px/m to zoom out into.
+
+The happy consequence, which nobody asked for: deriving the zoom makes the bike
+**bigger** on a small screen anyway. 1.7 m at 45 px/m is 9.1% of an 844 px
+width, against the desktop's 6.6%. The phone gave up some world, not all of it.
+
+**Resize and rotation need no listener.** The viewport is an input to the zoom on
+every frame, so a window drag, a rotated phone, a collapsing address bar and a
+keyboard sliding up all arrive the same way and all *ease* — `approach` is
+already the right behaviour for a framing that changed underneath you.
+
+**And screens differ, so pinch to zoom.** It drives `zoomBias` — the same
+variable the `+`/`-` keys drive, because a second concept for "the player asked
+for a different zoom" is two things to keep in step for no gain — and it is
+remembered per device like every other preference.
+
+The hard part is not the arithmetic. **Two fingers on the glass is the normal
+case here**: gas and lean is most of the game and gas, lean and flip is three, so
+a recogniser that watched raw touch points would fire while driving. The rule is
+structural rather than heuristic:
+
+> A pointer that landed on a pad is a control for as long as it is down.
+
+It can never become half of a gesture, *including after it slides off the pad
+into the play area* — which is exactly the latch that keeps a drifting thumb on
+the throttle. Pinch fingers and control fingers are therefore disjoint sets by
+construction, so no gesture can take an input away and no stray touch can break
+one. A pinch takes **two fingers that both started in the play area**, at least
+56 px apart, and the scale runs through a 10% rubber band so a 4 mm drift moves
+nothing. A third finger, on a pad or off one, does not cancel the gesture in
+progress: a pinch that died because of a knuckle would be the same silent
+failure the pads exist to avoid.
+
+The zoom multiplier is **printed on a pad in the top-left, and tapping it resets
+to 1.0x**. A gesture that goes wrong mid-run needs a way back that is not another
+gesture, and the pad is also the only thing on the screen that says pinch exists
+at all. It is always there rather than appearing when you are zoomed, because a
+pad that comes and goes means rebuilding the overlay mid-run — which drops
+pointer capture and would silently release a held throttle.
 
 The desktop chrome gets out of the way too: the HUD is nine lines of telemetry,
 the legend lists keys there is no keyboard for, and the leaderboard panel sits

@@ -548,7 +548,7 @@ body:has(#panel.hidden) #results { margin-left: 0; }
 #touch .tc-throttle { align-items: center; font-size: 13px; }
 #touch .tc-flip { align-items: center; }
 #touch .tc-leanL, #touch .tc-leanR { align-items: center; }
-/* The two commands, small and at the top, away from the thumbs and away from
+/* The commands, small and at the top, away from the thumbs and away from
    the bottom corners the hands cover. */
 #touch .tc-cmd {
   align-items: center;
@@ -562,6 +562,17 @@ body:has(#panel.hidden) #results { margin-left: 0; }
    legend lists keys there is no keyboard for, and the leaderboard panel sits
    exactly where the left thumb goes. The level bar stays — changing level is
    navigation and there is no other way to do it. */
+/* The zoom readout is an instrument rather than a control: dimmer than the two
+   above it, because it is read far more often than it is pressed. */
+#touch .tc-zoom { font-size: 8px; color: #8d85ad99; }
+
+/* THE BROWSER'S OWN PINCH IS THE ENEMY OF THIS ONE. Two fingers on the canvas
+   is a page zoom by default, which would fight the game's own gesture and leave
+   the player scrolled into a corner of a fixed-size page with no way back. The
+   overlay already declares this; the canvas underneath it has to as well,
+   because that is where a pinch in the play area actually lands. */
+body.touch #view { touch-action: none; }
+
 body.touch #hud, body.touch #legend, body.touch #board { display: none; }
 body.touch #levelbar { top: 6px; right: 6px; max-width: 46vw; }
 body.touch #levelbar .lb-note { display: none; }

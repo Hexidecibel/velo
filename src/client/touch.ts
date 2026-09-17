@@ -31,13 +31,13 @@
 import { IN_BRAKE, IN_FLIP, IN_LEAN_L, IN_LEAN_R, IN_THROTTLE } from '@/sim/consts.ts';
 
 /**
- * `restart` and `auto` are COMMANDS, not sim input: they fire on the press and
- * contribute no bit. They are in the same list as the rest because they occupy
+ * `restart`, `auto` and `zoom` are COMMANDS, not sim input: they fire on the
+ * press and contribute no bit. They are in the same list as the rest because they occupy
  * screen space and the hit test has to know about them — a flip zone that
  * silently extended under the restart button would be a missed input, and this
  * game punishes one of those immediately.
  */
-export type ZoneId = 'throttle' | 'brake' | 'leanL' | 'leanR' | 'flip' | 'restart' | 'auto';
+export type ZoneId = 'throttle' | 'brake' | 'leanL' | 'leanR' | 'flip' | 'restart' | 'auto' | 'zoom';
 
 export interface Zone {
   id: ZoneId;
@@ -78,7 +78,11 @@ export interface Zone {
  * is no dead strip at all — a thumb that drifts a few millimetres during a long
  * hold must land in a zone rather than in nothing.
  */
-export function touchZones(autoThrottle: boolean): Zone[] {
+export function zoomLabel(bias: number): string {
+  return `zoom ${(Number.isFinite(bias) ? bias : 1).toFixed(1)}\u00d7`;
+}
+
+export function touchZones(autoThrottle: boolean, bias = 1): Zone[] {
   const zones: Zone[] = [
     // Commands first: they are small, they sit on top, and the hit test takes
     // the first match.
@@ -91,6 +95,21 @@ export function touchZones(autoThrottle: boolean): Zone[] {
     // would have caught the collision but a picture.
     { id: 'restart', x: 0.01, y: 0.02, w: 0.09, h: 0.13, label: 'restart', command: true },
     { id: 'auto', x: 0.11, y: 0.02, w: 0.09, h: 0.13, label: autoThrottle ? 'gas: auto' : 'gas: held', command: true },
+    // THE ZOOM READOUT, AND THE WAY BACK FROM ONE. Pinch is a gesture and every
+    // gesture can go wrong; a zoom that went wrong halfway through a run, with
+    // no way back but another gesture, is worse than no pinch at all. So the
+    // current multiplier is printed and tapping it returns to 1.0x.
+    //
+    // It is ALWAYS here rather than appearing when you are zoomed, for two
+    // reasons. It is the only thing on the screen that says pinch exists at
+    // all. And a pad that comes and goes means rebuilding the overlay mid-run,
+    // which drops pointer capture and would release a held throttle — a silent
+    // input loss traded for a tidier screen, which is the wrong trade twice.
+    //
+    // SECOND ROW, not beside the other two: the art renderer draws the level
+    // card across the top-centre and this would have reached it on a narrow
+    // phone. The row below is empty screen above the lean pads.
+    { id: 'zoom', x: 0.01, y: 0.17, w: 0.13, h: 0.11, label: zoomLabel(bias), command: true },
 
     // Left thumb: lean, two zones sharing an edge.
     { id: 'leanL', x: 0, y: 0.50, w: 0.15, h: 0.50, label: '↺ lean', command: false },
@@ -201,12 +220,118 @@ export function slideZone(
   return hit;
 }
 
+// --- the pinch ---------------------------------------------------------------
+//
+// SCREENS DIFFER AND SO DO PEOPLE, so the derived base zoom is a good default
+// rather than an answer, and pinch is how you say otherwise. It drives
+// `zoomBias` — the same variable the +/- keys already drive — because a second
+// concept for "the player asked for a different zoom" is two things to keep in
+// step for no gain.
+//
+// THE HARD PART IS NOT THE ARITHMETIC. It is that TWO FINGERS ON THE GLASS IS
+// THE NORMAL CASE HERE: gas and lean is most of the game, and gas, lean and
+// flip is three. A pinch recogniser that watched raw touch points would fire
+// during ordinary play, and — far worse — would have to decide what to do with
+// the pads while it did. So the rule is structural rather than heuristic:
+//
+//   A POINTER THAT LANDED ON A PAD IS A CONTROL FOR AS LONG AS IT IS DOWN.
+//
+// It can never become half of a gesture, including after it slides off the pad
+// into the play area, which is exactly the latch that keeps a drifting thumb on
+// the throttle. Pinch fingers and control fingers are therefore disjoint sets
+// by construction, and no gesture can take an input away. Two thumbs on pads is
+// zero pinch candidates; a thumb on the gas and a stray touch in the play area
+// is one. It takes TWO FINGERS THAT BOTH STARTED IN THE PLAY AREA, which is not
+// a thing that happens while driving.
+
+/** A pointer in the play area, in CSS pixels relative to the overlay. */
+export interface Pointer {
+  id: number;
+  x: number;
+  y: number;
+}
+
+/**
+ * How far apart two fingers must START for it to be a pinch at all.
+ *
+ * A pinch is a deliberate two-handed (or thumb-and-finger) spread; 56 px is
+ * about a centimetre and a half on a phone. Below it, the pair is far likelier
+ * to be one hand resting, a palm edge, or the two-finger tap somebody uses to
+ * skip the opening peek — and dividing by a tiny starting spread is also what
+ * makes a jittery gesture multiply the zoom by ten.
+ */
+export const PINCH_MIN_SPREAD = 56;
+
+/**
+ * The dead band, as a fraction of the starting spread, before the zoom moves at
+ * all — and it is applied as a RUBBER BAND rather than a threshold that arms:
+ * the scale is continuous through it, so the picture never jumps the moment the
+ * gesture is recognised.
+ */
+export const PINCH_DEAD = 0.1;
+
+export function spread(a: Pointer, b: Pointer): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+/**
+ * Which pointers are eligible to be pinch fingers: the ones in the play area.
+ * `hitZone` is the whole test, which is why the pads never had to know about
+ * any of this.
+ */
+export function playAreaPointers(
+  zones: readonly Zone[],
+  pts: readonly Pointer[],
+  w: number,
+  h: number,
+): Pointer[] {
+  return pts.filter((p) => hitZone(zones, p.x, p.y, w, h) === null);
+}
+
+/**
+ * The two fingers a gesture is made of, or null.
+ *
+ * EXACTLY TWO, and only at the moment a gesture starts. A third free finger
+ * arriving later does not cancel the one in progress — a gesture that dies
+ * because of a knuckle is the same silent failure the pads were designed to
+ * avoid — it is simply not part of it.
+ */
+export function pinchPair(free: readonly Pointer[]): [Pointer, Pointer] | null {
+  if (free.length !== 2) return null;
+  return spread(free[0], free[1]) >= PINCH_MIN_SPREAD ? [free[0], free[1]] : null;
+}
+
+/**
+ * What the fingers are asking the zoom to be multiplied by, relative to where
+ * the gesture began. 1 inside the dead band, and continuous across its edges.
+ */
+export function pinchScale(spread0: number, now: number, dead = PINCH_DEAD): number {
+  if (!(spread0 > 0) || !(now > 0)) return 1;
+  const r = now / spread0;
+  if (r > 1 + dead) return r / (1 + dead);
+  if (r < 1 - dead) return r / (1 - dead);
+  return 1;
+}
+
 // --- the elements ------------------------------------------------------------
 
 export interface TouchCallbacks {
   onRestart(): void;
   /** The auto-throttle toggle was pressed. The caller persists it and calls back. */
   onAutoThrottle(on: boolean): void;
+  /**
+   * A pinch, or a tap on the zoom pad (which asks for exactly 1).
+   *
+   * The number is a REQUEST. What is legal depends on the viewport and on the
+   * readability floor, both of which belong to the camera, so the caller clamps
+   * it and calls `setZoom` back with what it actually did — that is what the
+   * pad prints, and what the next gesture is baselined on.
+   */
+  onZoom(bias: number): void;
+  /** The fingers came off. A good moment to persist, and the only one. */
+  onZoomEnd?(): void;
 }
 
 export interface TouchControls {
@@ -236,6 +361,8 @@ export interface TouchControls {
    * whose own buttons are underneath them and must be tappable.
    */
   setHidden(hidden: boolean): void;
+  /** What the camera actually settled on. Prints it, and baselines the gesture. */
+  setZoom(bias: number): void;
   detach(): void;
 }
 
@@ -260,12 +387,26 @@ export function wantsTouch(search: string, mm: (q: string) => boolean): boolean 
 export function createTouch(
   root: HTMLElement,
   cb: TouchCallbacks,
-  opts: { enabled: boolean; autoThrottle: boolean },
+  opts: {
+    enabled: boolean;
+    autoThrottle: boolean;
+    /** The starting zoom multiplier, as remembered from last time. */
+    zoom?: number;
+    /**
+     * The element the play area actually is — the canvas. A pinch finger has to
+     * have landed on it: the pads are above it and take their own pointers, and
+     * everything else on the glass (the level bar, the results screen, the level
+     * chooser) is a panel whose own gestures are not ours to steal.
+     */
+    surface?: HTMLElement;
+  },
 ): TouchControls {
   let enabled = opts.enabled;
   let autoThrottle = opts.autoThrottle;
   let armed = false;
-  let zones = touchZones(autoThrottle);
+  let hidden = false;
+  let zoomBias = opts.zoom ?? 1;
+  let zones = touchZones(autoThrottle, zoomBias);
   /**
    * Pointer id -> the zone it is holding. A MAP AND NOT A SET OF ZONES, because
    * multi-touch is the normal case and two fingers can be in the same zone: a
@@ -273,6 +414,13 @@ export function createTouch(
    */
   const held = new Map<number, ZoneId>();
   const els = new Map<ZoneId, HTMLElement>();
+  /**
+   * Pointers that landed in the PLAY AREA, in the order they arrived. Disjoint
+   * from `held` by construction — see the pinch section above — which is what
+   * makes it impossible for a gesture and a control to fight over a finger.
+   */
+  const free = new Map<number, Pointer>();
+  let pinch: { a: number; b: number; spread: number; bias: number } | null = null;
 
   function build(): void {
     root.textContent = '';
@@ -313,6 +461,10 @@ export function createTouch(
     if (z.command) {
       if (id === 'restart') cb.onRestart();
       else if (id === 'auto') cb.onAutoThrottle(!autoThrottle);
+      else if (id === 'zoom') {
+        cb.onZoom(1);
+        cb.onZoomEnd?.();
+      }
       return;
     }
     // CAPTURE THE POINTER. Without it a finger that slides off the element it
@@ -349,6 +501,71 @@ export function createTouch(
     paint();
   };
 
+  // THE PINCH, and it listens on the WINDOW rather than on `root`.
+  //
+  // It has to: `#touch` is `pointer-events: none` and only the pads themselves
+  // take input, which is what lets a tap in the play area reach the canvas at
+  // all. So a play-area pointer never reaches the overlay's own handlers, and
+  // the gesture is recognised where every pointer does arrive.
+  //
+  // Both filters below matter. `surface` keeps a gesture off every panel on the
+  // glass, and the `hitZone` test keeps it off the pads even in the one state
+  // where they are inert (`tc-away`, while the results screen is up) and their
+  // pointers would otherwise fall through to the canvas.
+  const point = (e: PointerEvent): { p: Pointer; w: number; h: number } => {
+    const r = root.getBoundingClientRect();
+    return { p: { id: e.pointerId, x: e.clientX - r.left, y: e.clientY - r.top }, w: r.width, h: r.height };
+  };
+
+  const startPinch = (w: number, h: number): void => {
+    if (pinch) return;
+    const pair = pinchPair(playAreaPointers(zones, [...free.values()], w, h));
+    if (!pair) return;
+    pinch = { a: pair[0].id, b: pair[1].id, spread: spread(pair[0], pair[1]), bias: zoomBias };
+  };
+
+  const freeDown = (e: PointerEvent): void => {
+    if (!enabled || hidden) return;
+    if (opts.surface && e.target !== opts.surface) return;
+    const { p, w, h } = point(e);
+    if (hitZone(zones, p.x, p.y, w, h) !== null) return;
+    free.set(p.id, p);
+    startPinch(w, h);
+  };
+
+  const freeMove = (e: PointerEvent): void => {
+    const cur = free.get(e.pointerId);
+    if (!cur) return;
+    const { p, w, h } = point(e);
+    cur.x = p.x;
+    cur.y = p.y;
+    if (!pinch) {
+      // Two fingers that landed too close together can still become a pinch by
+      // being moved apart, which is what somebody who started the gesture badly
+      // does next.
+      startPinch(w, h);
+      return;
+    }
+    const a = free.get(pinch.a);
+    const b = free.get(pinch.b);
+    if (!a || !b) return;
+    e.preventDefault();
+    cb.onZoom(pinch.bias * pinchScale(pinch.spread, spread(a, b)));
+  };
+
+  const freeUp = (e: PointerEvent): void => {
+    if (!free.delete(e.pointerId)) return;
+    if (pinch && (e.pointerId === pinch.a || e.pointerId === pinch.b)) {
+      pinch = null;
+      cb.onZoomEnd?.();
+    }
+  };
+
+  window.addEventListener('pointerdown', freeDown);
+  window.addEventListener('pointermove', freeMove);
+  window.addEventListener('pointerup', freeUp);
+  window.addEventListener('pointercancel', freeUp);
+
   // EVERY WAY A TOUCH CAN END, and they are not interchangeable: `pointerup` is
   // a lift, `pointercancel` is the OS taking the gesture away (a notification
   // shade, a phone call, the browser deciding it was a scroll after all), and
@@ -360,6 +577,14 @@ export function createTouch(
   root.addEventListener('pointercancel', up);
   root.addEventListener('lostpointercapture', up);
   const clearAll = (): void => {
+    // The gesture goes with the fingers. A tab that came back with `pinch` still
+    // set would take its next move as a continuation of a gesture whose other
+    // finger is long gone.
+    if (pinch) {
+      pinch = null;
+      cb.onZoomEnd?.();
+    }
+    free.clear();
     if (held.size === 0) return;
     held.clear();
     paint();
@@ -401,16 +626,28 @@ export function createTouch(
       // Turning it ON mid-session must not launch the bike from wherever it is
       // standing. The next touch arms it, exactly as a restart would.
       armed = false;
-      zones = touchZones(autoThrottle);
+      zones = touchZones(autoThrottle, zoomBias);
       // The right cluster changes shape, so anything held in it is now holding
       // a zone that no longer exists. Dropped rather than remapped: a throttle
       // that survived into auto mode as a phantom hold would be unreleasable.
       held.clear();
       build();
     },
-    setHidden(hidden: boolean): void {
-      root.classList.toggle('tc-away', hidden);
-      if (hidden) clearAll();
+    setHidden(on: boolean): void {
+      hidden = on;
+      root.classList.toggle('tc-away', on);
+      if (on) clearAll();
+    },
+    setZoom(bias: number): void {
+      zoomBias = Number.isFinite(bias) ? bias : 1;
+      // The LABEL only, not a rebuild. Rebuilding the overlay would drop the
+      // pointer capture on a held pad and release the throttle, and this is
+      // called on every frame of a gesture.
+      const z = zones.find((x) => x.id === 'zoom');
+      if (z) z.label = zoomLabel(zoomBias);
+      const el = els.get('zoom');
+      const span = el?.firstElementChild;
+      if (span) span.textContent = zoomLabel(zoomBias);
     },
     detach(): void {
       root.removeEventListener('pointerdown', down);
@@ -419,6 +656,10 @@ export function createTouch(
       root.removeEventListener('pointercancel', up);
       root.removeEventListener('lostpointercapture', up);
       window.removeEventListener('blur', clearAll);
+      window.removeEventListener('pointerdown', freeDown);
+      window.removeEventListener('pointermove', freeMove);
+      window.removeEventListener('pointerup', freeUp);
+      window.removeEventListener('pointercancel', freeUp);
     },
   };
 }
