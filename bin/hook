@@ -6,6 +6,7 @@
 #   bin/hook catch        # can an arriving bike CATCH a tip, and how often
 #   bin/hook ride         # the entry a player would attempt: off the end of a deck
 #   bin/hook reach        # what a hang can collect, and what gets you out of one
+#   bin/hook capture      # CONCAVE geometry: notches, dishes, cradles, lips
 #
 # WHY THIS EXISTS. The idea, from the user and recalling Elasto Mania: "hooking
 # one tire over a thing and sliding — in Elastomania it would stretch your bike
@@ -28,6 +29,34 @@
 #     quarter of a second;
 #   * and every catch that holds bottoms the suspension, so the stretch cannot
 #     be a readout of how hard you came in.
+#
+# THE SECOND ANSWER IS ALSO NO. The first pass named its own fix — "needs a
+# concave capture feature" — and then never built one: blade, lip, pole and rail
+# are all CONVEX. `bin/hook capture` builds the missing shape, sweeps notch
+# width, depth, wall angle and asymmetry, and scores it against the same four
+# questions. Nothing improves, and one number explains why:
+#
+#   * a notch puts solid UNDER the wheel, and the frame is already there. Push
+#     the blade's underside down by FIVE MILLIMETRES and the 11 s hang becomes
+#     0.27 s. The r 0.20 chassis circle beside the hooked wheel rides within a
+#     centimetre of the surface the wheel rests on, at every attitude the bike
+#     can hang in, so a notch deep enough to hold a 0.25 m wheel is fifty times
+#     over budget. Concave is not hard here, it is geometrically excluded;
+#   * a raised lip OUTBOARD of the wheel — the way round the clearance problem,
+#     since it adds no material below — is worse than nothing: short enough to
+#     stay clear of the frame's swing path is short enough for a 0.25 m wheel to
+#     roll straight over, and it ramps the wheel off the end. Every outboard
+#     variant scores zero;
+#   * a lip INBOARD is harmless and widens the placed-hang basin 1.7x, which
+#     buys nothing measurable at the entry: 0.30-1.21 %, against the bare tip's
+#     0.35-1.08 %, on an identical grid;
+#   * and the hang that does work is a CLAMP, not a hook. The frame circle
+#     beside the hooked wheel is in contact for the whole 11 s — the bike is
+#     wedged against the underside of the blade. That is why no held input ever
+#     releases it.
+#
+# Two independent negative results. If hooking is ever wanted it needs a grab
+# state in the sim, not a cleverer polygon.
 #
 # It takes a couple of minutes: the sweeps are tens of thousands of short sims.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"

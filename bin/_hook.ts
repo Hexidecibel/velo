@@ -26,7 +26,7 @@
 // how far below the tip the bike's lowest apple-collecting point reaches, which
 // is the whole design question for "apples underneath the poles".
 import { parseLevel } from '../src/sim/level.ts';
-import type { Level, RawPolygon } from '../src/sim/level.ts';
+import type { Level, RawPoint, RawPolygon } from '../src/sim/level.ts';
 import { createSim } from '../src/sim/sim.ts';
 import type { Sim } from '../src/sim/sim.ts';
 import type { BikeSpec } from '../src/sim/spec.ts';
@@ -414,3 +414,243 @@ export function rideAtTip(
   }
   return { hookedSeconds: (best * TICKS_PER_FRAME) / 512, peakDeflect: defl, approach, died: sim.state.dead };
 }
+
+// --- concave capture geometry ------------------------------------------------
+//
+// THE SECOND EXPERIMENT. The first pass tested blade, square lip, round lip,
+// poles and a rail and concluded a wheel cannot be hooked — with the stated
+// cause "no rolling resistance for a circle on a convex surface", and the
+// stated fix "needs a concave capture feature". Every shape it tested was
+// CONVEX. The shape it named as the answer is the one it never built, so this
+// section builds it.
+//
+// WHERE THE MATERIAL IS ALLOWED TO BE. A notch cut into a surface puts solid
+// UNDER the wheel, and the bike's frame is already there. Measured off the
+// spec, over every hang attitude the bike can settle in: the nearest chassis
+// collider is the r = 0.20 circle at chassis-local (-0.35, 0.02), it rides
+// 0.30 m from the hooked wheel's suspension anchor, and the anchor is only the
+// deflection (0.10-0.25 m) below the wheel centre. Its TOP therefore never
+// falls lower than
+//
+//     pitch -90    -0.15 m below the wheel centre   (0.10 m ABOVE the tyre)
+//     pitch -127   -0.20 to -0.35 m                 (0.05 above to 0.10 below)
+//     pitch -145   -0.18 to -0.33 m
+//
+// against a tyre whose bottom is 0.25 m below the centre, in an x window about
+// 0.40 m wide centred on the wheel. So the budget for solid directly beneath a
+// hooked wheel is between 1 and 10 CENTIMETRES, and only at the bottom of the
+// suspension travel. A notch deep enough to hold a 0.25 m wheel is nowhere
+// near that. Cutting DOWN is therefore not available.
+//
+// So the capture feature has to be built UPWARD instead: leave the deck a thin
+// wedge exactly as the blade already is, and make the pocket out of two small
+// fins standing ON it. That is concave — a wheel sitting between two lips has
+// to climb to leave in either direction, which is precisely the restoring
+// moment a flat lip does not have — while every gram of the new material sits
+// ABOVE the deck plane, where the frame never goes.
+//
+// `barb` builds that, plus the sunken `dish` variant for the comparison, so the
+// clearance claim above is a measurement in this file and not an assertion.
+
+export interface BarbOpts {
+  /** Flat floor between the two fins. The catch basin's width. */
+  pocket: number;
+  /** Inner (deck-side) fin height above the deck plane. 0 removes it. */
+  innerH: number;
+  /** Its pocket-facing wall, degrees from horizontal. >90 overhangs the pocket. */
+  innerDeg: number;
+  /** Its approach ramp, degrees. Shallow = rideable, steep = a kerb. */
+  rampDeg: number;
+  /** Outer (tip-side) barb height. 0 leaves the plain blade tip. */
+  outerH: number;
+  /** Its pocket-facing wall, degrees from horizontal. >90 overhangs the pocket. */
+  outerDeg: number;
+  /** Its outboard face, degrees. Decides how far past the pocket the tip sits. */
+  outerBackDeg: number;
+  /** Depth of a SUNKEN concave floor instead of a flat one. The control case. */
+  dish: number;
+  /** Solid left under the pocket, metres. 0 keeps the wedge's knife edge. */
+  tipT: number;
+  /** Blade thickness far back from the tip, and its length. */
+  t: number;
+  L: number;
+}
+
+const BARB_DEFAULTS: BarbOpts = {
+  pocket: 0.3,
+  innerH: 0.1,
+  innerDeg: 80,
+  rampDeg: 30,
+  outerH: 0.1,
+  outerDeg: 80,
+  outerBackDeg: 55,
+  dish: 0,
+  tipT: 0,
+  t: 0.3,
+  L: 14,
+};
+
+function cot(deg: number): number {
+  return 1 / Math.tan((deg * Math.PI) / 180);
+}
+
+/**
+ * A thin wedge blade whose last half-metre carries a concave pocket.
+ *
+ * Left to right: flat deck, an approach ramp up to the inner fin, down its
+ * pocket-facing wall, across the pocket floor, up the outer barb, and over its
+ * outboard face to the tip. Everything below the deck plane is the same knife
+ * wedge `ledge('spike')` already is, unless `tipT` is set — which is the knob
+ * that turns the clearance claim into a measurement.
+ *
+ * `dish` sinks the pocket floor instead, which is the notch a level author
+ * would draw first and the one the clearance arithmetic says cannot work.
+ */
+export function barb(over: Partial<BarbOpts> = {}): RawPolygon {
+  const o = { ...BARB_DEFAULTS, ...over };
+  const dish = o.dish;
+  // A sunken floor needs material under it by definition; give it the minimum
+  // that keeps the polygon simple rather than silently emitting a self-crossing
+  // one, and let the sweep discover what that costs.
+  const under = dish > 0 ? Math.max(o.tipT, dish + 0.02) : o.tipT;
+
+  const top: [number, number][] = [[-o.L, 0]];
+  let innerFoot = -o.pocket;
+  if (o.innerH > 0) {
+    const apexX = -o.pocket - o.innerH * cot(o.innerDeg);
+    innerFoot = apexX - o.innerH * cot(o.rampDeg);
+    top.push([innerFoot, 0]);
+    top.push([apexX, o.innerH]);
+  }
+  top.push([-o.pocket, 0]);
+  if (dish > 0) {
+    const n = 8;
+    for (let i = 1; i < n; i++) {
+      const u = i / n;
+      const s = 2 * u - 1;
+      top.push([-o.pocket + u * o.pocket, -dish * (1 - s * s)]);
+    }
+  }
+  top.push([0, 0]);
+  let tipX = 0;
+  if (o.outerH > 0) {
+    const apexX = o.outerH * cot(o.outerDeg);
+    tipX = apexX + o.outerH * cot(o.outerBackDeg);
+    top.push([apexX, o.outerH]);
+    top.push([tipX, 0]);
+  }
+
+  const back = Math.min(innerFoot, -o.pocket) - 0.3;
+  const far = -Math.max(o.t, under + 0.05);
+  const bottom: [number, number][] = under > 0
+    ? [[0, -under], [back, -under], [-o.L, far]]
+    : [[-o.L, far]];
+  return { kind: 'ground', points: [...top, ...bottom] };
+}
+
+/** The ridden rig for a barb pocket: a deck you can accelerate along, then the pocket. */
+export function barbDeck(over: Partial<BarbOpts> = {}): Level {
+  return parseLevel({
+    format: 'velo-level',
+    name: 'capture entry rig',
+    start: { x: -24, y: 0.55 },
+    flower: { x: 20, y: -11.4 },
+    apples: [],
+    polygons: [
+      { kind: 'cave', points: [[-30, -12], [30, -12], [30, 22], [-30, 22]] },
+      barb({ L: 30, ...over }),
+    ],
+  });
+}
+
+export interface Clearance {
+  /** Which collider indices had a contact on the last tick. COL_CHASSIS0 = 2. */
+  chassisTouching: number[];
+  /** Settled deflection on the hooked wheel. */
+  defl: number;
+  /** Where each chassis collider ended up, relative to the hooked wheel centre. */
+  rel: { x: number; y: number; r: number }[];
+  pitchDeg: number;
+}
+
+/**
+ * Where the frame actually ends up on a settled hang, and what it is leaning on.
+ *
+ * The point of reporting `chassisTouching` rather than just "did it hold" is
+ * that a hang held up by the frame jammed against the underside of the deck is
+ * a DIFFERENT mechanic from a hang balanced on the tyre, and the hold-time
+ * column alone cannot tell them apart. The blade's 11 s is the former.
+ */
+export function clearanceOf(sim: Sim, wheel: 0 | 1): Clearance {
+  const s = sim.state;
+  const sp = sim.world.spec;
+  const rot = { x: s.ox, y: s.oy };
+  const touching: number[] = [];
+  for (let i = 0; i < sim.world.contactCount; i++) {
+    const c = sim.world.contacts[i];
+    if (c.colliderIdx >= 2 && c.colliderIdx < 1000 && !touching.includes(c.colliderIdx)) {
+      touching.push(c.colliderIdx);
+    }
+  }
+  return {
+    chassisTouching: touching.sort((a, b) => a - b),
+    defl: deflection(sim, wheel),
+    rel: sp.chassis.colliders.map((c) => ({
+      x: s.px + rotX(rot, c.x, c.y) - s.wx[wheel],
+      y: s.py + rotY(rot, c.x, c.y) - s.wy[wheel],
+      r: c.r,
+    })),
+    // atan2 is banned in src/sim; this is an instrument, and the number is for
+    // a human to read, never for the sim to consume.
+    pitchDeg: (Math.atan2(s.oy, s.ox) * 180) / Math.PI,
+  };
+}
+
+/**
+ * The lowest a wheel of radius `r` can sit with its centre at `x` without
+ * penetrating `poly`. NaN when nothing supports it in `[lo, hi]`.
+ *
+ * Needed because a placed hang is only meaningful if the wheel starts where the
+ * shape would actually hold it, and for a pocket that is NOT the deck plane —
+ * a wheel wider than the pocket rests on the two lips, several centimetres
+ * high. Placing at the deck plane instead buries the wheel in the fins and the
+ * sim spits it out, which reads as "the pocket does not hold" and is really
+ * "the pocket was never entered". That mistake cost the first sweep here.
+ */
+export function seatY(poly: RawPolygon, x: number, r: number, hi = 1.5, lo = -1.5): number {
+  // Straight segments only. Every shape in this file is built from plain
+  // points; an arc entry would need arc.ts's tessellation and none of these
+  // need one, so drop them loudly-by-construction rather than mis-measure.
+  const pts = poly.points.filter((p): p is RawPoint => Array.isArray(p));
+  const dist = (y: number): number => {
+    let best = Infinity;
+    for (let i = 0; i < pts.length; i++) {
+      const [ax, ay] = pts[i];
+      const [bx, by] = pts[(i + 1) % pts.length];
+      const dx = bx - ax;
+      const dy = by - ay;
+      const l2 = dx * dx + dy * dy;
+      let t = l2 > 0 ? ((x - ax) * dx + (y - ay) * dy) / l2 : 0;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const qx = ax + t * dx - x;
+      const qy = ay + t * dy - y;
+      const d = Math.sqrt(qx * qx + qy * qy);
+      if (d < best) best = d;
+    }
+    return best;
+  };
+  // Sphere-march DOWN from well clear, rather than bisect between hi and lo.
+  // Bisection is wrong here and wrongly: the feature is a thin blade, so a
+  // wheel far BELOW it is just as unobstructed as one far above, and a
+  // bisection that tests only the endpoints reports "nothing supports this"
+  // for every shape in the file. Marching finds the first contact from above,
+  // which is what a wheel arriving from above would do.
+  let y = hi;
+  for (let i = 0; i < 4000 && y > lo; i++) {
+    const gap = dist(y) - r;
+    if (gap <= 1e-5) return y;
+    y -= gap > 0.02 ? gap : 0.002;
+  }
+  return NaN;
+}
+

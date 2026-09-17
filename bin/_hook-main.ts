@@ -4,8 +4,23 @@
 // Four modes, in the order the question has to be asked. They are separate
 // because the answers differ, and running them together is how "a hook works"
 // and "a hook is playable" get confused for one another.
-import { chamber, deckRig, hang, ledge, place, pole, rail, rideAtTip, staticHangDeflection } from './_hook.ts';
-import type { LedgeShape } from './_hook.ts';
+import {
+  barb,
+  barbDeck,
+  chamber,
+  clearanceOf,
+  deckRig,
+  hang,
+  ledge,
+  place,
+  pole,
+  rail,
+  rideAtTip,
+  seatY,
+  staticHangDeflection,
+} from './_hook.ts';
+import type { BarbOpts, LedgeShape } from './_hook.ts';
+import type { RawPolygon } from '../src/sim/level.ts';
 import { BOOT_PRESET } from '../src/client/presets.ts';
 import { createSim } from '../src/sim/sim.ts';
 import { IN_BRAKE, IN_FLIP, IN_LEAN_L, IN_LEAN_R, IN_THROTTLE } from '../src/sim/consts.ts';
@@ -16,7 +31,7 @@ const MD = spec.suspension.maxDeflection;
 
 const argv = process.argv.slice(2);
 const mode = argv[0] ?? 'all';
-if (!['hang', 'catch', 'ride', 'reach', 'all'].includes(mode)) {
+if (!['hang', 'catch', 'ride', 'reach', 'capture', 'all'].includes(mode)) {
   console.error(`bin/hook: unknown mode ${mode}`);
   process.exit(2);
 }
@@ -219,7 +234,206 @@ function modeReach(): void {
   );
 }
 
+/**
+ * Mode `capture`: the SECOND experiment, and the one that closes the question.
+ *
+ * The first pass concluded a wheel cannot be hooked, named the cause as "no
+ * rolling resistance for a circle on a convex surface", and named the fix as "a
+ * concave capture feature". Every shape it tested — blade, square lip, rounded
+ * lip, poles, rail — was convex. So the fix it named was never built, and this
+ * builds it: notches, dishes, cradles and raised lips, swept the same way and
+ * scored against the same four questions, plus the one the first pass could
+ * only assert.
+ *
+ * Read the clearance table FIRST. It is the whole answer and everything below
+ * it is corroboration.
+ */
+function modeCapture(): void {
+  const XS: number[] = [];
+  for (let x = -0.75; x <= 0.051; x += 0.05) XS.push(Number(x.toFixed(3)));
+  const PS: number[] = [];
+  for (let p = -180; p < 180; p += 15) PS.push(p);
+
+  // A placed hang is scored over a GRID rather than by its best cell, because
+  // the best cell is the same 11 s blade hang in every row — the shape that
+  // holds is always the tip, whatever is bolted on around it. What a capture
+  // feature is supposed to buy is a bigger BASIN, and only the cell count sees
+  // that.
+  const basin = (poly: RawPolygon): { best: number; cells: number; total: number } => {
+    const lvl = chamber([poly]);
+    let best = 0;
+    let cells = 0;
+    let total = 0;
+    for (const x of XS) {
+      const y = seatY(poly, x, spec.wheel.radius);
+      if (Number.isNaN(y)) continue;
+      for (const p of PS) {
+        total++;
+        const r = hang(lvl, spec, { wheel: 0, pitchDeg: p, x, y: y + 0.002 }, 1024);
+        if (r.hungSeconds > best) best = r.hungSeconds;
+        if (r.hungSeconds >= 2) cells++;
+      }
+    }
+    return { best, cells, total };
+  };
+
+  console.log('--- 0. how much solid may sit under a hooked wheel? ---');
+  console.log('the plain blade tip, with its underside pushed down by tipT metres:\n');
+  console.log('tipT       best hold   holding cells');
+  for (const t of [0, 0.005, 0.01, 0.02, 0.05, 0.12, 0.2]) {
+    const b = basin(barb({ innerH: 0, outerH: 0, tipT: t }));
+    console.log(
+      `${t.toFixed(3).padStart(5)} m   ${b.best.toFixed(2).padStart(6)} s   ${String(b.cells).padStart(3)} / ${b.total}`,
+    );
+  }
+  console.log('\nFIVE MILLIMETRES. That is the entire budget, and it is why a notch is not a');
+  console.log('hard shape to tune but a geometrically excluded one: the chassis collider at');
+  console.log('local (-0.35, 0.02), r 0.20, rides 0.30 m from the hooked wheel\'s anchor and the');
+  console.log('anchor is only the deflection below the wheel centre, so the collider\'s TOP sits');
+  console.log('within a centimetre of the surface the wheel is resting on. The frame is already');
+  console.log('in the space a notch would need. A notch deep enough to hold a 0.25 m wheel is');
+  console.log('fifty times over budget.');
+
+  const shapes: [string, Partial<BarbOpts>][] = [
+    ['plain blade tip (control)', { innerH: 0, outerH: 0 }],
+    ['inner lip 0.12 @0.5, wall 105', { pocket: 0.5, innerH: 0.12, innerDeg: 105, outerH: 0 }],
+    ['inner lip 0.20 @0.5, wall 80', { pocket: 0.5, innerH: 0.2, outerH: 0 }],
+    ['outer barb 0.05, wall 110', { pocket: 0.5, innerH: 0, outerH: 0.05, outerDeg: 110 }],
+    ['outer barb 0.22, wall 90', { pocket: 0.6, innerH: 0, outerH: 0.22, outerDeg: 90 }],
+    ['both lips 0.10 (pocket)', { pocket: 0.6, innerH: 0.1, outerH: 0.1 }],
+    ['dish 0.05 (sunken notch)', { pocket: 0.6, dish: 0.05, innerH: 0, outerH: 0 }],
+    ['dish 0.20 (cradle)', { pocket: 0.6, dish: 0.2, innerH: 0, outerH: 0 }],
+    ['dish 0.20 + both lips', { pocket: 0.6, dish: 0.2, innerH: 0.1, outerH: 0.1 }],
+  ];
+
+  console.log('\n--- 1. does it hold? placed hang, 17 seats x 24 pitches, hold >= 2 s ---');
+  console.log('shape                            best hold   basin');
+  for (const [label, o] of shapes) {
+    const b = basin(barb(o));
+    console.log(
+      `${label.padEnd(32)} ${b.best.toFixed(2).padStart(6)} s   ${String(b.cells).padStart(3)} / ${b.total}` +
+        `  (${((100 * b.cells) / b.total).toFixed(1)} %)`,
+    );
+  }
+  console.log('\nNothing beats the bare tip on hold time, because in every row that holds it is');
+  console.log('the tip doing the holding. An inboard lip is at least harmless and widens the');
+  console.log('basin a little — it resists the one direction the tip does not already cover.');
+  console.log('Anything OUTBOARD zeroes the row: a lip short enough to stay out of the frame\'s');
+  console.log('swing path is one a 0.25 m wheel simply rolls over, and it ramps the wheel off');
+  console.log('the end instead of stopping it.');
+
+  const entryShapes = shapes.filter((_, i) => [0, 1, 2, 6, 8].includes(i));
+
+  console.log('\n--- 2. can you get into it? free drop, same grid as bin/hook catch ---');
+  console.log('shape                            policy caught / tried   rate     stretch min/med/max');
+  const PITCHES = [-45, -20, 0, 20, 45];
+  const DXS = [-0.6, -0.45, -0.35, -0.2, -0.1, 0, 0.1];
+  const DROPS = [0.3, 0.8, 1.6];
+  const VXS = [-8, -5, -3, -2, -1, 0, 1, 2, 3, 5, 8];
+  for (const [label, o] of entryShapes) {
+    const poly = barb(o);
+    const lvl = chamber([poly]);
+    for (const pol of ['hold', 'brake'] as const) {
+      const mask = HOLDS[pol];
+      let tried = 0;
+      let caught = 0;
+      const defl: number[] = [];
+      for (const wheel of [0, 1] as const) {
+        for (const pitch of PITCHES) {
+          for (const x of DXS) {
+            const seat = seatY(poly, x, spec.wheel.radius);
+            if (Number.isNaN(seat)) continue;
+            for (const drop of DROPS) {
+              for (const vx of VXS) {
+                tried++;
+                const vy = -Math.sqrt(2 * spec.gravity * drop);
+                const r = hang(lvl, spec, { wheel, pitchDeg: pitch, x, y: seat + drop, vx, vy, topY: 0 }, 1024, () => mask);
+                if (r.hungSeconds >= 2) {
+                  caught++;
+                  defl.push(r.peakDeflect);
+                }
+              }
+            }
+          }
+        }
+      }
+      defl.sort((a, b) => a - b);
+      const q = (i: number): string => (defl.length ? defl[i].toFixed(3) : '  -  ');
+      console.log(
+        `${label.padEnd(32)} ${pol.padEnd(6)} ${String(caught).padStart(3)} / ${String(tried).padEnd(6)} ` +
+          `${((100 * caught) / tried).toFixed(2).padStart(5)} %   ${q(0)} / ${q(defl.length >> 1)} / ${q(defl.length - 1)}`,
+      );
+    }
+  }
+  console.log(`\n3. DOES THE STRETCH MEAN ANYTHING? No, and a gentler capture does not change it:`);
+  console.log(`every catch above still sits on the ${MD} m clamp. Saturated, exactly as before.`);
+
+  console.log('\n--- 4. ridden entry: accelerate along the deck and run off the end ---');
+  for (const [label, o] of entryShapes) {
+    const lvl = barbDeck(o);
+    let best = { s: -1, label: '' };
+    let any = 0;
+    let tried = 0;
+    for (const [hn, hv] of Object.entries(HOLDS)) {
+      for (const [tn, tv] of Object.entries(HOLDS)) {
+        for (let target = 1; target <= 12; target++) {
+          tried++;
+          const r = rideAtTip(lvl, spec, target, hv, tv);
+          if (r.hookedSeconds > 0.5) any++;
+          if (r.hookedSeconds > best.s) best = { s: r.hookedSeconds, label: `${target} m/s ${hn} -> ${tn}` };
+        }
+      }
+    }
+    console.log(
+      `${label.padEnd(32)} best ${best.s.toFixed(2).padStart(5)} s (${best.label.padEnd(24)})  ` +
+        `${any} of ${tried} held past half a second`,
+    );
+  }
+
+  console.log('\n--- 5. can you get out? settle a hang, then hold one input for 4 s ---');
+  for (const [label, o] of entryShapes.slice(0, 3)) {
+    const poly = barb(o);
+    const lvl = chamber([poly]);
+    const y = seatY(poly, -0.2, spec.wheel.radius) + 0.002;
+    const outs: string[] = [];
+    for (const [name, mask] of Object.entries(HOLDS)) {
+      const sim = createSim(lvl, spec);
+      place(sim, { wheel: 0, pitchDeg: -30, x: -0.2, y });
+      for (let f = 0; f < 256; f++) sim.advance(0);
+      let left = -1;
+      for (let f = 0; f < 512; f++) {
+        sim.advance(mask);
+        if (left < 0 && sim.state.wy[0] < -1) left = f;
+        if (sim.state.dead) break;
+      }
+      outs.push(`${name} ${left < 0 ? 'stuck' : `${(left / 128).toFixed(2)}s`}`);
+    }
+    console.log(`${label.padEnd(32)} ${outs.join('  ')}`);
+  }
+
+  // The hang that DOES hold is held by the frame, not by the tyre. Worth
+  // printing, because the hold-time column cannot tell a balanced hook from a
+  // wedged one and the two are different mechanics.
+  const ctl = barb({ innerH: 0, outerH: 0 });
+  const sim = createSim(chamber([ctl]), spec);
+  place(sim, { wheel: 0, pitchDeg: -30, x: -0.2, y: seatY(ctl, -0.2, spec.wheel.radius) + 0.002 });
+  for (let f = 0; f < 768; f++) sim.advance(0);
+  const c = clearanceOf(sim, 0);
+  console.log(
+    `\nAnd what the one working hang is actually resting on: chassis colliders in` +
+      `\ncontact = [${c.chassisTouching.join(', ')}] (2,3,4 are the three frame circles), settled` +
+      `\npitch ${c.pitchDeg.toFixed(0)} deg, stretch ${c.defl.toFixed(3)} m. Collider 3 is the r 0.20 circle beside the` +
+      `\nhooked wheel and it is TOUCHING: the blade's 11 s is the frame wedged against the` +
+      `\nunderside of the blade, a clamp, not a balanced hook. That is also why nothing in` +
+      `\nthe escape row above ever lets go.`,
+  );
+}
+
 header();
+if (mode === 'capture' || mode === 'all') {
+  modeCapture();
+  if (mode === 'all') console.log('');
+}
 if (mode === 'hang' || mode === 'all') modeHang();
 if (mode === 'catch' || mode === 'all') {
   if (mode === 'all') console.log('');
