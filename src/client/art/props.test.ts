@@ -9,6 +9,14 @@
 //
 // If a level is ever added to `levels/` that the prop system handles badly,
 // this test fails on that level by name.
+//
+// IT RUNS OVER EVERY LEVEL, CORE OR NOT, and the count below is only over the
+// core ones. Those are two different jobs and conflating them broke this test
+// the first time the level editor wrote a file: the constraints below are about
+// the prop system and must cover a draft somebody is halfway through authoring,
+// while "found all twenty" is about the SHIPPED SET and must not move because
+// somebody pressed ^S. `tier` is the field that tells them apart — absent means
+// core — and it exists precisely so a question like this has an answer.
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -39,8 +47,15 @@ function planFor(level: Level): ReturnType<typeof planProps> {
 }
 
 describe('the level set this runs against', () => {
-  it('found all twenty', () => {
-    expect(LEVELS.length).toBe(20);
+  it('found all twenty core levels', () => {
+    const core = LEVELS.filter((l) => l.level.tier === null || l.level.tier === undefined || l.level.tier === 'core');
+    expect(core.length).toBe(20);
+  });
+
+  it('also covers whatever drafts are in levels/', () => {
+    // Not an assertion about the count — there may be none — but a statement
+    // that the constraints below are not quietly skipping them.
+    expect(LEVELS.length).toBeGreaterThanOrEqual(20);
   });
 });
 

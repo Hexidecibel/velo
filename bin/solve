@@ -6,6 +6,12 @@
 #   bin/solve levels/08-needle.json --save /tmp/          # writes a replay file
 #   bin/solve levels/08-needle.json --time 900 --effort 4        # try much harder
 #   bin/solve levels/*.json --rev 5 --linear 1                   # the experimental rev
+#   bin/solve levels/21-draft.json --progress                    # say what it is doing
+#
+# --progress streams the search log as it happens instead of printing it in the
+# final report. A single-level solve is otherwise silent for one to fourteen
+# minutes, which is indistinguishable from a hung process — and it is what the
+# level editor's deliberate feedback tier reads.
 #
 # WHICH PHYSICS. `--rev` defaults to SIM_REV, the LIVE rev, and NOT to the newest
 # one that exists — a solver that quietly searched experimental physics would

@@ -7,11 +7,21 @@
 // segments on a tight curve, which is the whole reason arcs exist — and the
 // reason a hand-authored polyline is worth measuring the same way.
 //
-// It lives under bin/ rather than src/sim because it is a TOOL: nothing
-// downstream of it is ever simulated, hashed or verified. src/sim stays the set
-// of files that must import nothing and call no approximated Math.
-import { chordSag } from '../src/sim/arc.ts';
-import type { CompiledPolygon } from '../src/sim/level.ts';
+// It lives OUTSIDE src/sim because it is a TOOL: nothing downstream of it is
+// ever simulated, hashed or verified, and it calls atan2 to print a number.
+// src/sim stays the set of files that must import nothing and call no
+// approximated Math.
+//
+// It lives in src/shared rather than under bin/ because the level EDITOR needs
+// it too, and it needs it live. The whole argument of the editor's fast
+// feedback tier is that a coarse curve should be visible while you are dragging
+// the vertex that made it coarse, not in a report you run afterwards — and that
+// is only true if the browser and `bin/level-check` are running the same
+// function. A second implementation for the client would be a second set of
+// thresholds to drift apart, and the one that disagreed would be the one the
+// author was actually looking at. bin/_level-check.ts imports it from here.
+import { chordSag } from '@/sim/arc.ts';
+import type { CompiledPolygon } from '@/sim/level.ts';
 
 export interface Finding {
   x: number;

@@ -58,6 +58,7 @@ add a script rather than running an ad-hoc command.
 | Script | What it does |
 | --- | --- |
 | `bin/dev` | Vite dev server on 127.0.0.1:5173. The only way to play right now. |
+| `bin/edit` | **The level editor**: `bin/dev`, with the authoring endpoint on. Load any level, press **Q**, draw, press Q again and ride what you drew. Named separately because the endpoint is what makes `^S` write `levels/<id>.json` instead of putting a file in your downloads folder, and what lets `^ENTER` run `bin/solve` on the level in front of you. See *The level editor*. |
 | `bin/build` | `tsc -b` typecheck (a separate, mandatory step) then `vite build` into `dist/`. |
 | `bin/test` | vitest, colocated, plain node. `--watch` to re-run on change. |
 | `bin/lint` | `tsc -b` plus eslint. Both, in that order — eslint here is type-unaware. |
@@ -116,6 +117,7 @@ reap any Chrome holding one of their own profile directories before they start.
 | `` ` `` | **hide the debug readout.** Remembered. The level card, clock and apple counter stay — they are drawn in the canvas and they are the game talking — and so do the two warnings that are not telemetry. |
 | `+` / `-` / `0` | zoom in, zoom out, back to the default. A multiplier on the derived framing, remembered per device, and clamped so it can never ask for a zoom outside `minZoom`..`maxZoom`. On a phone the same variable is driven by a two-finger pinch. |
 | P | pause |
+| Q | **edit this level.** The sim freezes and you get handles; press Q again and you ride what you drew. While it is open the editor owns the keyboard — including A, S, D and the arrows — and prints every key it owns on its own panel. See *The level editor*. |
 
 **On the end-of-level screen** — which appears on a finish and never on a death
 — a few keys mean something else for as long as it is up, and it prints every
@@ -1063,18 +1065,64 @@ comfortable band at both ends.
 
 | Zone | Size | Where, and what it is owed |
 | --- | --- | --- |
-| **GAS** | 21 x 20 mm | bottom-right corner, where the thumb already rests — **held almost constantly**, so it gets the best position and the largest area |
-| **brake** | 13 x 20 mm | tiled inboard of it: you reach for it in bursts, so narrower |
-| **lean ↺ / ↻ lean** | 15 x 20 mm each | bottom-left, two zones **sharing an edge** — used constantly and switching direction mid-air |
-| **FLIP** | 34 x 13 mm | directly above the right cluster, across a **3 mm dead strip**: rare, critical, reached by rolling the right thumb up off the gas |
-| restart, levels, full screen, gas mode, zoom | 13 x 9 mm each | a 3 x 2 block at the top-left, below the HUD band and dimmer than the controls — you press these between runs and the others during one |
+| **GAS** | 21 x 15 mm | bottom-right corner, where the thumb already rests — **held almost constantly**, so it gets the best position and the largest area |
+| **brake** | 13 x 15 mm | tiled inboard of it: you reach for it in bursts, so narrower |
+| **lean ↺ / ↻ lean** | 15 x 15 mm each | bottom-left, two zones **sharing an edge** — used constantly and switching direction mid-air |
+| **FLIP** | 34 x 11 mm | directly above the right cluster, across a **3 mm dead strip**: rare, critical, reached by rolling the right thumb up off the gas |
+| restart, more | 13 x 9 mm each | the **bottom gutter** between the two clusters, dimmer than the controls — see *Five permanent pads for five occasional actions* below |
+| levels, full screen, gas mode, zoom | 13 x 9 mm each | **behind `more`**, and on the glass only while the drawer is open |
 
-That comes to about a fifth of a landscape phone's glass, and all of it in the
-corners; the previous layout was nearer 40% and in the middle of everything. On
+That comes to about a sixth of a landscape phone's glass and all of it along the
+bottom edge; the previous layout was nearer 40% and in the middle of everything,
+and the one before this was 25% with a row of buttons across the top. On
 a viewport too narrow to hold both clusters — a 360 px portrait phone is 60 mm
 across and the clusters plus their gap want 76 — the whole thing **scales** down
 rather than reflowing, because the positions are what a player learns, and it
 stops at the comfortable minimum rather than shrinking forever.
+
+### Five permanent pads for five occasional actions was a bad trade
+
+A pass before this one moved restart, levels, full screen, gas-mode and zoom into
+a small 3 x 2 block at the top-left with a one-row fallback "only when the screen
+is too short for two". A large Android phone in landscape **took the fallback**,
+and one row turned out to be far worse than two: five pads side by side span
+nearly half the width of a 915 px screen, straight across the band the bike is
+framed in, and the bike rode along behind them.
+
+The fix is not a better block. **Four of the five are occasional** — none of them
+is pressed during a run — and permanent glass in the middle of the picture is the
+wrong price for them. So `levels`, `full screen`, `gas: held/auto` and the zoom
+readout now live behind a single **`more`** pad, which prints `close` and lights
+up while it is open. Anything else shuts it again: any of the four, restart, and
+the first hold pad you press, which is the one that matters — the drawer cannot
+survive into a run.
+
+**Restart is the exception, and it earns it.** There is no R key on a phone and
+this is a die-and-retry game, so it keeps a pad of its own next to `more`.
+
+Both of them sit in the **bottom gutter**: the strip of glass between the two
+thumb clusters, which on a landscape phone is 70-odd millimetres that no thumb
+rests on, that the camera never frames the bike in, and that is otherwise doing
+nothing at all. They keep 5 mm clear of each cluster so that a press on the
+inboard edge of the lean pads is a different gesture rather than a near miss, and
+the drawer opens *upward into the same gutter* wherever it fits there — on a 915
+px-wide phone all four go in one row below the pads' top edge. On a narrower
+landscape screen the gutter only takes two across, and rather than pile three
+rows up through the play band the drawer opens as one wide row above both
+clusters instead. In portrait there is no gutter at all — the clusters already
+fill the width — so the commands fall back to a narrow block at the top-left,
+which portrait can afford because the dimension it is short of is width.
+
+### The pads got shorter, and the level got the room
+
+20 mm of pad height was chosen when nothing else wanted the space. On the 310
+px-tall landscape viewport a real phone hands you that is **39% of the glass**,
+and the band left over for the level is thinner than the pads are — which is the
+screen doing the opposite of its job. 15 mm is still inside the generous band for
+a thumb, and it hands back about 60 px of the one dimension a landscape phone has
+none of. The test asserts the shape of that rule rather than the number: the
+clear band above the pads has to be **taller than the pads under it**, on every
+landscape viewport in the table.
 
 **The dead strip under FLIP is the one gap in the layout, and it is deliberate.**
 Everywhere else a gap would eat an input. There it prevents one: a thumb
@@ -1171,16 +1219,36 @@ So it is derived, from the two things that are actually covering the glass:
 switching to auto-throttle, rotating the phone or the URL bar collapsing all move
 it, and all of them ease.
 
-| viewport | pads cover | derived bias | bike sits |
-| --- | --- | --- | --- |
-| 1600 x 900 desktop | nothing | 0 | dead centre |
-| 1180 x 820 tablet | 141 px | 0.109 | 366 px down of 820 |
-| 915 x 348 phone + browser chrome | 141 px | 0.256 | 130 px down of 348 |
-| 736 x 280 small phone | 136 px | 0.209 | 111 px down of 280 |
-| 412 x 800 portrait | 127 px | 0.094 | 362 px down of 800 |
+| viewport | pads cover | derived bias | bike sits | middle of the clear band |
+| --- | --- | --- | --- | --- |
+| 1600 x 900 desktop | nothing | 0 | dead centre | — |
+| 1180 x 820 tablet | 111 px | 0.072 | 381 px down of 820 | 381 |
+| 915 x 348 phone + browser chrome | 111 px | 0.170 | 145 px down of 348 | 145 |
+| 915 x 310 phone + browser chrome | 111 px | 0.190 | 126 px down of 310 | 126 |
+| 736 x 280 small phone | 111 px | 0.209 | 111 px down of 280 | 111 |
+| 412 x 800 portrait | 101 px | 0.061 | 376 px down of 800 | 376 |
 
 In every row the bike ends up in the middle of the band nothing is covering,
 which is the only thing the rule says.
+
+**And that is the third thing the screenshot showed.** None of the arithmetic
+above changed in the pass that moved the pads; it did not need to. The derivation
+was already right and it was being fed a wrong picture of the screen: the pads
+were not where it thought, and there was a row of command buttons sitting in the
+top band it was pushing the bike *into*. Bias is only as good as the claim that
+the space it aims at is empty. With the pads genuinely on the bottom edge and the
+commands out of the top, the insets fell from 141 px to 111 and the bias with
+them — and the bike landed in the middle of the clear band to the pixel on every
+viewport, which is what the two rightmost columns above are for.
+
+**The visible glass is not always the fixed overlay, either.** `#touch` is
+`position: fixed; inset: 0`, so its rect is the *layout* viewport, and browser
+chrome appearing, a software keyboard and a pinch-zoomed page all move the
+*visual* viewport around inside it. A pad placed against the layout viewport is
+then somewhere the hand is not — below the fold, or with a band of unreachable
+screen under it. `visualViewport` is the browser's own answer, and it folds into
+the safe-area insets the layout already understands rather than being a second
+concept: the part of the fixed overlay outside the visible rect *is* an inset.
 
 **The phone was being shown less than half the level, and that was the real
 bug.** There used to be a `zoomBias: 1.25` here, reasoned from "the bike is only
@@ -3220,6 +3288,271 @@ The `effort` component also depends on the solver's own parameters, so scores
 are comparable **within a run** and not across solver versions. `precision`,
 `clearance` and the raw measurements behind them do not have that problem.
 
+## The level editor
+
+**Press Q. Edit the level you are standing in. Press Q again and ride it.**
+
+There is no export step, no reload, no second application and no dialog in
+between. Draw a ledge, fail to clear it, drop it 20 cm, try again — that is the
+sentence the whole design is arranged around, and everything below is either
+protecting it or getting out of its way.
+
+It runs on the desktop only, by construction rather than by a check: it is a
+keyboard-and-mouse job, Q is not reachable without a keyboard, and nothing in
+it touches the touch layout.
+
+### Editing a core level forks it. Always.
+
+The twenty shipped levels are the curriculum and they carry the leaderboard.
+Opening `03-mind-your-head` and adding a jump produces a **new file** —
+`03-mind-your-head-fork` by default, renamed in the panel — with
+`provenance.parent` recording the simHash and the name of what it came from. The
+original is not touched and cannot be.
+
+That is what makes *"what if there was a jump here"* free. It is also what makes
+the set a family tree rather than a pile of near-duplicates: the parent edge is
+not recoverable after the fact — nothing else knows it, and no amount of
+comparing geometry reconstructs intent — so it is written at the moment of the
+fork. A fork of a fork records its *immediate* parent, because flattening the
+chain to the original would lose every intermediate step, which is the
+interesting part.
+
+**The rule is enforced at the endpoint, not in the UI**, and it needs no list of
+protected filenames to keep up to date:
+
+> a write is allowed to a path that does not exist, or to one whose file on disk
+> declares a tier that is not `core`. **Absent tier is core.**
+
+The twenty shipped levels carry no `tier`, so they are core by that rule without
+anybody having to remember them. A level the editor wrote carries
+`"tier": "draft"`, so saving over your own draft is the ordinary case it looks
+like. And promoting a level to core — a hand edit, a curation decision,
+deliberately not a workflow — takes it out of the editor's reach in the same
+motion, which is what promotion ought to mean.
+
+Probed over HTTP against the live endpoint:
+
+| request | answer |
+| --- | --- |
+| save `03-mind-your-head`, no tier | 403 — *the editor cannot write a level with tier "core"* |
+| save `03-mind-your-head`, tier `draft` | 403 — *levels/03-mind-your-head.json is a CORE level* |
+| save `99-minted-core`, tier `core` | 403 — the editor cannot MINT core levels either |
+| save `../../etc/velo` | 403 — not a level id |
+| save something that is not a level | 400 — with the loader's own message |
+
+**Promotion keeps the board, and that is not a coincidence.** Leaderboards key
+on `simHash`, which is geometry. `tier` is not in `simHash` — it is tested the
+way `style` and `provenance` are — so a community level that has accumulated
+real times keeps every one of them when it is promoted. Promotion is a curation
+flag, never a re-identification. If tier had entered `simHash`, promoting a
+level would have wiped the board it exists to reward.
+
+### Feedback, in two tiers
+
+The interesting design problem, and the split is not about what is *useful* —
+it is about what fits inside a `pointermove`.
+
+**Fast: everything cheap, on every edit.** The real loader and the real sag
+metric, run unconditionally on every keystroke and every drag, with the answer
+drawn where the problem is rather than printed afterwards:
+
+- every rejection `parseLevel` has — a zero-length edge, a duplicate vertex, a
+  non-finite coordinate, a degenerate polygon, an apple inside solid, a start in
+  a wall — **with the loader's own message**, and put on the map: the loader
+  names `level.polygons[2].points[5]` because it was written for somebody in a
+  text editor, and in an editor that is a coordinate. An error you can be shown
+  is worth several you have to go and find.
+- **sag** — the same `sagFindings` `bin/level-check` prints, from the same file.
+  It moved out of `bin/` into `src/shared/sag.ts` for exactly this: a second
+  implementation for the client would be a second set of thresholds to drift
+  apart, and the one that disagreed would be the one the author was looking at.
+- **the measured envelope**, deliberately narrowly: a *floor* steeper than 34°
+  for more than 1.5 m, and a near-vertical face between 0.35 m and 3 m. Under
+  0.35 m the bike rides up it; over 3 m nobody thought they were riding it; in
+  between is the range where a level looks passable and is not. Calibrated
+  against the twenty shipped levels — twelve are completely silent and the
+  worst is eleven findings, all of them on levels whose lesson *is* a wall.
+- **headroom** at the start, at every apple and at the flower. One vertical
+  probe each, so it costs nothing, and it catches the mistake that is invisible
+  on screen: a ceiling that looks generous at overview zoom and is 1.05 m of
+  actual gap. `19-low-roof`, whose whole lesson is riding near this limit,
+  measures 1.35 m at its tightest and is correctly silent.
+
+All of it warns and none of it rejects, except the loader, which already did. A
+deliberate hard edge is legitimate level design — `bin/level-check` says so in
+as many words, and a tool that called it an error is a tool you stop reading.
+
+**Deliberate: `bin/solve`, on ^ENTER.** One to fourteen minutes on a core. There
+is no version of that which belongs in a pointermove and no cheaper search that
+answers the same question — and the scripted pilot is not an answer, because
+`bin/level-drive` **has been wrong about completability twice**, and telling an
+author their level is broken when it is not is worse than telling them nothing.
+
+So it is fired explicitly, reports progress from the solver's own log while it
+runs (`bin/solve --progress`, added for this — a single-level solve was
+otherwise silent for minutes, which is indistinguishable from a hung process),
+and hands back all four things the search produces: completable or an honest
+*could not* with the point it stalled at, the winning apple order, the
+difficulty score on the same 0-100 scale the chooser shows for the shipped
+twenty, and **a verified replay you can watch**, loaded through the same path as
+any other replay file.
+
+It runs through `bin/solve` as a child process rather than calling the solver
+in-process: it is the documented entry point, it already owns the rev choice,
+the re-verification and the replay envelope, and a three-minute CPU burn does
+not belong on the dev server's event loop.
+
+### The bike is the ruler
+
+Levels are in metres and a metre is nothing to look at. What an author needs to
+know is whether the thing they just drew is bike-sized, and the only honest
+answer to that is a bike drawn against it at the same scale — so there is one at
+the pointer, 1.70 m long, with the head sphere picked out in red.
+
+Every dimension of it comes out of the live `BikeSpec`, and the resting height
+is **measured rather than derived**: `measureRestingBike` stands an actual sim on
+an actual flat floor for a second and reads the answer off it. The closed form —
+sprung weight over two springs — is off by about a centimetre, because the static
+equilibrium involves the contact slop and the rider arm, and a ruler may not
+round in the dangerous direction when the numbers that matter are 1.20 m clean
+and 1.10 m fatal.
+
+Beside it, a **gap probe**: a vertical line through the pointer from floor to
+ceiling with the height on it, green over 1.20 m, amber under it, red under
+1.10 m. It is the editor's most-used instrument and it is the simplest one that
+is exactly right.
+
+### Precision
+
+A grid, snapping by default at 0.25 m, `[` and `]` to change it, `G` to turn it
+off. Coordinates are quantised to a tenth of a millimetre **at the moment of the
+edit and never on save** — a pointer produces `0.30000000000000004`, a level file
+full of those is not hand-editable, and quantising on save instead would mean
+the file differed from the document that wrote it.
+
+And every handle can be typed instead of dragged: the x, y and bulge of whatever
+is selected are three fields in the panel, and `T` puts the caret in the first
+one. Arrows nudge by one grid step, ten with shift, and **a centimetre with alt**
+— which is the unit the 1.20/1.10 difference lives in.
+
+### The arc primitive has a handle
+
+Curves are what keep levels short and smooth, and an author who cannot reach the
+arc primitive hand-places hundreds of vertices. So every edge carries a diamond
+at the middle of its arc; drag it and the perpendicular distance you dragged it
+**is** `bulge`, in metres, which is exactly what the file stores. No radius, no
+large-arc flag, no dialog. The chord it is measured off is drawn as a dashed
+line, which is the one piece of geometry that makes the number legible; a
+double-click flattens the edge.
+
+Dragging the handle and typing the number are the same operation, and
+`bulgeFor`/`arcHandle` are asserted to be exact inverses so that a handle picked
+up and put down in the same place does not drift.
+
+### Saving: what it does, and what it cannot do
+
+Two routes, and the editor uses whichever is there without asking:
+
+1. **The authoring endpoint.** Present under `bin/edit`/`bin/dev` only — it is a
+   Vite dev-server middleware, and `src/server/index.ts`, the process that
+   actually serves velo.cush.rocks, never imports it. One keypress writes
+   `levels/<id>.json`. This is the real path.
+2. **A download, plus the file text on the clipboard.** What is left on the
+   deployed game, or over a tunnel from another machine. It works and it is not
+   pretending: the browser saves a file into the browser's downloads folder and
+   a human moves it.
+
+**A browser cannot write to the repo**, and a save button that looked like it had
+would cost somebody an afternoon of work. So the panel says plainly which of the
+two it is in, including how to get the other one, rather than letting you find
+out afterwards.
+
+The one honest cost of route 1: `levels/` is a build-time glob, so **writing a
+file into it reloads the page**. The editor therefore keeps its document in
+`sessionStorage`, reloads the level it describes, reopens itself on it, and
+carries its own "wrote levels/21-rollers.json" confirmation across the reload —
+which it did not, the first time this was used in anger, and a save that says
+nothing is a save you do twice.
+
+### What the game does differently while you are editing
+
+Four things, each of which would otherwise be actively wrong rather than merely
+untidy:
+
+- **the sim freezes.** Nothing is being ridden, and a clock running under an
+  editor is a recording of nothing.
+- **the play chrome goes** — the level bar, the legend, the leaderboard, the
+  ghost, the off-screen markers and the in-canvas card. The card would name the
+  level you forked rather than the one on screen, and the ghost is somebody
+  else's line through a level that no longer exists.
+- **the derived look is pinned.** The palette, the panel variant and the prop
+  seeds are all derived from `simHash`, which *moves on every edit*. Left alone,
+  a level re-rolls its entire appearance every time a vertex is dragged.
+- **the props go.** A prop can be dragged into a corridor and read as terrain —
+  the art's own rule — and while you are drawing the corridor that is exactly
+  the confusion you cannot afford.
+
+Everything else is the real renderer drawing the real level, because every
+compiling edit is pushed back into the game as the level it now is. That push is
+debounced by 150 ms: `bakeLevel` rebuilds a level's panels and hatch, and doing
+that on every pointermove would spend the frame budget on decoration while the
+author is looking at a thin outline anyway. So the outline leads and the filled
+picture catches up.
+
+### Undo is a stack of documents
+
+Not a set of hand-written inverse commands. A level is a few hundred vertices, a
+snapshot is a few tens of KB, and a structural clone is microseconds — so the
+cheap, obviously-correct mechanism is also the fast one. Hand-written inverses
+are where undo bugs live, and an undo bug in an authoring tool costs work rather
+than pixels.
+
+A drag coalesces into one entry by label, so undoing a drag undoes the drag
+rather than one pixel of it.
+
+### The round trip is exact
+
+`docFromRaw` reads the **authoring** form, not `parseLevel`'s output. That
+distinction is the whole reason the editor is usable on the shipped levels:
+going through the loader would open nine arcs as three hundred straight
+segments. Asserted over every level in `levels/`: reading and rewriting
+preserves `simHash`, the arc count, the generated-vertex count, the decor and
+the apples exactly — and a file the editor wrote re-opens byte-identically and
+is a fixpoint thereafter.
+
+It even remembers that three of the shipped levels write `{"arcTo": ..., "bulge": 0}`
+where a bare `[x, y]` would be identical to the loader, so that a fork's diff
+against its parent shows only changes that are changes.
+
+### The keys
+
+The editor takes the keyboard in the **capture phase** while it is open.
+`input.ts` binds W/A/S/D, the arrows, space and shift to sim bits and returns
+before any command dispatch, so those keys are unreachable to anything else — a
+bug that already cost the montage its keyboard binding once. An editor that
+could not use `A` for *apple* or the arrows for *nudge* would be an editor
+fighting its own game. It prints every key it owns on its own panel, which is
+the same rule the end-of-level screen follows.
+
+| Key | |
+| --- | --- |
+| Q | back to riding |
+| Z / ⇧Z | undo, redo (^Z and ^⇧Z too) |
+| N | new polygon at the pointer — 1 cave, 2 ground, 3 decor |
+| Enter / Esc | close the polygon / discard it, or deselect |
+| drag a square | move a vertex |
+| drag a diamond | bend the edge — that distance *is* `bulge` |
+| alt-click an edge | insert a vertex there and start dragging it |
+| E | insert a vertex in the nearest edge |
+| Del / ⇧Del | delete the selection / the whole polygon |
+| A / S / F | apple here / start here / flower here |
+| arrows | nudge by the grid — ten with shift, **a centimetre with alt** |
+| T | type an exact number |
+| G, `[`, `]` | grid on/off, finer, coarser |
+| B | the bike at the pointer, on/off |
+| right-drag, wheel, TAB | pan, zoom, frame the level |
+| ^S / ^ENTER | save / solve |
+
 ## Level format
 
 JSON, hand-writable, **y-up** (gravity is `-y`; the renderer flips). See
@@ -3243,6 +3576,18 @@ and `src/sim/curvelevel.ts`, which are the same data as TypeScript literals.
 }
 ```
 
+- `tier` is the curation tier — `core`, `community`, `draft`, or whatever a
+  later curation pass calls it. **Absent means core**, which is what every level
+  that shipped before the field existed carries, and the asymmetry is
+  deliberate: the safe reading of "no tier" is the one that protects them. It is
+  not in `simHash`, so **promoting a level keeps every time set on it**; it is in
+  `contentHash`, because it is content. The authoring endpoint keys its one hard
+  refusal off exactly this field — see *The level editor*.
+- `provenance` records where the file came from, and `provenance.parent` records
+  **the level it was forked from**, by `simHash` and name. The editor writes it
+  at the moment of the fork, because it is not recoverable afterwards. Neither
+  is in `simHash`: two runs of a generator that land on identical geometry are
+  the same level as far as a leaderboard is concerned.
 - `kind` replaces a winding convention **deliberately**. Winding is an invisible
   failure mode for a hand-author: get the vertex order backwards and the level
   loads fine with inside-out collision. `cave` means the playable space is
@@ -3422,8 +3767,10 @@ error is a tool you stop reading. Two gates keep it honest: a turn sharper than
 45° is read as a corner rather than a coarsely sampled curve, and a vertex must
 sit in a *run* of same-direction turns, because one isolated kink is a corner
 and there is no true curve for it to sag away from. The metric lives in
-`bin/_sag.ts` and `src/sim/curvelevel.test.ts` asserts against the same function,
-so the tool and the test cannot disagree about what "too coarse" means.
+`src/shared/sag.ts`; `bin/level-check`, `src/sim/curvelevel.test.ts` and **the
+level editor's live feedback** all call the same function, so the tool, the test
+and the thing the author is actually looking at cannot disagree about what "too
+coarse" means. It started under `bin/` and moved when the editor needed it live.
 
 ## Versioning
 
@@ -3458,7 +3805,7 @@ leaderboard *forks* by rev rather than resetting.
 ```
 index.html          Vite entry at the repo root
 src/sim/            the deterministic core — imports NOTHING
-src/shared/         the two things BOTH halves have to agree about and neither
+src/shared/         the things BOTH halves have to agree about and neither
                     may own: appearance.ts is the cosmetic catalogue (six bikes,
                     ten liveries, the accessories) plus the tolerant parser and
                     the stable per-playerId derivation — the client draws from
@@ -3466,7 +3813,12 @@ src/shared/         the two things BOTH halves have to agree about and neither
                     reach BikeSpec; claim.ts is the cross-device claim URL and
                     the typable code. Like src/sim it imports nothing, touches
                     no DOM and reads no clock, for the same reason: one copy is
-                    how the two sides stay in step.
+                    how the two sides stay in step. sag.ts is the third and was
+                    moved here out of bin/ when the editor needed it LIVE: it is
+                    what bin/level-check warns with and what the editor draws
+                    while you drag the vertex that made a run coarse, and two
+                    implementations would be two sets of thresholds to drift
+                    apart.
 src/solver/         the headless solver. field.ts is the level as a MAP
                     (occupancy grid, clearance, geodesic distance fields);
                     search.ts is the macro-action best-first search and its
@@ -3529,6 +3881,20 @@ src/client/         canvas renderer, input, tuning panel, record-and-replay
                     the sim's own IN_* bits and reaches the sim through
                     input.mask(), so a touch run and a keyboard run are the same
                     bytes.
+src/client/editor/  the level editor. doc.ts is the document and every
+                    operation on it — pure, immutable, and the reason undo is a
+                    stack of whole documents rather than a set of inverses;
+                    geom.ts is snapping, hit-testing, the arc handle and the gap
+                    probe; check.ts is the fast feedback tier (the real loader,
+                    the real sag metric, the measured envelope) turned into one
+                    list of findings with a place on the map; silhouette.ts is
+                    the bike as a ruler, measured off a settled sim rather than
+                    derived; save.ts and solve.ts are the two save routes and the
+                    client half of bin/solve, both with their decisions in pure
+                    functions and only the fetches outside them. All of those
+                    test in plain node. overlay.ts, panel.ts and index.ts are the
+                    canvas, the DOM and the wiring, and are the only parts that
+                    do not.
 src/server/         Hono, the published bundle, and the leaderboard.
                     board.ts is the board as ARITHMETIC — placement, ranks, the
                     entry above you — with no filesystem in it, so it tests in
@@ -3537,6 +3903,13 @@ src/server/         Hono, the published bundle, and the leaderboard.
                     verification off the request handler with a budget;
                     limits.ts is every cap in one screen; runs.ts is the
                     submission pipeline; api.ts is the routes.
+                    authoring.ts is the exception to the sentence above: it is
+                    NOT part of the server. index.ts never imports it, so the
+                    deployed game has no route that writes a level; vite.config
+                    installs it as dev middleware, which is what makes the level
+                    editor's save button write into levels/ and its solve button
+                    run bin/solve. It lives here because it needs parseLevel and
+                    a filesystem, not because it ships.
 src/client/audio/   the sound. params.ts is the panel's knobs; model.ts is the
                     whole of the feel as PURE numbers (sim state -> synth
                     parameters) and tests in plain node; engine.ts is the
@@ -3555,8 +3928,7 @@ levels/             exported level JSON
 
 `bin/` also holds underscore-prefixed modules that are imported rather than run:
 `_board.ts` and `_submit.ts` (the leaderboard tools),
-`_smoke.mjs` (the headless Chrome driver), `_audiobench.mjs`, `_sag.ts` (the coarse-run metric,
-shared by `bin/level-check` and `src/sim/curvelevel.test.ts`), `_pilot.ts` (the
+`_smoke.mjs` (the headless Chrome driver), `_audiobench.mjs`, `_pilot.ts` (the
 scripted rider), `_solve.ts`, `_solve-run.ts` and `_solve-worker.ts` (the
 solver's CLI, the one-level-and-score routine both the in-process and worker
 paths call, and the worker itself), `_slope.ts`, `_air.ts` and `_dive.ts` (the

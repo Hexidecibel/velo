@@ -92,6 +92,14 @@ export interface ChooserItem {
   /** Why there is no rating, when there is none. Never empty if rating is null. */
   unratedNote: string;
   current: boolean;
+  /**
+   * Curation tier. Null — which is what every shipped level carries — means
+   * CORE, so only the non-core ones are worth a badge: while somebody is
+   * authoring their way from twenty levels to fifty, "which of these is mine
+   * and still in progress" is the one thing a list of names cannot answer.
+   * See `Level.tier`; it is not in simHash, so a promotion keeps the board.
+   */
+  tier: string | null;
 }
 
 export interface ChooserGroup {
@@ -167,6 +175,7 @@ export function buildItem(entry: LevelEntry, o: ChooserOpts): ChooserItem {
     rating,
     unratedNote: note,
     current: entry.id === o.currentId,
+    tier: lvl?.tier ?? null,
   };
 }
 

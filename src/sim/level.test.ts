@@ -196,6 +196,53 @@ describe('the two hashes', () => {
     expect(() => parseLevel({ ...TEST_LEVEL, provenance: null })).toThrow(/level.provenance/);
   });
 
+  it('tier is curation, not identity: it moves contentHash and NEVER simHash', () => {
+    // THE WHOLE POINT OF PROMOTION. A community level accumulates real times
+    // under its own simHash. Promoting it to core changes no geometry, so every
+    // one of those times has to carry over untouched — which is true if and only
+    // if tier stays out of simHash. If it entered, promotion would wipe the
+    // board it exists to reward, which is the same bug `style` and `provenance`
+    // are guarded against, arriving through the field most likely to be flipped
+    // by hand long after the level was authored.
+    const a = parseLevel(TEST_LEVEL);
+    expect(a.tier).toBeNull();
+
+    const draft = parseLevel({ ...TEST_LEVEL, tier: 'draft' });
+    expect(draft.simHash).toBe(a.simHash);
+    expect(draft.contentHash).not.toBe(a.contentHash);
+    expect(draft.tier).toBe('draft');
+
+    // The promotion itself: draft -> community -> core, all one level.
+    const community = parseLevel({ ...TEST_LEVEL, tier: 'community' });
+    const core = parseLevel({ ...TEST_LEVEL, tier: 'core' });
+    expect(community.simHash).toBe(a.simHash);
+    expect(core.simHash).toBe(a.simHash);
+    expect(community.contentHash).not.toBe(draft.contentHash);
+    expect(core.contentHash).not.toBe(community.contentHash);
+  });
+
+  it('does not police the tier string, but does refuse a non-string', () => {
+    // Not an enum, for the same reason `provenance.source` is not one: a
+    // curation pass that does not exist yet will want a word this build has
+    // never heard of. `"tier": 3` is a mistake rather than a hint, though.
+    expect(parseLevel({ ...TEST_LEVEL, tier: 'featured-2027' }).tier).toBe('featured-2027');
+    expect(() => parseLevel({ ...TEST_LEVEL, tier: 3 })).toThrow(/level.tier/);
+    expect(() => parseLevel({ ...TEST_LEVEL, tier: null })).toThrow(/level.tier/);
+  });
+
+  it('records a fork as provenance.parent without touching identity', () => {
+    // The family tree edge. It is the simHash of the level the fork came from,
+    // not its filename, for the same reason leaderboards key on simHash.
+    const a = parseLevel(TEST_LEVEL);
+    const fork = parseLevel({
+      ...TEST_LEVEL,
+      tier: 'draft',
+      provenance: { source: 'authored', generator: 'velo-editor', parent: { simHash: a.simHash, name: a.name } },
+    });
+    expect(fork.simHash).toBe(a.simHash);
+    expect(fork.provenance?.parent).toEqual({ simHash: a.simHash, name: a.name });
+  });
+
   it('simHash ignores decor', () => {
     const a = parseLevel(TEST_LEVEL);
     const b = parseLevel({ ...TEST_LEVEL, polygons: TEST_LEVEL.polygons.filter((p) => p.kind !== 'decor') });

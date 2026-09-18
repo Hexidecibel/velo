@@ -97,7 +97,12 @@ export function createChooserUi(root: HTMLElement, cb: ChooserUiCallbacks): Choo
     b.append(shot);
 
     const meta = el('div', 'ch-meta');
-    meta.append(el('div', 'ch-name', item.label));
+    const name = el('div', 'ch-name');
+    name.append(document.createTextNode(item.label));
+    // Only the non-core ones. Absent tier is core and that is the overwhelming
+    // majority, so badging it would be twenty identical labels.
+    if (item.tier && item.tier !== 'core') name.append(el('span', 'ch-tier', item.tier));
+    meta.append(name);
 
     if (item.broken) {
       meta.append(el('div', 'ch-err', `does not load: ${item.error ?? '?'}`));

@@ -140,6 +140,26 @@ export interface LevelProvenance {
   generator?: string;
   /** What the generator ran from, so the level can be made again. */
   seed?: number | string;
+  /**
+   * THE LEVEL THIS ONE WAS FORKED FROM — its `simHash`, and its name so a human
+   * reading the file can tell what it was without a lookup table.
+   *
+   * The editor never mutates a level it did not create: opening 03 and adding a
+   * jump produces a NEW file, which is what keeps the shipped set and every
+   * leaderboard on it pristine while making "what if there was a jump here" a
+   * cheap experiment. That is only a family TREE rather than a pile of
+   * near-duplicates if the edge is recorded, and the edge is not recoverable
+   * afterwards — nothing else knows it and no amount of geometry comparison
+   * reconstructs intent. So it is written at the moment of the fork.
+   *
+   * `simHash` and not the id or the filename, for the same reason leaderboards
+   * key on it: a file can be renamed and a level cannot be re-identified.
+   *
+   * Typed for legibility only. Like every other field here it is tolerated
+   * rather than policed, because a generator this build has never heard of is
+   * exactly the case this block exists to serve.
+   */
+  parent?: { simHash?: string; name?: string; [key: string]: unknown };
   [key: string]: unknown;
 }
 
@@ -156,6 +176,15 @@ export interface RawLevel {
   style?: LevelStyle;
   /** Optional metadata about how the file came to exist. Never read by the sim. */
   provenance?: LevelProvenance;
+  /**
+   * Curation tier: "core", "community", "draft", or whatever a later curation
+   * pass calls it. Absent means CORE — every level that shipped before this
+   * field existed is one, and they are deliberately not backfilled.
+   *
+   * See `Level.tier` for why it is a string rather than an enum, why it is not
+   * in simHash, and why the authoring endpoint keys its one hard refusal off it.
+   */
+  tier?: string;
   start: Vec2;
   flower: Vec2;
   apples?: Vec2[];
@@ -262,6 +291,40 @@ export interface Level {
    * Parsed and otherwise ignored in this phase. No behaviour hangs off it yet.
    */
   provenance: LevelProvenance | null;
+  /**
+   * WHICH TIER THIS LEVEL IS IN. "core" for the shipped curriculum, anything
+   * else — "draft", "community" — for a level somebody made.
+   *
+   * ABSENT IS CORE, and that asymmetry is deliberate: the twenty levels that
+   * shipped before this field existed carry no tier, and the safe reading of
+   * "no tier" is the one that protects them. The authoring endpoint keys its
+   * single hard refusal off exactly this: it will write a file that does not
+   * exist, or one that already declares a non-core tier, and nothing else. A
+   * core level therefore cannot be overwritten by the editor at all — not by
+   * convention, but because there is no request that does it.
+   *
+   * NOT IN simHash, and that is the whole point of having it as a field rather
+   * than as a directory. simHash is geometry, leaderboards key on geometry, and
+   * a community level accumulates real times under its own hash. PROMOTING it
+   * to core changes no geometry, so every time set on it before promotion
+   * carries over untouched — promotion is a curation flag, never a
+   * re-identification. If tier entered simHash, promoting a level would wipe
+   * every time on it, which is precisely the bug the two-hash split exists to
+   * prevent. It is in contentHash, because it is content.
+   *
+   * A STRING AND NOT AN ENUM, for the same reason `provenance.source` is one: a
+   * curation pass that does not exist yet will want a value this build has
+   * never heard of, and rejecting it would make a metadata field able to stop a
+   * level loading.
+   *
+   * OPTIONAL ON THE TYPE, always present on anything `parseLevel` returns. The
+   * frozen rev directories carry their own byte-identical copy of this file
+   * from before the field existed, and `getEngine(4)` has to keep handing out
+   * their `Level` through the same `Engine` interface. A required field here
+   * would break that — and un-freezing a rev to add a metadata field would
+   * break something far more important. Read it as `level.tier ?? null`.
+   */
+  tier?: string | null;
 }
 
 export class LevelError extends Error {}
@@ -334,6 +397,16 @@ export function parseLevel(raw: unknown): Level {
       bad('level.provenance: expected an object');
     }
     provenance = r.provenance;
+  }
+
+  // Shape only, and the same tolerance the two blocks above get. A tier this
+  // build does not recognise is carried through untouched: the editor and the
+  // authoring endpoint only ever ask "is this the absent/core case", which a
+  // string they have never seen answers correctly by not being absent.
+  let tier: string | null = null;
+  if (r.tier !== undefined) {
+    if (typeof r.tier !== 'string') bad('level.tier: expected a string');
+    tier = r.tier;
   }
 
   const start = vec(r.start, 'level.start');
@@ -435,6 +508,7 @@ export function parseLevel(raw: unknown): Level {
     contentHash: '',
     style,
     provenance,
+    tier,
   };
   level.simHash = computeSimHash(level);
   level.contentHash = computeContentHash(r);

@@ -8,6 +8,7 @@ import type { BikeSpec } from '@/sim/spec.ts';
 import { copyState } from '@/sim/step.ts';
 import type { SimState } from '@/sim/step.ts';
 import { applySpecOverride, diffSpec } from '@/sim/spec.ts';
+import { parseLevel } from '@/sim/level.ts';
 import { checkReplayCompat, decodeInputs, replaySpec, ticksToSeconds } from '@/sim/replay.ts';
 import type { Replay, ReplayFile } from '@/sim/replay.ts';
 import { SIM_REV } from '@/sim/rev.ts';
@@ -23,7 +24,7 @@ import { createPanel } from './panel.ts';
 import { BOOT_PRESET, PRESETS } from './presets.ts';
 import { createAttemptLog, createRecorder, MIN_BANKED_FRAMES, verify } from './recorder.ts';
 import { crossCheck } from '@/sim/crosscheck.ts';
-import { LEVELS, adoptLevel, findBySimHash, resolveLevel } from './levels.ts';
+import { LEVELS, adoptLevel, findBySimHash, resolveLevel, upsertLevel } from './levels.ts';
 import type { LevelEntry } from './levels.ts';
 import { createLegend, createLevelBar } from './chrome.ts';
 import { buildChooser, chooserSummary, CHOOSER_SORTS } from './chooser.ts';
@@ -64,6 +65,7 @@ import { createAudio } from './audio/index.ts';
 import { cloneAudio, DEFAULT_AUDIO } from './audio/params.ts';
 import { sampleRide } from './audio/sample.ts';
 import { CONCRETE, levelPalette } from './art/palette.ts';
+import { createEditor } from './editor/index.ts';
 
 const canvas = document.getElementById('view') as HTMLCanvasElement;
 const hud = document.getElementById('hud') as HTMLElement;
@@ -77,6 +79,7 @@ const chooserRoot = document.getElementById('chooser') as HTMLElement;
 const lookRoot = document.getElementById('look') as HTMLElement;
 const claimRoot = document.getElementById('claim') as HTMLElement;
 const touchRoot = document.getElementById('touch') as HTMLElement;
+const editorRoot = document.getElementById('editor') as HTMLElement;
 const ctx = canvas.getContext('2d', { alpha: false }) as CanvasRenderingContext2D;
 
 // --- which level ------------------------------------------------------------
@@ -467,7 +470,16 @@ function restart(keepReplay = true): void {
   cam.snap({ x: level.start.x, y: level.start.y, vx: 0, vy: 0 });
 }
 
-function setLevel(next: LevelEntry, note = ''): void {
+/**
+ * `peek` is the opening overview, and the editor turns it OFF.
+ *
+ * The peek exists because seeing the whole level is route planning, which you
+ * do once. Riding a level you are in the middle of editing is the opposite: it
+ * is the die-retry loop with a geometry change in it, forty times an hour, and
+ * a second of camera before each attempt would be the single most expensive
+ * thing in the editor. R already knows this; Q has to know it too.
+ */
+function setLevel(next: LevelEntry, note = '', peek = true): void {
   if (!next.level) {
     replayNote = `"${next.label}" does not load: ${next.error ?? '?'}`;
     return;
@@ -489,8 +501,8 @@ function setLevel(next: LevelEntry, note = ''): void {
   // The opening peek happens on a LEVEL LOAD and not on a restart. Seeing the
   // whole level is route planning, which you do once; R is the die-retry loop,
   // which you do forty times, and putting anything at all in front of it is how
-  // a retry loop stops being instant.
-  overview.startIntro();
+  // a retry loop stops being instant. See `peek` — the editor is the third case.
+  if (peek) overview.startIntro();
   saveLastLevel(entry.id);
   // Keep the address bar a shareable link to what is actually on screen.
   const url = new URL(location.href);
@@ -1575,6 +1587,13 @@ function draw(alpha: number, dtMs: number): void {
     : null;
   cam.update({ x: pose.px, y: pose.py, vx: sim.state.vx, vy: sim.state.vy }, dtSec, cssW, cssH, ov);
 
+  // WHILE EDITING, THE EDITOR OWNS THE CAMERA. It pans and zooms freely and
+  // does not follow the bike, because the bike is parked and the thing you are
+  // moving is the ground. The play camera keeps smoothing underneath, so
+  // pressing Q to ride returns to a camera that is already on the bike rather
+  // than one that has to catch up.
+  const view = editor.view ?? cam;
+
   const ghostPose: Pose | null = ghost ? ghost.pose(alpha) : null;
   const opts = {
     debug,
@@ -1582,7 +1601,9 @@ function draw(alpha: number, dtMs: number): void {
     // line and the montage is about yours; one more faint bike, drawn at the
     // same alpha as the forty, would read as a forty-first attempt that you
     // never made.
-    ghost: montage ? null : ghostPose,
+    // Somebody else's line through a level that no longer exists. Gone while
+    // editing, like the rest of the play chrome.
+    ghost: montage || editor.active ? null : ghostPose,
     ghostFacing: ghost?.facing,
     ghosts: montageDraws(alpha, cam, cssW, cssH),
     overview: overview.blend,
@@ -1590,13 +1611,13 @@ function draw(alpha: number, dtMs: number): void {
     // is on screen there is nothing off it to point at, and eight arrows
     // sliding to the edges during the zoom is exactly the noise the readability
     // rule exists to prevent. They fade out as the overview fades in.
-    markers: overview.params.markerAlpha > 0
+    markers: overview.params.markerAlpha > 0 && !editor.active
       ? { inset: overview.params.markerInset, alpha: overview.params.markerAlpha * (1 - overview.blend) }
       : null,
   };
   if (artParams.enabled > 0) {
     const art = ensureBake();
-    renderArt(ctx, cssW, cssH, cam, sim.world, sim.state, pose, spec,
+    renderArt(ctx, cssW, cssH, view, sim.world, sim.state, pose, spec,
       // The in-canvas level card, clock and apple counter are the GAME talking
       // and stay whatever the readout is doing. The detail chip beside them is
       // an instrument, so it goes with the readout.
@@ -1614,8 +1635,13 @@ function draw(alpha: number, dtMs: number): void {
         ghostLook,
       }, artParams, art);
   } else {
-    render(ctx, cssW, cssH, cam, sim.world, sim.state, pose, spec, opts);
+    render(ctx, cssW, cssH, view, sim.world, sim.state, pose, spec, opts);
   }
+
+  // The handles, the grid, the warnings and the bike-as-a-ruler, on top of the
+  // real renderer's real picture. Drawing the level twice — once for play, once
+  // for editing — is how an editor ends up lying about what you will ride.
+  editor.draw(ctx, cssW, cssH);
 
   // AUDIO IS PER FRAME, NOT PER TICK. The sim runs at 512 Hz; sampling it once
   // a frame is the same discipline the renderer follows, and for the same
@@ -1746,7 +1772,13 @@ function updateHud(): void {
           : `${ticksToSeconds(s.tick).toFixed(2)}s`;
   const best = bests[level.simHash];
 
+  // While the editor is open the readout's first line is the DOCUMENT rather
+  // than the run: nothing is running, and the numbers that matter are how many
+  // polygons there are, whether it still loads and whether it is saved.
+  const editLine = editor.hud();
+
   const lines = [
+    editLine ? `<span class="warn">${esc(editLine)}</span>` : '',
     `<span class="k">velo</span> <span class="v">rev ${SIM_REV}</span>  <span class="k">preset</span> <span class="v">${presetLabel}${specIsTuned ? ' <span class="warn">+tuned</span>' : ''}</span>`,
     `<span class="k">level</span> ${level.name}  <span class="k">simHash</span> ${level.simHash}`,
     `<span class="k">spec </span> ${specHash(spec)}`,
@@ -2400,6 +2432,117 @@ onReplayDropped(
 
 const loop = createLoop({ step, draw });
 
+/**
+ * THE LEVEL EDITOR. Q in, Q out, and the level you are standing in is the level
+ * you are drawing.
+ *
+ * It is wired here rather than owning its own boot because everything it needs
+ * already exists at this point and none of it is worth duplicating: the camera
+ * it opens on, the spec its ruler is measured from, the loop it freezes, the
+ * toast it talks through, and `setLevel`, which is the one and only way a level
+ * gets loaded in this program.
+ *
+ * `upsertLevel` rather than `adoptLevel`: a draft is edited and ridden over and
+ * over, and appending a level entry per ride would grow the level bar by a row
+ * a minute.
+ */
+const editor = createEditor({
+  canvas,
+  panelRoot: editorRoot,
+  // `urlWanted` and not `entry.id`: the question is what the ADDRESS asked for,
+  // and `entry` has already fallen back to something playable by now.
+  urlLevel: urlWanted,
+  spec: () => spec,
+  source: () => ({
+    raw: entry.raw,
+    id: entry.id,
+    name: level.name,
+    simHash: level.simHash,
+    tier: level.tier ?? null,
+  }),
+  playView: () => ({ x: cam.x, y: cam.y, zoom: cam.zoom }),
+  onRide: (raw, id, name) => {
+    try {
+      setLevel(upsertLevel(raw, id, name), '', false);
+    } catch (e) {
+      toast(`that level does not load: ${e instanceof Error ? e.message : String(e)}`, 'editor');
+    }
+  },
+  onWatchReplay: (file) => loadReplay(file, 'the solver'),
+  onToast: (message, label) => toast(message, label),
+  setEditing: (editing) => setEditing(editing),
+  onPreview: (raw) => previewLevel(raw),
+});
+
+/**
+ * Everything the GAME does differently while a level is being edited.
+ *
+ * Four things, and each one is a thing that would otherwise be actively wrong
+ * rather than merely untidy:
+ *
+ *   the sim freezes            nothing is being ridden, and a clock running
+ *                              under an editor is a recording of nothing.
+ *   the in-canvas HUD goes     the level card, the clock and the apple counter
+ *                              are the game saying where you are. There is no
+ *                              run, and the card would name the level you
+ *                              forked rather than the one on screen.
+ *   the derived look is pinned  the palette, the panel variant and the prop
+ *                              seeds are all derived from `simHash`, which
+ *                              MOVES ON EVERY EDIT. Left alone, a level
+ *                              re-rolls its entire appearance every time a
+ *                              vertex is dragged, which is both distracting and
+ *                              a lie about what the level will look like.
+ *                              `derive = 0` is the base palette and it is
+ *                              stable; the real look comes back on the way out.
+ *   the props go               a prop can be dragged into a corridor and read
+ *                              as terrain — the art's own rule — and while you
+ *                              are drawing the corridor that is exactly the
+ *                              confusion you cannot afford.
+ */
+let artBeforeEdit: { hud: number; derive: number; props: number } | null = null;
+function setEditing(editing: boolean): void {
+  loop.paused = editing;
+  if (editing) {
+    if (!artBeforeEdit) artBeforeEdit = { hud: artParams.hud, derive: artParams.derive, props: artParams.props };
+    artParams.hud = 0;
+    artParams.derive = 0;
+    artParams.props = 0;
+  } else if (artBeforeEdit) {
+    artParams.hud = artBeforeEdit.hud;
+    artParams.derive = artBeforeEdit.derive;
+    artParams.props = artBeforeEdit.props;
+    artBeforeEdit = null;
+  }
+  dropLooks();
+  baked = null;
+  panel.sync();
+}
+
+/**
+ * Swap the level the renderer is drawing, without touching anything that
+ * belongs to a RUN.
+ *
+ * `setLevel` is the real thing and does much more — it restarts, snaps the
+ * camera, banks the attempt, fetches a leaderboard and re-frames the level.
+ * Every one of those is wrong here: the editor owns the camera, there is no
+ * attempt, and this happens several times a second while somebody drags a
+ * vertex. So this is the narrow version, and `close()` on the editor still goes
+ * through `setLevel` when the document becomes the level you ride.
+ *
+ * It only ever runs on a document the editor has already compiled, so the
+ * try/catch is for the impossible case rather than the expected one.
+ */
+function previewLevel(raw: unknown): void {
+  try {
+    level = parseLevel(raw);
+  } catch {
+    return;
+  }
+  baked = null;
+  sim = createSim(level, spec);
+  prevState = sim.snapshot();
+}
+
 input.onCommand((code) => {
   // Any key at all ends the opening peek.
   if (code !== 'Tab') overview.skipIntro();
@@ -2509,6 +2652,14 @@ input.onCommand((code) => {
     case 'KeyP':
       loop.paused = !loop.paused;
       break;
+    case 'KeyQ':
+      // EDIT AND RIDE. Q freezes the sim and hands you the handles; Q again
+      // compiles what you drew and loads it. The editor takes the keyboard in
+      // the capture phase while it is open, so this case only ever runs on the
+      // way IN — the way out is the editor's own handler, which is what lets it
+      // use A, S, D and the arrows without fighting the driving keys.
+      editor.toggle();
+      break;
     case 'BracketLeft':
       stepLevel(-1);
       break;
@@ -2579,6 +2730,7 @@ interface VeloWindow extends Window {
     return lastReplay;
   },
   specHash: () => specHash(spec),
+  editor,
   liveTune,
   get cam() {
     return cam;

@@ -106,12 +106,35 @@ const PHONE_PRESETS = [
   ['portrait-narrow', 360, 640],
   ['tablet', 1180, 820],
 ];
+/**
+ * `SHOTS_MENU=1` — open the touch command drawer before the phone shot.
+ *
+ * Restart and `more` are the only commands with permanent glass now; the other
+ * four live behind `more`. "Where does the drawer land, and does it cover the
+ * level" is a question about a picture — it opens into the bottom gutter on a
+ * wide landscape phone and above the pads on a narrow one — and the whole point
+ * of this flag is that neither of those is visible in a number.
+ */
+const MENU = process.env.SHOTS_MENU === '1';
 const phonesEnv = process.env.SHOTS_PHONES || '';
 const PHONES = !phonesEnv ? [] : phonesEnv === '1' ? PHONE_PRESETS : phonesEnv.split(',').map((x) => {
   const m = /^([A-Za-z0-9-]+):(\d+)x(\d+)$/.exec(x.trim());
   if (!m) throw new Error(`SHOTS_PHONES entry should look like name:915x348, got ${x}`);
   return [m[1], Number(m[2]), Number(m[3])];
 });
+
+/**
+ * Press the `more` pad, the way a thumb does.
+ *
+ * Through a real `pointerdown` on the element rather than by reaching into the
+ * module: the drawer is opened by the same handler a finger goes through, so
+ * this photographs the state a player gets and not one only the harness can
+ * reach.
+ */
+const OPEN_MENU = `(()=>{const el=document.querySelector('#touch .tc-menu');if(!el)return;`
+  + `const r=el.getBoundingClientRect();`
+  + `el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerId:99,`
+  + `clientX:r.x+r.width/2,clientY:r.y+r.height/2}));})();`;
 
 await mkdir(OUT, { recursive: true });
 const serve = createServer(async (req, res) => {
@@ -188,7 +211,7 @@ try {
     // loop, drives briefly and photographs whatever the game decided, pads and
     // HUD and all.
     const variants = phone ? [
-      [`phone-${phone}`, `(()=>{window.velo.loop.start();return 1})()`],
+      [`phone-${phone}`, `(()=>{window.velo.loop.start();${MENU ? OPEN_MENU : ''}return 1})()`],
     ] : at.length === 3 ? [
       ['at', `window.velo.renderAt(${at[0]},${at[1]},${at[2]},{art:true})`],
       ['at-debug', `window.velo.renderAt(${at[0]},${at[1]},${at[2]},{art:true,debug:true})`],

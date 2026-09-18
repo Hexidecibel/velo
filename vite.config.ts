@@ -2,6 +2,7 @@ import { defineConfig } from 'vite'
 import type { Plugin } from 'vite'
 import path from 'node:path'
 import { specPayload } from './src/server/specfile.ts'
+import { createAuthoringHandler } from './src/server/authoring.ts'
 
 /**
  * Serve `GET /api/spec` during `bin/dev`.
@@ -29,6 +30,36 @@ function liveTuneApi(): Plugin {
   }
 }
 
+/**
+ * Serve `/api/authoring/*` during `bin/dev`, and NOWHERE ELSE.
+ *
+ * This is the level editor's save path and it is the honest answer to "how does
+ * a browser write a file into the repo": it does not, this does. Deliberately a
+ * dev-server middleware rather than a route on the Hono server — that process
+ * is what velo.cush.rocks runs, and the deployed game must have no route that
+ * writes a level. Authoring happens on the machine the repo is on.
+ *
+ * `src/server/index.ts` never imports src/server/authoring.ts, which is what
+ * makes that statement checkable rather than a promise.
+ */
+function authoringApi(): Plugin {
+  const handler = createAuthoringHandler({ root: __dirname })
+  return {
+    name: 'velo-authoring',
+    configureServer(server) {
+      server.middlewares.use('/api/authoring', (req, res, next) => {
+        // Vite strips the mounted prefix from req.url; the handler routes on the
+        // full path, so put it back rather than teaching it two shapes.
+        const original = req.url ?? '/'
+        req.url = '/api/authoring' + (original === '/' ? '' : original)
+        handler(req, res)
+          .then((handled) => { if (!handled) next() })
+          .catch(next)
+      })
+    },
+  }
+}
+
 // The leaderboard API is PROXIED to the real Hono server rather than
 // reimplemented here, and the two halves of that split are deliberate.
 //
@@ -50,7 +81,7 @@ const API_PORT = process.env.PORT || '9422'
 const LEADERBOARD_ROUTES = '^/api/(runs|leaderboard|replays|players|levels|rules|health)'
 
 export default defineConfig({
-  plugins: [liveTuneApi()],
+  plugins: [liveTuneApi(), authoringApi()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

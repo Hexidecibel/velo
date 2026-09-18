@@ -26,6 +26,8 @@ interface Args {
   seed: number;
   spec?: string;
   quiet: boolean;
+  /** Stream the search log as it happens. See `Job.progress`. */
+  progress: boolean;
   /** Which physics. Defaults to the LIVE rev, never the newest one. */
   rev: number;
   /** rev 5's rider.inertialTransferLinear. */
@@ -46,7 +48,7 @@ function num(v: string | undefined, what: string): number {
 function parseArgs(argv: string[]): Args {
   const a: Args = {
     files: [], jobs: 1, time: 300, effort: 1,
-    branch: 4, tries: 2, trials: 200, seed: 0x5e1f, quiet: false,
+    branch: 4, tries: 2, trials: 200, seed: 0x5e1f, quiet: false, progress: false,
     rev: SIM_REV, linear: 0,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -64,6 +66,7 @@ function parseArgs(argv: string[]): Args {
     else if (s === '--rev') a.rev = Math.round(num(argv[++i], '--rev'));
     else if (s === '--linear') a.linear = num(argv[++i], '--linear');
     else if (s === '--quiet') a.quiet = true;
+    else if (s === '--progress') a.progress = true;
     else if (s.startsWith('-')) die(`unknown option ${s}`);
     else a.files.push(s);
   }
@@ -97,6 +100,7 @@ const jobOf = (file: string): Job => ({
   trials: args.trials,
   seed: args.seed,
   wantReplay: args.save !== undefined,
+  progress: args.progress,
 });
 
 function pct(v: number): string {
@@ -108,7 +112,7 @@ function report(file: string, o: Outcome, tail = ''): void {
   console.log('    ' + o.name + '   (rev ' + CHOICE.rev
     + (CHOICE.rev >= 5 ? ', linear ' + CHOICE.linear : '')
     + ', ' + o.apples + ' apples)');
-  if (!args.quiet) for (const l of o.log) console.log(l);
+  if (!args.quiet && !args.progress) for (const l of o.log) console.log(l);
   if (o.solved) {
     console.log('    time            ' + o.seconds.toFixed(2) + ' s of game time, ' + o.frames + ' input frames'
       + (o.verified ? '  (re-verified)' : '  (NOT VERIFIED)'));

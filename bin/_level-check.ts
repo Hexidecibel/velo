@@ -19,8 +19,8 @@
 // error would be a tool people learn to ignore.
 import { readFileSync } from 'node:fs';
 import { parseLevel } from '../src/sim/level.ts';
-import { sagFindings } from './_sag.ts';
-import type { Finding } from './_sag.ts';
+import { sagFindings } from '@/shared/sag.ts';
+import type { Finding } from '@/shared/sag.ts';
 
 const mm = (v: number): string => (v * 1000).toFixed(1) + ' mm';
 const n2 = (v: number): string => (Math.round(v * 100) / 100).toString();

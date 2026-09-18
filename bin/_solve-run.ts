@@ -28,6 +28,16 @@ export interface Job {
   seed: number;
   /** Embed the level and spec in the replay so the file stands alone. */
   wantReplay: boolean;
+  /**
+   * Print the search log AS IT HAPPENS rather than only in the final report.
+   *
+   * A single-level solve prints nothing for one to fourteen minutes otherwise,
+   * which is indistinguishable from a hung process — and it is unusable as the
+   * editor's deliberate feedback tier, which has to be able to say what the
+   * solver is doing while it does it. Off by default so `bin/solve levels/*`
+   * keeps its per-level report shape.
+   */
+  progress?: boolean;
 }
 
 export interface Outcome {
@@ -71,7 +81,12 @@ export function solveOne(job: Job, level: Level, spec: BikeSpec, raw: unknown): 
     strategies: DEFAULT_SOLVE.strategies.map((s) => ({ ...s, budget: Math.round(s.budget * job.effort) })),
     branch: job.branch,
     targetTries: job.targetTries,
-    onProgress: (l) => log.push(l),
+    onProgress: (l) => {
+      log.push(l);
+      // Straight out, unbuffered by anything of ours, so a reader on the other
+      // end of a pipe sees it now rather than at exit.
+      if (job.progress) console.log(l);
+    },
   });
 
   const out: Outcome = {

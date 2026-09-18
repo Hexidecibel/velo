@@ -22,6 +22,13 @@
 #                                              # land-iphone, portrait,
 #                                              # portrait-narrow, tablet — or
 #                                              # SHOTS_PHONES=name:WxH,...
+#   SHOTS_MENU=1 SHOTS_PHONES=1 SHOTS_QUERY=touch=1 bin/shots 07-the-chimney
+#                                              # the same, with the command
+#                                              # drawer OPEN. Restart and `more`
+#                                              # are the only commands with
+#                                              # permanent glass; where the other
+#                                              # four land when `more` is pressed
+#                                              # is a picture, not a number.
 #   SHOTS_MONTAGE=24 bin/shots 20-close-quarters   # the end-of-level montage:
 #                                              # does the winning line still
 #                                              # read against the crowd

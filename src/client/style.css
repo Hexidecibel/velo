@@ -567,15 +567,34 @@ body:has(#panel.hidden) #results { margin-left: 0; }
    as a control rather than as the large faint word across the play area it used
    to be. */
 #touch .tc-flip { color: #ffffff85; }
-/* The commands: small, dim, and in a block at the top-left out of both thumbs'
-   way. In the last layout they were as prominent as the controls, which is
-   exactly backwards — you press these between runs and those during one. */
+/* The commands: small, dim, and in the BOTTOM GUTTER between the two thumb
+   clusters — the one strip of a landscape phone that no thumb rests on and no
+   bike is ever framed in. In the last layout they were as prominent as the
+   controls and sat in a block at the top-left, which on a short screen fell back
+   to a single row spanning half the width, straight across the band the bike
+   rides through. You press these between runs and those during one. */
 #touch .tc-cmd {
   letter-spacing: .04em;
-  background: #17132ecc;
+  /* A LIGHTER SCRIM THAN IT USED TO HAVE, and the move is why. At the top-left
+     these sat over background and a near-opaque fill was free; in the gutter
+     they sit over the LEVEL, and at 80% ink they were the most solid thing on
+     the glass — brighter than the pads you actually drive with, which is the
+     exact inversion this whole block exists to prevent. 45% still holds a
+     nine-point label on the lightest palette in the game. */
+  background: #17132e73;
   color: var(--dim);
   border-radius: 4px;
   border-color: #ffffff14;
+}
+/* THE DRAWER, and it is a state the player has to be able to see. `more` opens
+   the four occasional commands and `close` shuts them; the pad that did it says
+   which, and lights so that "did that press land" is not a question — the finger
+   is covering the word. Everything else on the glass shuts it again, so this is
+   lit for a second or two at a time and never during a run. */
+#touch .tc-menu.open {
+  border-color: var(--edge);
+  color: #29d9f2b0;
+  background: #29d9f21f;
 }
 
 /* On a phone the dev chrome is noise: the HUD is nine lines of telemetry, the
@@ -965,3 +984,120 @@ body:has(#panel.hidden) #claim { margin-left: 0; }
 /* On a phone this is the panel that matters most — it is the device being
    claimed — so it gets the full width and no panel offset. */
 body.touch #claim { max-height: 82vh; margin-left: 0; }
+
+/* --- the level editor ------------------------------------------------------
+   A sidebar, sized and coloured like the tuning panel, because it is the same
+   kind of thing: an instrument beside the game rather than a screen in front of
+   it. It is wider than the panel — a findings list needs to be readable at a
+   glance or it stops being live feedback and becomes a report. */
+#editor {
+  flex: 0 0 380px;
+  width: 380px;
+  height: 100%;
+  overflow-y: auto;
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+  padding: 10px 12px 60px;
+}
+#editor.hidden { display: none; }
+#editor h1 {
+  font-size: 12px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 2px;
+}
+#editor h2 {
+  font-size: 11px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin: 14px 0 6px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 3px;
+}
+#editor h2 .why { display: block; text-transform: none; letter-spacing: 0; color: #6b6390; font-size: 10px; }
+#editor .sub { color: var(--dim); margin-bottom: 8px; }
+#editor input[type=text], #editor input[type=number] {
+  font: inherit;
+  color: var(--ink);
+  background: #120f26;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 3px 6px;
+  width: 100%;
+  min-width: 0;
+}
+#editor .row { grid-template-columns: 64px 1fr; align-items: center; }
+#editor button:disabled { opacity: .4; cursor: default; }
+#editor .note.ok { color: var(--good); }
+#editor .note.warn { color: var(--accent); }
+#editor .note.bad { color: var(--bad); }
+
+/* x / y / bulge, side by side: the numeric half of "drag it, or type it". */
+.ed-nums { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 4px 6px; align-items: center; margin: 6px 0; }
+.ed-nums label { color: var(--dim); }
+.ed-nums input { grid-column: auto; }
+.ed-nums input:nth-of-type(3) { grid-column: 2 / 5; }
+
+.ed-aids { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin: 6px 0; }
+.ed-aids select { width: auto; }
+.ed-chk { color: var(--ink); cursor: pointer; user-select: none; }
+.ed-chk input { accent-color: var(--edge); vertical-align: -1px; }
+
+/* The fast tier's own list. Clickable: a finding you can be taken to is worth
+   several you have to go and find. */
+.ed-findings { max-height: 34vh; overflow-y: auto; margin: 4px 0; }
+.ed-finding {
+  border-left: 2px solid var(--line);
+  padding: 3px 0 3px 6px;
+  margin: 3px 0;
+  color: var(--dim);
+  cursor: pointer;
+  line-height: 1.35;
+}
+.ed-finding:hover { background: #1d1838; color: var(--ink); }
+.ed-finding.warn { border-left-color: var(--accent); }
+.ed-finding.error { border-left-color: var(--bad); color: #ffb3b3; }
+.ed-tag {
+  display: inline-block;
+  min-width: 58px;
+  color: #6b6390;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  font-size: 10px;
+}
+
+.ed-rows { margin: 4px 0; }
+.ed-row { display: grid; grid-template-columns: 96px 1fr; gap: 6px; margin: 2px 0; }
+.ed-k { color: var(--dim); }
+.ed-v { color: var(--ink); }
+
+/* The canvas cursor says which tool you are in. Crosshair while editing is the
+   universal "you are placing things", and it is what the canvas already uses. */
+body.editing #view { cursor: crosshair; }
+
+/* WHILE EDITING, THE PLAY CHROME GOES AWAY.
+   The level bar, the legend and the leaderboard are all fixed-position and all
+   three land on top of the editor panel or over the geometry you are drawing —
+   and none of them has anything to say about a level that is not finished.
+   Hidden rather than moved: there is no arrangement in which a leaderboard for
+   a different level is worth the width. */
+body.editing #board,
+body.editing #levelbar,
+body.editing #legend { display: none; }
+
+/* Tier badge on a chooser card. Only the non-core levels carry one — the
+   shipped twenty have no tier, which IS core, and twenty identical labels is
+   not information. */
+.ch-tier {
+  margin-left: 6px;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  color: var(--dim);
+  font-size: 9px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}

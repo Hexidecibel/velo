@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# The level editor: the dev server, with the authoring endpoint on.
+#
+#   bin/edit                 first free port from 5173 upward
+#   bin/edit --port 5200     pin one
+#
+# Open the URL it prints, load any level, and press Q. The sim freezes and you
+# get handles; press Q again and you ride what you drew. There is no export
+# step and no second application — that loop IS the editor.
+#
+# WHY THIS IS A SCRIPT AND NOT A NOTE IN THE README. The editor's save path and
+# its solver both need an endpoint that only `bin/dev` serves (see
+# src/server/authoring.ts and the plugin in vite.config.ts) — the deployed game
+# at velo.cush.rocks deliberately has no route that writes a level. So "run the
+# dev server" is not a detail of how you happen to be working, it is the
+# difference between Ctrl-S writing levels/21-the-jump.json and Ctrl-S putting a
+# file in your downloads folder for you to move by hand. Naming it makes that
+# the obvious thing to do rather than something you find out afterwards.
+#
+# What you get here that the deployed game does not:
+#   * ^S writes levels/<id>.json directly, and the dev server picks it up
+#   * ^ENTER runs bin/solve on the level in front of you and reports back —
+#     completable or not, the apple order, the difficulty score, and a replay
+#     you can watch
+#
+# What you CANNOT do here, by construction: overwrite one of the core levels.
+# Editing one forks it. See src/server/authoring.ts for the rule and why it is
+# enforced at the endpoint rather than in the UI.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+echo "==> level editor — press Q in the game to open it"
+exec "$ROOT/bin/dev" "$@"

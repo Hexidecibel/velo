@@ -47,8 +47,15 @@ const PHONE: Viewport = { w: 915, h: 348 };
 const W = PHONE.w;
 const H = PHONE.h;
 
-const zonesAt = (vp: Viewport = PHONE, auto = false, fullscreen: 'none' | 'off' | 'on' = 'off'): Zone[] =>
-  touchZones(vp, { autoThrottle: auto, fullscreen });
+const zonesAt = (
+  vp: Viewport = PHONE,
+  auto = false,
+  fullscreen: 'none' | 'off' | 'on' = 'off',
+  menu = false,
+): Zone[] => touchZones(vp, { autoThrottle: auto, fullscreen, menu });
+/** The drawer open, which is the only state the other four commands exist in. */
+const openAt = (vp: Viewport = PHONE, auto = false, fullscreen: 'none' | 'off' | 'on' = 'off'): Zone[] =>
+  zonesAt(vp, auto, fullscreen, true);
 
 const at = (zones = zonesAt()) =>
   (fx: number, fy: number): ZoneId | null => hitZone(zones, fx * W, fy * H);
@@ -172,13 +179,26 @@ describe('the layout owes each control something different', () => {
     expect(at()(0.92, 0.45)).toBe('flip');
   });
 
-  it('makes the occasional controls SMALL and dim, not as prominent as the game', () => {
-    // restart, levels, gas-mode, zoom and full-screen were as big and as bright
-    // as the controls, which is exactly backwards: you press these between runs
-    // and the others during one.
+  it('gives only RESTART and MENU permanent glass, and puts the rest behind them', () => {
+    // FIVE PERMANENT PADS FOR FIVE OCCASIONAL ACTIONS was the trade that went
+    // wrong. Levels, full screen, gas-mode and zoom-reset are pressed between
+    // runs and never during one, and paying for them with a row of buttons
+    // across the band the bike rides through is not a price worth paying.
+    // Restart is the exception and it earns it: no R key on a phone, and this
+    // is a die-and-retry game.
     const z = zonesAt();
+    expect(z.filter((q) => q.command).map((q) => q.id).sort()).toEqual(['menu', 'restart']);
+    expect(openAt().filter((q) => q.command).map((q) => q.id).sort())
+      .toEqual(['auto', 'full', 'levels', 'menu', 'restart', 'zoom']);
+    // And the pad says which way it goes, because a drawer you cannot see the
+    // state of is a drawer you press twice.
+    expect(find(z, 'menu').label).toBe('more');
+    expect(find(openAt(), 'menu').label).toBe('close');
+  });
+
+  it('makes the occasional controls SMALL and dim, not as prominent as the game', () => {
+    const z = openAt();
     const cmds = z.filter((q) => q.command);
-    expect(cmds.map((q) => q.id).sort()).toEqual(['auto', 'full', 'levels', 'restart', 'zoom']);
     const hold = Math.min(...z.filter((q) => !q.command).map((q) => q.w * q.h));
     for (const c of cmds) {
       expect(c.w * c.h, `${c.id}`).toBeLessThan(hold);
@@ -187,13 +207,33 @@ describe('the layout owes each control something different', () => {
     }
   });
 
+  it('puts the permanent commands in the BOTTOM GUTTER, not in the play band', () => {
+    // THE STRIP BETWEEN THE TWO THUMB CLUSTERS is the cheapest glass on a
+    // landscape phone: no thumb rests on it, and the camera frames the bike in
+    // the band ABOVE the pads, never below them. That is the whole of fix 1 —
+    // the previous block sat at the top-left and, on a viewport too short for
+    // two rows, spread into one row across half the width of the play band.
+    for (const vp of VIEWPORTS.filter((v) => v.w > v.h)) {
+      const z = zonesAt(vp);
+      const lean = find(z, 'leanR');
+      const brake = find(z, 'brake');
+      for (const c of z.filter((q) => q.command)) {
+        // Below the top of the pads — that is what "not in the play band" is.
+        expect(c.y, `${vp.name} ${c.id}`).toBeGreaterThanOrEqual(lean.y);
+        // And between the clusters rather than over either of them.
+        expect(c.x, `${vp.name} ${c.id}`).toBeGreaterThanOrEqual(lean.x + lean.w);
+        expect(c.x + c.w, `${vp.name} ${c.id}`).toBeLessThanOrEqual(brake.x);
+      }
+    }
+  });
+
   it('drops the full-screen pad rather than offering a button that does nothing', () => {
     // There is no element fullscreen on an iPhone. A control that cannot work is
     // worse than no control, and the manifest's `display: standalone` is the
     // route to a chrome-free game there anyway.
-    expect(zonesAt(PHONE, false, 'none').some((q) => q.id === 'full')).toBe(false);
-    expect(find(zonesAt(PHONE, false, 'off'), 'full').label).toMatch(/full/);
-    expect(find(zonesAt(PHONE, false, 'on'), 'full').label).toMatch(/exit/);
+    expect(openAt(PHONE, false, 'none').some((q) => q.id === 'full')).toBe(false);
+    expect(find(openAt(PHONE, false, 'off'), 'full').label).toMatch(/full/);
+    expect(find(openAt(PHONE, false, 'on'), 'full').label).toMatch(/exit/);
   });
 });
 
@@ -205,16 +245,18 @@ describe('nothing is drawn on top of anything else', () => {
     for (const vp of VIEWPORTS) {
       for (const auto of [false, true]) {
         for (const fs of ['none', 'off', 'on'] as const) {
-          const z = zonesAt(vp, auto, fs);
+        for (const menu of [false, true]) {
+          const z = zonesAt(vp, auto, fs, menu);
           for (let i = 0; i < z.length; i++) {
             for (let j = i + 1; j < z.length; j++) {
               const a = z[i];
               const b = z[j];
               const apart =
                 a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
-              expect(apart, `${vp.name} ${auto}/${fs}: ${a.id} overlaps ${b.id}`).toBe(true);
+              expect(apart, `${vp.name} ${auto}/${fs}/${menu}: ${a.id} overlaps ${b.id}`).toBe(true);
             }
           }
+        }
         }
       }
     }
@@ -227,8 +269,10 @@ describe('nothing is drawn on top of anything else', () => {
     // desktop level bar and a `browse C` button printed straight through them.
     for (const vp of VIEWPORTS) {
       for (const auto of [false, true]) {
-        for (const q of zonesAt(vp, auto)) {
-          expect(q.y, `${vp.name} ${q.id}`).toBeGreaterThanOrEqual(HUD_BAND_PX);
+        for (const menu of [false, true]) {
+          for (const q of zonesAt(vp, auto, 'off', menu)) {
+            expect(q.y, `${vp.name} ${q.id}`).toBeGreaterThanOrEqual(HUD_BAND_PX);
+          }
         }
       }
     }
@@ -240,23 +284,42 @@ describe('nothing is drawn on top of anything else', () => {
     const cover: Viewport = { w: 844, h: 390, top: 0, right: 47, bottom: 21, left: 47 };
     for (const vp of [...VIEWPORTS, cover] as Viewport[]) {
       for (const auto of [false, true]) {
-        for (const q of zonesAt(vp, auto)) {
-          expect(q.x, `${q.id}`).toBeGreaterThanOrEqual(vp.left ?? 0);
-          expect(q.y).toBeGreaterThanOrEqual(0);
-          expect(q.x + q.w).toBeLessThanOrEqual(vp.w - (vp.right ?? 0) + 1e-9);
-          expect(q.y + q.h).toBeLessThanOrEqual(vp.h - (vp.bottom ?? 0) + 1e-9);
+        for (const menu of [false, true]) {
+          for (const q of zonesAt(vp, auto, 'off', menu)) {
+            expect(q.x, `${q.id}`).toBeGreaterThanOrEqual(vp.left ?? 0);
+            expect(q.y).toBeGreaterThanOrEqual(0);
+            expect(q.x + q.w).toBeLessThanOrEqual(vp.w - (vp.right ?? 0) + 1e-9);
+            expect(q.y + q.h).toBeLessThanOrEqual(vp.h - (vp.bottom ?? 0) + 1e-9);
+          }
         }
       }
     }
   });
 
   it('leaves the middle and the top of the screen alone — that is the game', () => {
+    // THE WHOLE TOP IS CLEAR NOW, which it was not: the command block used to
+    // live under the HUD at the top-left and, on a short landscape phone, ran
+    // most of the way across. The only glass this overlay takes above the pads
+    // is flip's, in the right-hand column.
     const hit = at();
     expect(hit(0.5, 0.5)).toBe(null);
-    expect(hit(0.5, 0.9)).toBe(null);
     expect(hit(0.5, 0.05)).toBe(null);
     expect(hit(0.95, 0.05)).toBe(null);
     expect(hit(0.6, 0.2)).toBe(null);
+    expect(hit(0.08, 0.3)).toBe(null);
+    expect(hit(0.3, 0.6)).toBe(null);
+  });
+
+  it('gives the bike a clear band that is BIGGER than the pads under it', () => {
+    // The pads were 20 mm tall because nothing else wanted the room. On a
+    // 310 px-tall landscape phone that is 39% of the glass and the band left for
+    // the level is thinner than the pads are, which inverts what the screen is
+    // for. 15 mm is still generous for a thumb and hands the level the rest.
+    for (const vp of [...VIEWPORTS, { name: 'land-short', w: 915, h: 310 }].filter((v) => v.w > v.h)) {
+      const z = zonesAt(vp);
+      const band = find(z, 'leanL').y - HUD_BAND_PX;
+      expect(band, `${vp.name}`).toBeGreaterThan(find(z, 'leanL').h);
+    }
   });
 });
 
@@ -582,7 +645,7 @@ describe('the pinch, against a game where two fingers is the normal case', () =>
     // A gesture that goes wrong mid-run needs a way back that is not another
     // gesture — and the pad is also the only thing on the screen that says
     // pinch exists at all.
-    const z = touchZones(PHONE, { autoThrottle: false, bias: 1.4, fullscreen: 'off' });
+    const z = touchZones(PHONE, { autoThrottle: false, bias: 1.4, fullscreen: 'off', menu: true });
     const pad = find(z, 'zoom');
     expect(pad.command).toBe(true);
     expect(pad.label).toBe('zoom 1.4\u00d7');
@@ -590,7 +653,7 @@ describe('the pinch, against a game where two fingers is the normal case', () =>
     // Present in both modes, because the ELEMENTS are never rebuilt for a
     // relayout: rebuilding the overlay mid-run drops pointer capture and would
     // release a held throttle.
-    expect(zonesAt(PHONE, true).some((x) => x.id === 'zoom')).toBe(true);
+    expect(openAt(PHONE, true).some((x) => x.id === 'zoom')).toBe(true);
     // A command, so it cannot be slid into by a thumb on its way somewhere and
     // it contributes no sim bit.
     expect(slideZone(z, 'leanL', pad.x + 4, pad.y + 4)).toBe('leanL');

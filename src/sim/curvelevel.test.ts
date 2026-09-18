@@ -13,7 +13,7 @@ import { TEST_LEVEL } from './testlevel.ts';
 import { IN_THROTTLE, IN_LEAN_L, IN_LEAN_R } from './consts.ts';
 import { DEFAULT_SPEC, cloneSpec } from './spec.ts';
 import type { BikeSpec } from './spec.ts';
-import { sagFindings } from '../../bin/_sag.ts';
+import { sagFindings } from '../shared/sag.ts';
 
 const level = parseLevel(CURVE_LEVEL);
 

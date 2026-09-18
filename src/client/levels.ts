@@ -100,6 +100,43 @@ export function findBySimHash(simHash: string): LevelEntry | null {
 }
 
 /**
+ * Take on a level the EDITOR is producing, keyed by its own id.
+ *
+ * Different from `adoptLevel` in the one way that matters: a draft is edited
+ * and ridden over and over, so the entry has to be UPDATED in place rather than
+ * appended, or the level list grows a row per keystroke.
+ *
+ * It refuses to write over an entry that came from `levels/`. That is the same
+ * fork rule the authoring endpoint enforces, applied to the in-memory list: a
+ * draft that happened to share a filename with a shipped level would otherwise
+ * replace it in the level bar for the rest of the session, which is a confusing
+ * way to discover you have not forked. The draft gets its own id and says so.
+ */
+export function upsertLevel(raw: unknown, id: string, label?: string): LevelEntry {
+  const level = parseLevel(raw);
+  const clash = LEVELS.find((l) => l.id === id && l.path !== '(editor)');
+  const useId = clash ? `${id}-unsaved` : id;
+  const existing = LEVELS.find((l) => l.id === useId);
+  if (existing) {
+    existing.raw = raw;
+    existing.level = level;
+    existing.label = label ?? level.name;
+    existing.error = null;
+    return existing;
+  }
+  const entry: LevelEntry = {
+    id: useId,
+    label: label ?? level.name,
+    path: '(editor)',
+    raw,
+    level,
+    error: null,
+  };
+  LEVELS.push(entry);
+  return entry;
+}
+
+/**
  * Take on a level that arrived from outside the levels/ directory — today, the
  * one embedded in a replay file. Without this, a replay of a level this build
  * does not ship simply cannot be watched, which would defeat most of the point

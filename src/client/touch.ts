@@ -31,15 +31,41 @@
 import { IN_BRAKE, IN_FLIP, IN_LEAN_L, IN_LEAN_R, IN_THROTTLE } from '@/sim/consts.ts';
 
 /**
- * `restart`, `levels`, `auto`, `zoom` and `full` are COMMANDS, not sim input:
- * they fire on the press and contribute no bit. They are in the same list as the
- * rest because they occupy screen space and the hit test has to know about them
- * — a flip zone that silently extended under the restart button would be a
- * missed input, and this game punishes one of those immediately.
+ * `restart`, `menu`, `levels`, `auto`, `zoom` and `full` are COMMANDS, not sim
+ * input: they fire on the press and contribute no bit. They are in the same list
+ * as the rest because they occupy screen space and the hit test has to know
+ * about them — a flip zone that silently extended under the restart button
+ * would be a missed input, and this game punishes one of those immediately.
+ *
+ * `menu` is the drawer, and it is the answer to FIVE PERMANENT PADS FOR FIVE
+ * OCCASIONAL ACTIONS. Levels, full screen, gas-mode and zoom-reset are pressed
+ * between runs and never during one; paying for them with permanent glass — a
+ * row that on a short landscape phone spread across half the width of the band
+ * the bike rides through — was a bad trade in every direction. They live behind
+ * `menu` now. RESTART DOES NOT, because restart is the one command with a real
+ * claim to being instant: this is a die-and-retry game and there is no R key on
+ * a phone.
  */
 export type ZoneId =
   | 'throttle' | 'brake' | 'leanL' | 'leanR' | 'flip'
-  | 'restart' | 'levels' | 'auto' | 'zoom' | 'full';
+  | 'restart' | 'menu' | 'levels' | 'auto' | 'zoom' | 'full';
+
+/** Every id that is a command. Static: a pad does not change what kind it is. */
+export const COMMAND_IDS: readonly ZoneId[] = ['restart', 'menu', 'levels', 'full', 'auto', 'zoom'];
+
+/**
+ * Every zone that can ever exist, in the order the elements are created.
+ *
+ * ONE ELEMENT PER ID, BUILT ONCE AND NEVER REBUILT. Opening the drawer and
+ * flipping auto-throttle both change WHICH zones exist, and recreating elements
+ * for that would drop the pointer capture on a held pad and weld the throttle on
+ * with nothing left to release it. So every element exists from the start and
+ * `place` hides the ones this state does not use.
+ */
+export const ALL_ZONE_IDS: readonly ZoneId[] = [
+  'restart', 'menu', 'levels', 'full', 'auto', 'zoom',
+  'flip', 'leanL', 'leanR', 'brake', 'throttle',
+];
 
 export interface Zone {
   id: ZoneId;
@@ -113,10 +139,19 @@ export const PX_PER_MM = 6;
  *   FLIP is rare and critical. It sits directly above the right cluster, where
  *   the right thumb reaches it by rolling up off the throttle, and it is a PLACE
  *   rather than a gesture — a gesture that fails does so silently.
- *   RESTART, LEVELS, GAS-MODE, ZOOM and FULLSCREEN are occasional. They are
- *   small, they are in a block at the top-left out of both thumbs' way, and they
- *   are dimmer than the controls, because in the last layout they were as
- *   prominent as them.
+ *   RESTART and MENU are the only commands with permanent glass, they are small,
+ *   they are dimmer than the controls, and they live in the BOTTOM GUTTER
+ *   between the two thumb clusters — see `touchZones`. LEVELS, GAS-MODE, ZOOM
+ *   and FULLSCREEN are behind `menu`, because none of them is pressed during a
+ *   run and five permanent pads for five occasional actions was the trade that
+ *   put a row of buttons across the band the bike rides through.
+ *
+ * THE PADS ARE SHORTER THAN THEY WERE, and that is fix 2. 20 mm of pad height
+ * was chosen when the pads were the only thing competing for the screen; on a
+ * 310 px-tall landscape phone it is 39% of the glass, and the band left over for
+ * the level is thinner than the pads are. 15 mm is still inside the generous
+ * band for a thumb (9-10 mm is the comfortable minimum), and it hands the level
+ * back about 60 px of the one dimension a landscape phone has none of.
  */
 export const MM = {
   /** Margin from the screen edge (on top of any safe-area inset). */
@@ -138,19 +173,23 @@ export const MM = {
   /** The least that may ever separate the two thumb clusters. */
   clusterGap: 5,
   gasW: 21,
-  gasH: 20,
+  gasH: 15,
   brakeW: 13,
-  flipH: 13,
+  flipH: 11,
   leanW: 15,
-  leanH: 20,
+  leanH: 15,
   cmdW: 13,
   cmdH: 9,
   /**
-   * The widest the command block is allowed to be before it wraps to a second
-   * row. Three across, which ends about a third of the way over a landscape
-   * phone — clear of the level card the art renderer centres at the top.
+   * The clear margin the command block keeps from each thumb cluster.
+   *
+   * Sliding cannot reach a command — `slideZone` refuses to enter one — so this
+   * is not about drift. It is about a PRESS: a thumb coming down on the inboard
+   * edge of the lean pads must not be able to land on `restart` instead, and
+   * this is the distance that makes that a different gesture rather than a
+   * near miss. It is also the test for whether the gutter exists at all.
    */
-  cmdBlockW: 45,
+  cmdMargin: 5,
 };
 
 /** The smallest a hold pad's short side is allowed to get, in mm. */
@@ -193,6 +232,15 @@ export interface LayoutOpts {
    * that does nothing is worse than no control.
    */
   fullscreen?: 'none' | 'off' | 'on';
+  /**
+   * Is the command drawer open?
+   *
+   * Closed — which is every frame of every run — only `restart` and `menu` are
+   * on the glass. Open, the other four appear ABOVE them and still inside the
+   * bottom gutter wherever there is room for them there, so even the open state
+   * mostly stays out of the band the bike is in.
+   */
+  menu?: boolean;
 }
 
 export function zoomLabel(bias: number): string {
@@ -206,14 +254,33 @@ function clamp(v: number, lo: number, hi: number): number {
 /**
  * THE LAYOUT, as rectangles in CSS pixels on a particular screen.
  *
+ * THE BOTTOM IS FOR HANDS AND THE MIDDLE IS FOR THE GAME, and every placement
+ * below is that sentence.
+ *
+ *   The two HOLD clusters are hard against the bottom corners, because that is
+ *   where thumbs rest in landscape and the ends of the arc they sweep are the
+ *   hardest places to reach, not the easiest.
+ *   FLIP is above the right cluster, across a dead strip.
+ *   The COMMANDS are in the BOTTOM GUTTER — the strip of glass between the two
+ *   clusters, which is the one part of the screen no thumb rests on and no bike
+ *   rides through. That is where the previous layout went wrong: it put five
+ *   command pads in a block at the top-left, which on a short landscape phone
+ *   fell back to ONE ROW spanning half the width, straight across the band the
+ *   bike is framed in. One row was worse than two, and two was worse than none.
+ *
  * Everything is placed from the mm table above, then ONE SCALE FACTOR is applied
- * to the thumb clusters if the screen cannot hold them at full size. Scaling
- * rather than reflowing is deliberate: the positions are what a player learns,
- * and a layout that rearranges itself between portrait and landscape is two
- * layouts to learn. Portrait is the hard case — a 360 px-wide phone is 60 mm
- * across and the two clusters plus their gap want 76 — so it shrinks, and
- * `MIN_PAD_MM` is the line below which it is honest to say the screen is too
- * small rather than to keep shrinking.
+ * if the screen cannot hold it at full size. Scaling rather than reflowing is
+ * deliberate: the positions are what a player learns, and a layout that
+ * rearranges itself between portrait and landscape is two layouts to learn.
+ * Portrait is the hard case — a 360 px-wide phone is 60 mm across and the two
+ * clusters plus their gap want 76 — so it shrinks, and `MIN_PAD_MM` is the line
+ * below which it is honest to say the screen is too small rather than to keep
+ * shrinking.
+ *
+ * THE GUTTER IS THE ONE THING THAT REFLOWS, and it has to: in portrait the
+ * clusters already fill the width and there is no gutter to be in. There the
+ * commands fall back to a narrow column at the top-left, which portrait can
+ * afford because the scarce dimension there is width and not height.
  */
 export function touchZones(vp: Viewport, o: LayoutOpts): Zone[] {
   const mm = vp.mm && vp.mm > 0 ? vp.mm : PX_PER_MM;
@@ -234,76 +301,130 @@ export function touchZones(vp: Viewport, o: LayoutOpts): Zone[] {
   const gasW = px(MM.gasW * s);
   const gasH = px(MM.gasH * s);
   const brakeW = px(MM.brakeW * s);
-  const flipH = px(MM.flipH * s);
   const leanW = px(MM.leanW * s);
   const leanH = px(MM.leanH * s);
 
   const zones: Zone[] = [];
 
-  // --- the commands, top-left, small and dim -------------------------------
-  //
-  // TOP-LEFT IS THE ONE CORNER THAT IS FREE. Top-centre is the art renderer's
-  // level card and clock, and top-right was the desktop level picker — which no
-  // longer exists on touch, because it was being drawn straight through the
-  // art HUD. `levels` below is what replaces it.
-  //
-  // BELOW THE HUD BAND rather than beside it: on a narrow phone the level card
-  // is most of the width, so "beside" is not a place that exists.
-  const cmds: Array<[ZoneId, string]> = [
-    ['restart', 'restart'],
-    ['levels', 'levels'],
-  ];
-  if (o.fullscreen === 'off') cmds.push(['full', 'full screen']);
-  else if (o.fullscreen === 'on') cmds.push(['full', 'exit full']);
-  cmds.push(['auto', o.autoThrottle ? 'gas: auto' : 'gas: held']);
-  cmds.push(['zoom', zoomLabel(o.bias ?? 1)]);
-
-  // AS NARROW AS THE ROOM ALLOWS, AND NO NARROWER. A block three wide and two
-  // deep is the shape that stays out of the way: it ends about a third of the
-  // way across, clear of the level card the art renderer draws at the top
-  // centre, and clear of the lean pads below. `MM.cmdBlockW` is that cap — a row
-  // of five spans nearly half a landscape phone and crowds the HUD, which is a
-  // thing a screenshot showed and a fraction could not.
-  //
-  // It widens only when the screen is too SHORT for two rows. A 280 px-tall
-  // landscape viewport has about 13 mm between the HUD band and the lean pads,
-  // which is one row and not two — so the block goes wide and flat rather than
-  // shrinking the buttons to 6 mm, because a control too small to hit is worse
-  // than one in a slightly worse place.
+  // --- the two thumb clusters, hard against the bottom corners -------------
   const leanTop = bottom0 - leanH;
-  const cmdRoom = (leanTop - px(MM.gap) - top0) / mm;
-  const fits = (n: number): number => Math.floor((n + MM.gap) / (MM.cmdW + MM.gap));
-  const maxCols = Math.max(1, Math.min(cmds.length, fits((right0 - left0) / mm)));
-  let cols = Math.max(1, Math.min(maxCols, fits(MM.cmdBlockW)));
-  const deep = (n: number): number => {
-    const r = Math.ceil(cmds.length / n);
-    return r * MM.cmdH + (r - 1) * MM.gap;
-  };
-  while (cols < maxCols && deep(cols) > cmdRoom) cols++;
-  // And if even the widest arrangement does not fit, the commands give way
-  // rather than collide: a lean pad that a command has eaten a corner of is a
-  // lost run, and a cramped `zoom` readout is not.
-  const cs = clamp(Math.min(s, cmdRoom / deep(cols)), 0.2, 1);
-  const cmdW = px(MM.cmdW * cs);
-  const cmdH = px(MM.cmdH * cs);
-  const cmdGap = px(MM.gap * cs);
-  for (let i = 0; i < cmds.length; i++) {
-    const [id, label] = cmds[i];
-    zones.push({
-      id,
-      x: left0 + (i % cols) * (cmdW + cmdGap),
-      y: top0 + Math.floor(i / cols) * (cmdH + cmdGap),
-      w: cmdW,
-      h: cmdH,
-      label,
-      command: true,
-    });
-  }
-
-  // --- flip, above the right cluster, across a dead strip ------------------
   const rightW = gasW + brakeW;
   const rightX = right0 - rightW;
   const rowY = bottom0 - gasH;
+
+  // --- flip, above the right cluster, across a dead strip ------------------
+  //
+  // The dead strip is `MM.flipGap` of nothing: a thumb drifting up off a held
+  // throttle must not arrive in flip, because that fires a direction change in
+  // mid-air and loses the run.
+  let flipH = px(MM.flipH * s);
+  // AND IT NEVER SCALES BELOW A THUMB. `s` is usually decided by the WIDTH — a
+  // portrait phone cannot hold both clusters side by side — and shrinking the
+  // one rare, critical control below the comfortable minimum to solve a width
+  // problem is paying in the wrong currency. It grows back to `MIN_PAD_MM` only
+  // as far as the room between the HUD band and the dead strip allows.
+  const flipRoom = rowY - px(MM.flipGap * s) - top0;
+  if (flipH < px(MIN_PAD_MM) && flipRoom > flipH) flipH = Math.min(px(MIN_PAD_MM), flipRoom);
+
+  // --- the commands ---------------------------------------------------------
+  //
+  // RESTART IS ALWAYS THERE AND THE OTHER FOUR ARE BEHIND `MENU`. Restart is
+  // the one you press mid-run — this is a die-and-retry game with no R key on
+  // the glass — and levels, full screen, gas-mode and zoom-reset are things you
+  // do between runs, which is not worth permanent screen in the band the bike
+  // rides through.
+  const cmdRow: Array<[ZoneId, string]> = [
+    ['restart', 'restart'],
+    ['menu', o.menu ? 'close' : 'more'],
+  ];
+  const drawer: Array<[ZoneId, string]> = [];
+  if (o.menu) {
+    drawer.push(['levels', 'levels']);
+    if (o.fullscreen === 'off') drawer.push(['full', 'full screen']);
+    else if (o.fullscreen === 'on') drawer.push(['full', 'exit full']);
+    drawer.push(['auto', o.autoThrottle ? 'gas: auto' : 'gas: held']);
+    drawer.push(['zoom', zoomLabel(o.bias ?? 1)]);
+  }
+
+  const cmdW = px(MM.cmdW * s);
+  const cmdH = px(MM.cmdH * s);
+  const cmdGap = px(MM.gap * s);
+  const rowW = (n: number): number => n * cmdW + (n - 1) * cmdGap;
+  const fits = (room: number): number => Math.floor((room + cmdGap) / (cmdW + cmdGap));
+
+  // THE GUTTER: what is left of the bottom edge once both clusters have taken
+  // their corners, less a clear margin from each so that a press on the inboard
+  // edge of a lean pad cannot land on `restart` instead.
+  const gutL = left0 + 2 * leanW + px(MM.cmdMargin * s);
+  const gutR = rightX - px(MM.cmdMargin * s);
+  const gutW = gutR - gutL;
+
+  /** Lay a list of rows out as a block, top row first, ending at `endY`. */
+  const block = (rows: Array<Array<[ZoneId, string]>>, endY: number, mid: number): void => {
+    const n = rows.length;
+    for (let r = 0; r < n; r++) {
+      const row = rows[r];
+      const y = endY - (n - r) * cmdH - (n - 1 - r) * cmdGap;
+      const x0 = mid - rowW(row.length) / 2;
+      for (let i = 0; i < row.length; i++) {
+        zones.push({
+          id: row[i][0],
+          x: x0 + i * (cmdW + cmdGap),
+          y,
+          w: cmdW,
+          h: cmdH,
+          label: row[i][1],
+          command: true,
+        });
+      }
+    }
+  };
+
+  const chunk = (list: Array<[ZoneId, string]>, cols: number): Array<Array<[ZoneId, string]>> => {
+    const out: Array<Array<[ZoneId, string]>> = [];
+    for (let i = 0; i < list.length; i += cols) out.push(list.slice(i, i + cols));
+    return out;
+  };
+
+  if (gutW >= rowW(cmdRow.length)) {
+    const gutCols = clamp(fits(gutW), 1, Math.max(drawer.length, 1));
+    if (drawer.length <= gutCols) {
+      // IN THE GUTTER, AT THE VERY BOTTOM, and the drawer opens into it too.
+      // On a landscape phone the gutter is 70-odd millimetres of glass that no
+      // thumb rests on and the bike is never framed in, which makes it the
+      // cheapest screen in the game — so even the open state costs nothing.
+      block([...chunk(drawer, gutCols), cmdRow], bottom0, (gutL + gutR) / 2);
+    } else {
+      // A NARROW GUTTER STACKS, AND A STACK IS THE THING THIS REWRITE IS
+      // REMOVING. Rather than pile three rows up through the play band, the
+      // drawer opens as one wide row ABOVE both clusters, where the only thing
+      // it has to stay clear of is flip's column. It is a transient state — the
+      // next touch anywhere shuts it — so a wide row there costs one press of
+      // the level and a stack would cost the whole open state.
+      block([cmdRow], bottom0, (gutL + gutR) / 2);
+      const wideR = rightX - px(MM.cmdMargin * s);
+      const wideCols = clamp(fits(wideR - left0), 1, drawer.length);
+      block(chunk(drawer, wideCols), leanTop - px(MM.gap * s), (left0 + wideR) / 2);
+    }
+  } else {
+    // NO GUTTER — portrait, where the clusters already fill the width. Top-left,
+    // below the HUD band, as narrow a grid as the height allows: in portrait the
+    // scarce dimension is width and there is plenty of room above the pads.
+    const all = [...cmdRow, ...drawer];
+    const maxRows = Math.max(1, fits(leanTop - px(MM.gap * s) - top0));
+    const maxCols = Math.max(1, fits(right0 - left0));
+    // THREE DEEP AT MOST, so an open drawer is a block rather than a ladder down
+    // the side of the screen. Row-major from the top-left either way, which
+    // leaves `restart` in the corner it was in while the drawer was shut.
+    const cols = clamp(
+      Math.max(Math.ceil(all.length / maxRows), Math.ceil(all.length / 3)),
+      1,
+      maxCols,
+    );
+    const rows = chunk(all, cols);
+    block(rows, top0 + rows.length * cmdH + (rows.length - 1) * cmdGap, left0 + rowW(cols) / 2);
+  }
+
   zones.push({
     id: 'flip',
     x: rightX,
@@ -672,6 +793,13 @@ export function createTouch(
   let hidden = false;
   let zoomBias = opts.zoom ?? 1;
   const full = canFullscreen();
+  /**
+   * Is the command drawer open? CLOSED IS THE ONLY STATE A RUN IS EVER IN — it
+   * closes on the first hold pad pressed, on restart, on any item in it, and on
+   * the overlay going away — so the four occasional commands cost nothing but
+   * the `more` pad for all the time anybody is actually riding.
+   */
+  let menuOpen = false;
   let zones: Zone[] = [];
   /**
    * Pointer id -> the zone it is holding. A MAP AND NOT A SET OF ZONES, because
@@ -713,9 +841,39 @@ export function createTouch(
     return out;
   }
 
+  /**
+   * THE SCREEN, AND THE PART OF IT THAT IS ACTUALLY VISIBLE.
+   *
+   * `#touch` is `position: fixed; inset: 0`, so its rect is the LAYOUT viewport
+   * — and on a phone that is not always the glass you can see. Browser chrome
+   * appearing, a software keyboard and the page being pinch-zoomed all move the
+   * VISUAL viewport inside the layout one, and a pad placed against the layout
+   * viewport then sits somewhere the hand is not: either below the fold or, if
+   * the layout box is the short one, with a band of unreachable screen under it.
+   * "The pads are not at the bottom and there is an empty band below them" is
+   * exactly what that looks like from a hand.
+   *
+   * `visualViewport` is the browser's own answer and it folds into the existing
+   * safe-area insets without the layout having to learn a second concept: the
+   * part of the fixed overlay outside the visible rect is, for every purpose
+   * this file has, an inset. Zero on a desktop, zero in the shot harness, and
+   * `place` is already bound to `visualViewport.resize`.
+   */
   function viewport(): Viewport {
     const r = root.getBoundingClientRect();
-    return { w: r.width, h: r.height, ...insets() };
+    const safe = insets();
+    const vv = window.visualViewport;
+    if (!vv || !(r.width > 0) || !(r.height > 0)) return { w: r.width, h: r.height, ...safe };
+    const top = clamp(vv.offsetTop, 0, r.height);
+    const left = clamp(vv.offsetLeft, 0, r.width);
+    return {
+      w: r.width,
+      h: r.height,
+      top: Math.max(safe.top, top),
+      left: Math.max(safe.left, left),
+      right: Math.max(safe.right, clamp(r.width - (left + vv.width), 0, r.width)),
+      bottom: Math.max(safe.bottom, clamp(r.height - (top + vv.height), 0, r.height)),
+    };
   }
 
   function fullState(): 'none' | 'off' | 'on' {
@@ -740,10 +898,18 @@ export function createTouch(
     // discarded rather than laid out against, and `apply` re-places the moment
     // the overlay is shown.
     if (!(vp.w > 0) || !(vp.h > 0)) return;
-    zones = touchZones(vp, { autoThrottle, bias: zoomBias, fullscreen: fullState() });
+    zones = touchZones(vp, { autoThrottle, bias: zoomBias, fullscreen: fullState(), menu: menuOpen });
+    // WHICH ZONES EXIST IS STATE, AND IT IS EXPRESSED BY HIDING RATHER THAN BY
+    // BUILDING. Opening the drawer and flipping auto-throttle both change the
+    // set; recreating elements for either would drop the pointer capture on a
+    // held pad and leave the throttle welded on with nothing to release it.
+    const live = new Set(zones.map((z) => z.id));
+    for (const [id, el] of els) if (!live.has(id)) el.style.display = 'none';
+    els.get('menu')?.classList.toggle('open', menuOpen);
     for (const z of zones) {
       const el = els.get(z.id);
       if (!el) continue;
+      el.style.display = '';
       el.style.left = `${z.x}px`;
       el.style.top = `${z.y}px`;
       el.style.width = `${z.w}px`;
@@ -757,22 +923,38 @@ export function createTouch(
     }
   }
 
-  /** Create the elements. Only when the SET of zones changes — see `place`. */
+  /**
+   * Create the elements. ONCE, for every zone that could ever exist.
+   *
+   * It used to build only the zones the current state has and rebuild when that
+   * changed, which is the shape of the worst bug a touch control can have: a
+   * rebuild with a thumb down on the gas drops the pointer capture, the release
+   * arrives at an element that is no longer in the document, and the throttle is
+   * held forever. Now the set is fixed, `place` hides what this state does not
+   * use, and nothing in a relayout or a mode switch touches the DOM's identity.
+   */
   function build(): void {
     root.textContent = '';
     els.clear();
-    zones = touchZones({ w: window.innerWidth, h: window.innerHeight }, { autoThrottle, bias: zoomBias, fullscreen: fullState() });
-    for (const z of zones) {
+    const cmd = new Set(COMMAND_IDS);
+    for (const id of ALL_ZONE_IDS) {
       const el = document.createElement('div');
-      el.className = `tc-zone tc-${z.id}${z.command ? ' tc-cmd' : ''}`;
-      const label = document.createElement('span');
-      label.textContent = z.label;
-      el.append(label);
+      el.className = `tc-zone tc-${id}${cmd.has(id) ? ' tc-cmd' : ''}`;
+      el.style.display = 'none';
+      el.append(document.createElement('span'));
       root.append(el);
-      els.set(z.id, el);
+      els.set(id, el);
     }
     place();
     paint();
+  }
+
+  /** Shut the drawer, if it is open. Returns whether anything moved. */
+  function closeMenu(): boolean {
+    if (!menuOpen) return false;
+    menuOpen = false;
+    place();
+    return true;
   }
 
   /**
@@ -801,6 +983,13 @@ export function createTouch(
     for (const [id, el] of els) el.classList.toggle('on', on.has(id));
   }
 
+  /**
+   * Did the press that just happened land on a pad? Read by `touchStart`, which
+   * runs immediately after `down` for the same finger and needs an answer that
+   * is only true at that moment.
+   */
+  let padTouch = false;
+
   const down = (e: PointerEvent): void => {
     if (!enabled) return;
     const r = root.getBoundingClientRect();
@@ -812,7 +1001,19 @@ export function createTouch(
     // pinch-zoom and a drag is a scroll, and either one would eat inputs. The
     // CSS says `touch-action: none`, and this is the belt to that's braces.
     e.preventDefault();
+    // And the touchstart that is about to follow this pointerdown gets
+    // cancelled too — see `touchStart` for the level it picked by itself.
+    padTouch = true;
     if (z.command) {
+      // THE DRAWER IS A TOGGLE AND EVERYTHING ELSE SHUTS IT. A command you have
+      // just given is a command you are finished with, and leaving four extra
+      // pads on the glass afterwards would be the layout this rewrite removes.
+      if (id === 'menu') {
+        menuOpen = !menuOpen;
+        place();
+        return;
+      }
+      closeMenu();
       if (id === 'restart') cb.onRestart();
       else if (id === 'levels') cb.onBrowse();
       else if (id === 'full') toggleFullscreen();
@@ -823,6 +1024,10 @@ export function createTouch(
       }
       return;
     }
+    // A HOLD PAD IS THE START OF A RUN, so the drawer goes. It is shut before
+    // the capture below rather than after: `place` moves elements, and the one
+    // this press landed on must already be where it is going to stay.
+    closeMenu();
     // CAPTURE THE POINTER. Without it a finger that slides off the element it
     // started on stops sending moves to that element, and the zone latches on
     // forever with nothing to release it — which is the single worst bug a
@@ -927,6 +1132,39 @@ export function createTouch(
   // shade, a phone call, the browser deciding it was a scroll after all), and
   // `blur` is the tab going away with fingers still down. A control that only
   // listened for the first of those leaves the throttle welded on.
+  /**
+   * THE GHOST CLICK, and it is not hypothetical — it picked a level.
+   *
+   * A touch that ends generates a synthesised `click` at the point the finger
+   * lifted, aimed at whatever is under that point AT THAT MOMENT. `levels`
+   * opens the chooser on the press, so by the time the finger comes up there is
+   * a grid of level cards under it — and the phantom click lands on one and
+   * rides it. Pressing "levels" and being dropped into a level you did not
+   * choose is exactly the kind of silent wrong input this whole file is built
+   * to avoid, and moving the commands to the bottom gutter is what put the pad
+   * over the cards rather than over the chooser's title bar.
+   *
+   * `preventDefault` on POINTERDOWN does not stop it: per spec that suppresses
+   * the compatibility MOUSE events, and the click synthesised from a touch
+   * sequence is suppressed by cancelling the TOUCHSTART. So this listener
+   * exists for one line, and it is deliberately narrow — only a touch that
+   * landed on a pad is cancelled, because a touch in the play area is half of a
+   * pinch and none of our business.
+   *
+   * IT ASKS `down` RATHER THAN RE-TESTING THE COORDINATES, and that is not
+   * tidiness. Chrome fires `pointerdown` and then `touchstart` for the same
+   * finger, so by the time this runs the press has already been acted on — and
+   * `levels` has already hidden the overlay. Re-testing here would either miss
+   * the case that matters or, worse, cancel a tap meant for the results screen
+   * underneath the inert pads. `down` knows the answer at the only moment it is
+   * true, so it leaves it here.
+   */
+  const touchStart = (e: TouchEvent): void => {
+    if (!padTouch) return;
+    padTouch = false;
+    e.preventDefault();
+  };
+  root.addEventListener('touchstart', touchStart, { passive: false });
   root.addEventListener('pointerdown', down);
   root.addEventListener('pointermove', move);
   root.addEventListener('pointerup', up);
@@ -1001,12 +1239,22 @@ export function createTouch(
       // a zone that no longer exists. Dropped rather than remapped: a throttle
       // that survived into auto mode as a phantom hold would be unreleasable.
       held.clear();
-      build();
+      // RE-PLACED, NOT REBUILT — the gas pad is hidden rather than deleted, so
+      // switching modes with a finger down cannot strand a pointer capture on an
+      // element that has left the document.
+      menuOpen = false;
+      place();
+      paint();
     },
     setHidden(on: boolean): void {
       hidden = on;
       root.classList.toggle('tc-away', on);
-      if (on) clearAll();
+      if (on) {
+        clearAll();
+        // The results screen and the chooser are underneath these. A drawer
+        // left open would come back on top of whatever the player did next.
+        closeMenu();
+      }
     },
     thumbInset: () => (enabled ? thumbInsetPx(zones, root.getBoundingClientRect().height) : 0),
     layout: place,
@@ -1022,6 +1270,7 @@ export function createTouch(
       if (span) span.textContent = zoomLabel(zoomBias);
     },
     detach(): void {
+      root.removeEventListener('touchstart', touchStart);
       root.removeEventListener('pointerdown', down);
       root.removeEventListener('pointermove', move);
       root.removeEventListener('pointerup', up);

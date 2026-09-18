@@ -853,7 +853,16 @@ try {
   const chrome2 = JSON.parse(await evalIn(cdp, `
     (() => {
       const vis = (id) => getComputedStyle(document.getElementById(id)).display !== 'none';
-      const pads = [...document.querySelectorAll('#touch .tc-zone')].map((e) => e.getBoundingClientRect());
+      // VISIBLE pads only. touch.ts creates an element for every zone that
+      // could ever exist and hides the ones this state does not use — a
+      // deliberate choice, because rebuilding the set with a thumb down on the
+      // gas drops the pointer capture and holds the throttle forever. A hidden
+      // element's rect is all zeros, so min-of-top over every element reports 0
+      // the moment any zone is hidden (the menu drawer, for one) and this check
+      // fails on a pad that is not drawn anywhere at all.
+      const pads = [...document.querySelectorAll('#touch .tc-zone')]
+        .map((e) => e.getBoundingClientRect())
+        .filter((r) => r.width > 0 && r.height > 0);
       return JSON.stringify({
         levelbar: vis('levelbar'), legend: vis('legend'), hud: vis('hud'),
         pads: pads.length,
@@ -886,10 +895,44 @@ try {
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
     await new Promise((r2) => setTimeout(r2, 400));
   };
+  // THE DRAWER, which is the new thing on the glass and the reason the chooser
+  // is two presses now. Five permanent pads for five occasional actions was the
+  // trade that put a row of buttons across the band the bike rides through, so
+  // `levels`, `full screen`, `gas-mode` and the zoom readout live behind `more`
+  // — and every one of "it opens", "it is shut until you open it" and "it does
+  // not survive into a run" is a DOM fact a unit test cannot see.
+  const padSeen = async (cls) => evalIn(cdp, `
+    (() => { const e = document.querySelector('.${cls}');
+      if (!e) return false;
+      const r = e.getBoundingClientRect();
+      return r.width > 0 && r.height > 0; })()
+  `);
+  if (await padSeen('tc-levels')) throw new Error('the command drawer was open with nothing pressed');
+  await tapPad('tc-menu');
+  if (!(await padSeen('tc-levels'))) throw new Error('the `more` pad did not open the command drawer');
+  // A HOLD PAD SHUTS IT. This is the one that matters: a drawer that survived
+  // into a run would be four pads sitting over the level while you drive.
+  await tapPad('tc-leanL');
+  if (await padSeen('tc-levels')) throw new Error('pressing a hold pad left the command drawer open');
+  await tapPad('tc-menu');
+  const wasLevel = await evalIn(cdp, `window.velo.level.name`);
   await tapPad('tc-levels');
   const chooserUp = await evalIn(cdp, `!document.getElementById('chooser').classList.contains('hidden')`);
-  console.log('    levels pad: ' + JSON.stringify({ chooser: chooserUp }));
+  const drawerShut = !(await padSeen('tc-levels'));
+  // AND THE LEVEL DID NOT CHANGE, which is the other half and is the bug this
+  // found. A touch that ends synthesises a `click` at the point the finger
+  // lifted, aimed at whatever is under it BY THEN — and `levels` opens a grid
+  // of level cards under exactly that point. The phantom click rode one, so
+  // pressing "levels" dropped you into a level you never chose. `touch.ts`
+  // cancels the touchstart behind a pad press; without that line this reads
+  // "02 — The Long Climb" and the chooser is already shut again.
+  const nowLevel = await evalIn(cdp, `window.velo.level.name`);
+  console.log('    levels pad: ' + JSON.stringify({ chooser: chooserUp, drawerShut, level: nowLevel }));
   if (!chooserUp) throw new Error('the levels pad did not open the chooser');
+  if (!drawerShut) throw new Error('a command in the drawer did not shut it behind itself');
+  if (nowLevel !== wasLevel) {
+    throw new Error(`the levels pad picked a level by itself (${wasLevel} -> ${nowLevel})`);
+  }
   await evalIn(cdp, `(() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', bubbles: true })); return 1; })()`);
   await new Promise((r) => setTimeout(r, 300));
 
@@ -940,7 +983,12 @@ try {
     throw new Error(`the zoom pad printed ${pinched.label} for a bias of ${pinched.bias}`);
   }
   // And the way back, which is the whole reason the pad is there: a gesture
-  // that went wrong mid-run must not need another gesture to undo it.
+  // that went wrong mid-run must not need another gesture to undo it. It is
+  // behind `more` now, which is the trade the drawer makes — the readout is
+  // read far more often than the pad is pressed, and the pinch that got you
+  // here needed no pad at all.
+  await tapPad('tc-menu');
+  if (!(await padSeen('tc-zoom'))) throw new Error('the `more` pad did not reveal the zoom pad');
   const zoomPad = await padBox('tc-zoom');
   await touchSeq([
     ['touchStart', [finger(Math.round(zoomPad.x), Math.round(zoomPad.y), 3)]],
