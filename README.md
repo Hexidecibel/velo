@@ -63,6 +63,7 @@ add a script rather than running an ad-hoc command.
 | `bin/test` | vitest, colocated, plain node. `--watch` to re-run on change. |
 | `bin/lint` | `tsc -b` plus eslint. Both, in that order — eslint here is type-unaware. |
 | `bin/smoke` | Builds, then drives the real page in headless Chrome over CDP: asserts nothing threw, nothing went NaN, the replay verifies, the **cross-engine hash chain from Chrome's V8 matches Node's V8**, live tune applies end to end, and **holding TAB advances neither the clock nor the recording**. It asserts audio stays asleep until a **trusted** gesture and then initialises without throwing, that a hidden tab suspends the context, and — the one that matters — that **the same fixed input stream driven muted and driven loud records byte-identical replays**, with the loud pass firing cues and the muted pass firing none so the comparison cannot pass vacuously. It then starts a **real velo server** on a scratch data directory, posts a real replay to it, and asserts the built page fetches that board, builds a ghost from it and steps that ghost one frame for one input frame. |
+| `bin/engines` | **The real cross-engine determinism check, and the one bin/smoke is not.** Bundles the `crossCheck` fixture once with esbuild and hands that same artefact to every JavaScript engine this box can host — **Node and Chrome (V8), Firefox (SpiderMonkey) and Playwright's WebKit (JavaScriptCore)** — then compares the *full* hash chains, a hash every frame, and names the first diverging frame. `bin/smoke` compares Chrome's V8 against Node's V8, which is a real check of the bundle and no evidence at all about engines; this is the one that answers *will a time set on an iPhone verify on the server*. Browser engines are driven through a `playwright-core` found on the box (velo itself still depends on nothing but Hono, and the script prints which one it borrowed); an engine it cannot run is reported **UNTESTED with the command that would fix it**, the verdict names the untested engine *families*, and `--strict` makes partial coverage a non-zero exit. It will not print a pass over engines it did not run. `--frames N`, `--every K`, `--level <id>` to run the fixture on a shipped level, `--list` to see what is installed without running anything. |
 | `bin/preview` | Serves the built `dist/`. A production-bundle sanity check, not a deployment. |
 | `bin/level-export` | Writes the built-in levels out to `levels/test01.json` and `levels/test02-bowl.json`. |
 | `bin/level-check` | Validates a hand-authored level JSON, prints its two hashes, and **warns about straight runs too coarse to ride smoothly**. |
@@ -94,29 +95,69 @@ silently measures the load left behind by the last one. Here that took the same
 level from 77% of the frame budget to 253% over an afternoon. The scripts now
 reap any Chrome holding one of their own profile directories before they start.
 
+`bin/engines` needs Playwright's WebKit and Firefox builds present in
+`~/.cache/ms-playwright`. On this box they are, and WebKit additionally needs
+`libevent-2.1-7t64` and `libavif16` from apt — without them it fails to launch
+and the script correctly reports JavaScriptCore as **untested** rather than
+passing on three copies of V8. That distinction is the whole reason the script
+exists: as of 2026-09-18 the hash chain is identical across V8, SpiderMonkey and
+JavaScriptCore over 24,000 sim ticks on a shipped level, and that is a
+measurement rather than an argument from IEEE-754. `docs/launch-audit.md` has
+the full run and what is still not covered (nobody has run it on a real iPhone).
+
 ## Controls
+
+There is a **control legend in the bottom-left corner**, and it is pictures of
+the bike rather than a list of keys: each drive control is drawn by the game's
+own renderer in the pose that control puts the bike in, and `space` gets a tile
+of its own with the same bike facing both ways. Press **`?`** to open or close
+it. Closed, it leaves a `controls` chip in the corner — that chip is the way
+back, and it is the whole reason the legend is a toggle rather than a first-run
+card that never returns.
+
+On a phone the legend is a card in the middle of the screen instead, it prints
+the name of the **pad** rather than a key the device does not have, and the way
+back is the `controls` entry in the command drawer.
 
 | Key | |
 | --- | --- |
 | arrows / WASD | gas, brake, rotate left, rotate right |
 | space | **flip direction** — changes the driven wheel; free, legal mid-air, and the mechanic the whole double-back level design rests on |
-| TAB (hold) | **see the whole level.** The sim and the clock freeze while it is down. |
+| TAB (hold) | **see the whole level.** The sim and the clock freeze while it is down. On a phone this is the `overview` pad, and it toggles. |
 | R | restart |
-| T | replay the last run and check its hash chain |
-| F | **watch every attempt of this session at once** — see *The montage* |
-| E | **export the last run** as a self-contained `.replay.json` file |
-| L | load a replay file and watch it (or drag one onto the window) |
 | `[` / `]` | previous / next level |
+| C | **the level chooser** — a picture of every level, its measured difficulty, and your best time on it |
+| `+` / `-` / `0` | zoom in, zoom out, back to the default. A multiplier on the derived framing, remembered per device, and clamped so it can never ask for a zoom outside `minZoom`..`maxZoom`. On a phone the same variable is driven by a two-finger pinch. |
+| B | show/hide the **leaderboard and ghost picker** — open by default |
+| Y | **your bike** — six silhouettes, ten liveries, and what the rider is wearing. None of it changes how the bike rides. |
+| M | **mute** — remembered. Sound starts on your first click or key press, because browsers will not let a page make noise before one. |
+| P | pause |
+| `?` | the control legend |
+
+### The dev toolbar
+
+The legend used to be one flat list of eighteen keys in which `gas` and `hide
+the debug readout` had the same typography and the same claim on your attention.
+That is not a control legend; it is a debug overlay that survived into
+production. So the developer affordances moved behind **one switch** — the `dev`
+button in the legend's header. It is **off by default and remembered**, and it
+is a toolbar: the buttons do the thing and print the key that does it, so the
+key gets discovered rather than replaced.
+
+**Every one of these keys still works whether the toolbar is up or not.**
+Nothing was removed; this is about what is advertised to somebody who just wants
+to ride.
+
+| Key | |
+| --- | --- |
+| H | show/hide the tuning panel — **closed by default**, remembered once you open it |
+| backtick `` ` `` | **hide the debug readout.** Remembered. The level card, clock and apple counter stay — they are drawn in the canvas and they are the game talking — and so do the two warnings that are not telemetry. |
 | G | **draw the true collision boundary**, its normals and the live contacts, over everything else |
 | V | art renderer on / off — the A/B for readability |
-| B | show/hide the **leaderboard and ghost picker** — open by default |
-| M | **mute** — remembered. Sound starts on your first click or key press, because browsers will not let a page make noise before one. |
-| C | **the level chooser** — a picture of every level, its measured difficulty, and your best time on it |
-| Y | **your bike** — six silhouettes, ten liveries, and what the rider is wearing. None of it changes how the bike rides. |
-| H | show/hide the tuning panel — **closed by default**, remembered once you open it |
-| `` ` `` | **hide the debug readout.** Remembered. The level card, clock and apple counter stay — they are drawn in the canvas and they are the game talking — and so do the two warnings that are not telemetry. |
-| `+` / `-` / `0` | zoom in, zoom out, back to the default. A multiplier on the derived framing, remembered per device, and clamped so it can never ask for a zoom outside `minZoom`..`maxZoom`. On a phone the same variable is driven by a two-finger pinch. |
-| P | pause |
+| T | replay the last run and check its hash chain |
+| E | **export the last run** as a self-contained `.replay.json` file |
+| L | load a replay file and watch it (or drag one onto the window) |
+| F | **watch every attempt of this session at once** — see *The montage* |
 | Q | **edit this level.** The sim freezes and you get handles; press Q again and you ride what you drew. While it is open the editor owns the keyboard — including A, S, D and the arrows — and prints every key it owns on its own panel. See *The level editor*. |
 
 **On the end-of-level screen** — which appears on a finish and never on a death
@@ -134,9 +175,27 @@ one of them on itself:
 | B | the fuller leaderboard |
 | L | level select — opens the chooser — *(load a replay file everywhere else)* |
 
-There is a collapsible control legend in the bottom-left corner of the page,
-because space-to-flip was the single most undiscoverable thing in the game and
-nothing on screen said so.
+### Every advertised key is asserted to reach a handler
+
+`src/client/keys.ts` is the one list. The legend renders it, this table is
+parsed from it by `keys.test.ts`, and that test asserts three things:
+
+* **Reachability** — every code in the list appears in a handler in `input.ts`,
+  `main.ts`, `results.ts` or the editor.
+* **The shadow rule** — no command key may also be a sim binding. `input.ts`
+  returns on a sim binding *before* command dispatch runs, so a command bound to
+  one can never fire, anywhere, and nothing at the call site looks wrong.
+* **The README agrees** — these tables are parsed rather than read, so a row for
+  a key that does not exist fails the build instead of being believed by a
+  player.
+
+It is overdue by three bugs. The montage was bound to `A`, which is lean-left,
+so it was dead from the day it shipped while the legend and the results screen
+both printed it. The zoom keys were then *suspected* dead on the same grounds
+and are fine — but establishing that took two people reading `main.ts` by hand,
+because `main.ts` contains a byte that makes GNU `grep` treat it as binary and
+silently match nothing. And the README, the legend and the dispatch were three
+hand-maintained copies of one list, agreeing by luck.
 
 ## Finding your way around a big level
 
@@ -153,7 +212,10 @@ zooming out at everything except being always-on. Modern 2D games dropped it for
 those reasons. Three things replace it:
 
 **Hold TAB and the camera eases out to frame the whole level** — the real
-camera, the real renderer, the real geometry, just further away. A level too
+camera, the real renderer, the real geometry, just further away. On a phone
+there is no TAB, so there is a pad for it in the bottom gutter and it toggles
+rather than holds; see [There is no TAB key on a
+phone](#there-is-no-tab-key-on-a-phone). A level too
 large to fit above the overview's own zoom floor frames a generous radius around
 the bike instead, clamped so the view never scrolls off the level. Release and
 it eases back. Both directions are smoothed with a half-life, and the zoom
@@ -174,6 +236,11 @@ at once:
   key path, because the freeze gate itself lives in the frame loop where no unit
   test can reach it.
 - It makes the feature a viewing aid rather than a competitive question.
+
+While it is up the canvas says `TIME STOPPED` across it, with the way out under
+it, in the same treatment as the death banner. A frozen game that does not say it is frozen reads as a crashed
+one, and the debug readout that used to be the only place saying so is hidden on
+the one device with a pad for this.
 
 **Loading a level shows that same wide framing briefly before settling** to play
 zoom. Route planning *is* the game — apples are collectable in any order, and
@@ -1097,16 +1164,31 @@ up while it is open. Anything else shuts it again: any of the four, restart, and
 the first hold pad you press, which is the one that matters — the drawer cannot
 survive into a run.
 
-**Restart is the exception, and it earns it.** There is no R key on a phone and
-this is a die-and-retry game, so it keeps a pad of its own next to `more`.
+**Two things are exceptions, and each earns it on the same test: is it pressed
+*during* a run?**
 
-Both of them sit in the **bottom gutter**: the strip of glass between the two
+**Restart** is. There is no R key on a phone and this is a die-and-retry game,
+so it keeps a pad of its own.
+
+**Overview** is, and that is the whole of the second fix on this page — see
+[There is no TAB key on a phone](#there-is-no-tab-key-on-a-phone).
+
+All three sit in the **bottom gutter**: the strip of glass between the two
 thumb clusters, which on a landscape phone is 70-odd millimetres that no thumb
 rests on, that the camera never frames the bike in, and that is otherwise doing
 nothing at all. They keep 5 mm clear of each cluster so that a press on the
 inboard edge of the lean pads is a different gesture rather than a near miss, and
 the drawer opens *upward into the same gutter* wherever it fits there — on a 915
-px-wide phone all four go in one row below the pads' top edge. On a narrower
+px-wide phone all four go in one row below the pads' top edge. The order along
+the row is `restart`, `more`, `overview`: the pad you reach for mid-run is not
+tiled against the pad that ends the run, and the harmless one is between them.
+
+A command pad is **12 x 9 mm**, and the 12 used to be 13. Three permanent pads at
+13 mm want 252 px of gutter and the smallest landscape phone in the table has
+250 — two millimetres over, and the whole block falls back to the portrait branch
+at the top-left, back into the band the bike rides through. A millimetre of pad
+is a far cheaper thing to spend than that, and `touch.test.ts` asserts the gutter
+placement on every landscape viewport rather than asserting the constant. On a narrower
 landscape screen the gutter only takes two across, and rather than pile three
 rows up through the play band the drawer opens as one wide row above both
 clusters instead. In portrait there is no gutter at all — the clusters already
@@ -1180,7 +1262,7 @@ opening peek — which ends on any input at all — would end on the frame the l
 loaded and the bike would drive off the line before anybody had looked at it. So
 the auto bit is withheld until the first touch since the last restart.
 
-### What the camera does about hands
+### What the camera does about hands, and where the bike rests
 
 **Thumbs occlude the screen.** In landscape, hands cover the bottom corners,
 which is exactly where a grounded bike sits when the camera centres it — so the
@@ -1198,48 +1280,84 @@ bar and Android's system bars make the real one about 915 x 348, and on a frame
 that short the same fraction was pushing a grounded bike up **under the level
 card** — the exact thing the offset exists to keep it out from under. A constant
 fraction cannot be right on two viewports that differ by a factor of three in
-height.
+height. So it is derived.
 
-So it is derived, from the two things that are actually covering the glass:
+**Then the derivation aimed too high, and that is the fix on this page.** What
+replaced the constant put the bike in the **middle of the band nothing was
+covering** — between the 52 px HUD at the top and the pads at the bottom. That
+was right while a row of command buttons owned the top and the pads sat halfway
+up the screen: the clear band was a *slot*, and the middle of a slot is where you
+put things. Once the pads moved to the bottom edge the clear band became most of
+the glass, and centring in it spends a third of a phone's scarcest dimension on
+the ground the bike is standing on. The player's words were *"so much space under
+the bike"*, and they were looking at a picture where that was literally true.
 
-- **the want** — the clear band runs from the bottom of the 52 px HUD to the top
-  of the thumb pads, and the bike wants the middle of *that* rather than the
-  middle of the screen. That is a shift of half the difference between the two
-  insets, and it is a number of **pixels**, so it comes out large on a short
-  screen and small on a tall one without anybody choosing either;
-- **the room** — the safe box already allows the follow `safeBox` of the
-  half-frame above centre, so the worst case is `safeBox + bias` and it has to
-  land below the HUD. On a short viewport that is the binding constraint and the
-  want is not paid in full;
-- **the cap** — `screenBiasY` survives as the most this may ever ask for (0.30 on
-  touch, 0 on a desktop), which is what keeps a desktop at exactly zero and
-  leaves a slider on the tuning panel that means something.
+**In this game what is below you is mostly floor.** What decides a run is ahead
+and above: the ceiling you are about to clip, the lip you are aiming at, the
+apple over the roof, where a jump is going to land. And the one case that
+genuinely needs to see down — a fall — is already paid for by the vertical lead:
+falling drives `leadY` toward `-maxLeadY`, the camera drops below the bike, and
+the bike walks *up* the frame with the ground opening under it.
 
-`thumbInsetPx` is measured off the real pads every frame rather than guessed, so
-switching to auto-throttle, rotating the phone or the URL bar collapsing all move
-it, and all of them ease.
+So the rule is no longer "centre it in what is clear". It is:
 
-| viewport | pads cover | derived bias | bike sits | middle of the clear band |
-| --- | --- | --- | --- | --- |
-| 1600 x 900 desktop | nothing | 0 | dead centre | — |
-| 1180 x 820 tablet | 111 px | 0.072 | 381 px down of 820 | 381 |
-| 915 x 348 phone + browser chrome | 111 px | 0.170 | 145 px down of 348 | 145 |
-| 915 x 310 phone + browser chrome | 111 px | 0.190 | 126 px down of 310 | 126 |
-| 736 x 280 small phone | 111 px | 0.209 | 111 px down of 280 | 111 |
-| 412 x 800 portrait | 101 px | 0.061 | 376 px down of 800 | 376 |
+> **The bike rests as low in the frame as the safe box allows without ever
+> putting it under a thumb.**
 
-In every row the bike ends up in the middle of the band nothing is covering,
-which is the only thing the rule says.
+Which is three terms — two rails and a ceiling:
 
-**And that is the third thing the screenshot showed.** None of the arithmetic
-above changed in the pass that moved the pads; it did not need to. The derivation
-was already right and it was being fed a wrong picture of the screen: the pads
-were not where it thought, and there was a row of command buttons sitting in the
-top band it was pushing the bike *into*. Bias is only as good as the claim that
-the space it aims at is empty. With the pads genuinely on the bottom edge and the
-commands out of the top, the insets fell from 141 px to 111 and the bias with
-them — and the bike landed in the middle of the clear band to the pixel on every
-viewport, which is what the two rightmost columns above are for.
+- **the want**, and now also the target: `safeBox` lets the follow put the bike
+  that fraction of the half-frame *below* centre, and a sustained climb does
+  exactly that for the whole ascent (`leadY` goes positive, the camera rides
+  above the bike). The lowest resting position that keeps *that* worst case off
+  the pads is `safeBox - 1 + thumbInsetPx / half`, and the bias asks for exactly
+  it and no more. Still a number of **pixels** over a half-frame, so the same
+  hands ask for a lot of a 348 px screen and nothing at all of a tablet — which
+  is right, because on a tablet the pads cannot reach the bike wherever it is;
+- **the room**, unchanged and still the rail that outranks the want: the same
+  safe box allows `safeBox` *above* centre and that worst case has to land below
+  the HUD. On a viewport short enough that the two rails cross — a 280 px phone
+  has 117 px of clear band and a safe box of ±59 — the HUD wins and the bike sits
+  higher than the thumb rail asked. Losing the bike under the level card is worse
+  than losing the ground under it behind a hand;
+- **the cap** — `screenBiasY`, the most this may ever ask for (0.30 on touch, 0
+  on a desktop), which leaves a slider on the tuning panel that means something.
+
+**And it is clamped at zero, which is deliberate.** Zero is dead centre, the
+framing all twenty levels were authored and signed off at. This stops pushing the
+bike up and never starts pushing it down; on a tablet and in portrait the thumb
+rail goes negative and the answer is simply centre. Whether the *desktop* wants a
+low resting position too is a real question with the same reasoning behind it,
+and it is a separate proposal with its own numbers rather than a side effect of a
+phone fix.
+
+| viewport | pads cover | bias, was → now | bike rests, was → now | world above → | world below → |
+| --- | --- | --- | --- | --- | --- |
+| 1600 x 900 desktop | nothing | 0 → 0 | 450 → 450 px (50%) | 7.26 → 7.26 m | 7.26 → 7.26 m |
+| 1180 x 820 tablet | 111 px | 0.072 → 0 | 381 → 410 px (50%) | 7.15 → 7.70 m | 8.25 → 7.70 m |
+| **915 x 348 phone + chrome** | 111 px | 0.170 → **0.058** | 145 → **164 px (47%)** | 3.75 → **4.25 m** | 5.28 → **4.77 m** |
+| 915 x 412 phone, no chrome | 111 px | 0.143 → 0 | 177 → 206 px (50%) | 4.21 → 4.91 m | 5.61 → 4.91 m |
+| 915 x 310 phone + chrome | 111 px | 0.190 → 0.136 | 126 → 134 px (43%) | 3.30 → 3.52 m | 4.86 → 4.63 m |
+| 844 x 390 iPhone landscape | 111 px | 0.151 → 0 | 166 → 195 px (50%) | 4.06 → 4.78 m | 5.50 → 4.78 m |
+| 736 x 280 small phone | 111 px | 0.209 → 0.209 | 111 → 111 px (40%) | 2.92 → 2.92 m | 4.45 → 4.45 m |
+| 412 x 800 portrait | 101 px | 0.061 → 0 | 376 → 400 px (50%) | 9.89 → 10.53 m | 11.17 → 10.53 m |
+
+Two rows are worth reading twice. **736 x 280 does not move at all**, because
+there is genuinely nowhere for it to go: 52 px of HUD plus 111 px of pad leaves
+117 px of clear band, the safe box wants ±59 of it, and the two rails have
+already crossed. That is the honest answer on that screen, not a missed case.
+And **915 x 348 lands exactly on its rail** — the bike's lowest possible position
+during a climb is 237 px, which is the top edge of the pads to the pixel. One
+pixel lower and a climb would park the bike under a hand.
+
+**The fall case got better, not worse**, which is the thing that had to be
+checked rather than assumed. At the old resting position a full downward lead put
+the bike 71 px from the top of a 348 px screen — 19 px of clearance under a 52 px
+HUD. At the new one it is 91 px, so 39. And the reveal itself is worth knowing:
+in a *steady* fall the camera gains about 28 px of ground under the bike, not the
+84 that `maxLeadY` alone implies, because the follow's own lag sits above the
+target and cancels most of the lead. It pays, but it pays less than the parameter
+reads, and `camera.test.ts` asserts the number rather than the intention.
 
 **The visible glass is not always the fixed overlay, either.** `#touch` is
 `position: fixed; inset: 0`, so its rect is the *layout* viewport, and browser
@@ -1379,6 +1497,78 @@ gesture, and the pad is also the only thing on the screen that says pinch exists
 at all. It is always there rather than appearing when you are zoomed, because a
 pad that comes and goes means rebuilding the overlay mid-run — which drops
 pointer capture and would silently release a held throttle.
+
+### There is no TAB key on a phone
+
+[Overview](#finding-your-way-around-a-big-level) — hold a key and the real camera
+eases out to frame the whole level, with the sim and the clock frozen — is the
+only answer this game has to *where am I, and where do I go*. Route planning **is**
+the depth of this game: apples are collectable in any order and the interesting
+levels have genuinely different orders with different times. And it was bound to
+**TAB**, which is to say it did not exist on a phone at all. The one feature
+built for the question a big level asks was keyboard-only.
+
+It has a pad now, in the bottom gutter next to `restart` and `more`.
+
+**The other candidate was pinch.** Pinch already drives the zoom, and overview is
+almost definable as "zoom out further than `minZoom` allows, and freeze" — so
+spreading two fingers past the floor could enter it at no cost in glass at all,
+which is the currency the previous layout pass worked hardest to reclaim. It was
+rejected for three reasons, in increasing order of weight:
+
+- **It cannot be found.** A pad is discoverable by reading it; a gesture past a
+  threshold is discoverable by accident or by documentation, and a feature
+  nobody finds is not a feature. Overview is exactly the thing a lost player
+  needs and exactly the thing a lost player will not go looking for in a gesture
+  vocabulary.
+- **The way back is another gesture.** Coming out of a frozen sim has to be
+  unambiguous, and "pinch in" is a two-finger gesture that can fail silently —
+  which is the failure mode this entire file is written against. With a pad, the
+  way back is *touch anything*.
+- **Overview is not a zoom, it is a freeze.** Pinch is a continuous control over
+  a continuous quantity. Hanging a mode change off the end of it — one that stops
+  the clock and takes the camera below the readability floor — is the same
+  species of mistake as the virtual stick at the top of `touch.ts`: a control
+  that promises one thing and does another. A gesture that silently stops the
+  game is a surprise, and a surprise is what a pad is not.
+
+The glass it costs is close to nothing, which is what made the argument easy.
+The gutter row already exists, the pad is 12 x 9 mm of the strip no thumb rests
+on and the camera never frames the bike in, and `thumbInsetPx` ignores the
+commands — so the camera's framing does not move by a pixel because of it.
+
+**It is a toggle where TAB is a hold**, and that is the one place it deliberately
+differs. On a desktop you hold TAB and read the level with both hands free; a
+hold on a phone would pin a thumb to the bottom of the glass for exactly as long
+as you were trying to look at what is on it. So it latches, the pad says which
+state it is in (`overview` / `ride`, lit while it is up), and **everything else
+on the overlay drops out of it** — a thumb on gas, lean, flip, restart or the
+drawer, or a tap anywhere on the level. Touch anything at all and you are riding.
+
+**One state machine, one freeze.** The pad does not own "is it up"; it calls the
+same `overview.hold()` TAB calls, and `main.ts` tells the pad what happened so the
+label follows the state even when the state was moved by a key the phone does not
+have. That matters more than it sounds: the freeze is the thing that guarantees a
+run held in overview records a byte-identical replay, and two freezes would be
+two ways to lose a tick. `overview.test.ts` asserts the replay claim for the
+phone's usage pattern as well as the desktop's — several separate looks rather
+than one long one — against the real sim and the real recorder.
+
+**And it says so on the canvas.** The overview stops the sim and the clock, and
+on a desktop the readout in the corner says exactly that. A phone has no readout
+— the dev chrome is hidden there, which is right — so a player who pressed the
+pad would get a silently frozen game and a camera that had wandered off, which
+reads as a crash. **`TIME STOPPED`**, with `tap anything to ride` under it, is
+drawn across the canvas at the overview's own blend and in the same treatment as
+the death banner. The sentence comes from `main.ts` rather than the renderer,
+because the way out is a key on one device and a pad on another. It is two lines
+rather than one because one line is 260 px wide and, centred on a 412 px portrait
+phone, runs its left end into the command column — which the screenshot showed
+and the arithmetic did not.
+
+`SHOTS_OVERVIEW=1` presses the pad the way a thumb does and waits out the blend,
+because every part of that — the framing, the banner, whether a frozen game looks
+frozen — is a picture.
 
 ### All of the desktop chrome goes, including the level bar
 

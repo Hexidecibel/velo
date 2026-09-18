@@ -32,6 +32,20 @@ interface Args {
   rev: number;
   /** rev 5's rider.inertialTransferLinear. */
   linear: number;
+  /** Keep searching after the first run that works; return the fastest found. */
+  optimise: boolean;
+  /** Seconds the satisficing gate may take out of --time. 0 = a quarter of it. */
+  gateTime: number;
+  /** Metres per second the optimiser's ceiling prunes against. 0 = measure it. */
+  boundVref: number;
+  /** 'greedy', or an explicit comma-separated apple order. Undefined = search it. */
+  order?: number[] | 'greedy';
+  /** Search with a rider's hands rather than a solver's. See src/solver/human.ts. */
+  human: boolean;
+  /** Jitter trials for the human slip test. */
+  humanTrials: number;
+  /** Timing error per boundary, input frames. 4 is 31 ms. */
+  humanSigma: number;
 }
 
 function die(msg: string): never {
@@ -50,6 +64,8 @@ function parseArgs(argv: string[]): Args {
     files: [], jobs: 1, time: 300, effort: 1,
     branch: 4, tries: 2, trials: 200, seed: 0x5e1f, quiet: false, progress: false,
     rev: SIM_REV, linear: 0,
+    optimise: false, gateTime: 0, boundVref: 0,
+    human: false, humanTrials: 100, humanSigma: 4,
   };
   for (let i = 0; i < argv.length; i++) {
     const s = argv[i];
@@ -65,12 +81,34 @@ function parseArgs(argv: string[]): Args {
     else if (s === '--spec') a.spec = argv[++i] ?? die('--spec needs a path');
     else if (s === '--rev') a.rev = Math.round(num(argv[++i], '--rev'));
     else if (s === '--linear') a.linear = num(argv[++i], '--linear');
+    else if (s === '--optimise' || s === '--optimize') a.optimise = true;
+    else if (s === '--human') a.human = true;
+    else if (s === '--human-trials') a.humanTrials = Math.round(num(argv[++i], '--human-trials'));
+    else if (s === '--human-sigma') a.humanSigma = num(argv[++i], '--human-sigma');
+    else if (s === '--gate-time') a.gateTime = num(argv[++i], '--gate-time');
+    else if (s === '--bound-vref') a.boundVref = num(argv[++i], '--bound-vref');
+    else if (s === '--order') {
+      const v = argv[++i] ?? die('--order needs greedy or a comma-separated apple order');
+      if (v === 'greedy') a.order = 'greedy';
+      else {
+        const list = v.split(',').map((x) => Math.round(num(x, '--order')));
+        if (list.some((x) => x < 0)) die('--order takes apple indices, which start at 0');
+        a.order = list;
+      }
+    }
     else if (s === '--quiet') a.quiet = true;
     else if (s === '--progress') a.progress = true;
     else if (s.startsWith('-')) die(`unknown option ${s}`);
     else a.files.push(s);
   }
-  if (a.files.length === 0) die('usage: bin/solve <level.json> [more.json ...] [--save <dir|file>] [--jobs N] [--time SECONDS]');
+  if (a.files.length === 0) die('usage: bin/solve <level.json> [more.json ...] [--save <dir|file>] [--jobs N] [--time SECONDS] [--optimise [--gate-time SECONDS] [--order greedy|i,j,k]]');
+  if (!a.optimise && (a.gateTime > 0 || a.order !== undefined)) {
+    // Silently ignoring these would be the worst of the three options: --order
+    // without --optimise is a plausible thing to type for a route experiment
+    // and it does in fact do something, so it is allowed; --gate-time without
+    // --optimise names a phase that does not exist.
+    if (a.gateTime > 0) die('--gate-time is only meaningful with --optimise; without it the whole --time IS the gate');
+  }
   if (a.save !== undefined && a.files.length > 1) {
     const isDir = a.save.endsWith('/') || (existsSync(a.save) && statSync(a.save).isDirectory());
     if (!isDir) die('--save <file> takes one level; pass a directory (trailing /) to solve several');
@@ -101,6 +139,13 @@ const jobOf = (file: string): Job => ({
   seed: args.seed,
   wantReplay: args.save !== undefined,
   progress: args.progress,
+  optimise: args.optimise,
+  gateBudgetMs: args.gateTime > 0 ? Math.round(args.gateTime * 1000) : undefined,
+  boundVref: args.boundVref,
+  order: args.order,
+  human: args.human,
+  humanTrials: args.humanTrials,
+  humanSigma: args.humanSigma,
 });
 
 function pct(v: number): string {
@@ -116,6 +161,18 @@ function report(file: string, o: Outcome, tail = ''): void {
   if (o.solved) {
     console.log('    time            ' + o.seconds.toFixed(2) + ' s of game time, ' + o.frames + ' input frames'
       + (o.verified ? '  (re-verified)' : '  (NOT VERIFIED)'));
+    if (args.optimise && o.gateSeconds > 0) {
+      const saved = o.gateSeconds - o.seconds;
+      console.log('    optimised from  ' + o.gateSeconds.toFixed(2) + ' s — ' + saved.toFixed(2) + ' s faster ('
+        + (o.gateSeconds > 0 ? ((saved / o.gateSeconds) * 100).toFixed(0) : '0') + '%) over '
+        + o.rounds.length + ' round' + (o.rounds.length === 1 ? '' : 's'));
+    }
+    if (o.forcedOrder) console.log('    order forced    ' + o.forcedOrder.join(' -> '));
+    if (o.slip) {
+      console.log('    human slip      ' + pct(o.slip.lethal) + ' of ' + o.slip.trials
+        + ' human-sized fumbles are fatal, ' + pct(o.slip.finished) + ' still finish'
+        + '  (' + o.slip.burst + ' inputs, sigma ' + (o.slip.sigmaFrames * (1000 / 128)).toFixed(0) + ' ms)');
+    }
     console.log('    apple order     ' + (o.appleOrder.length ? o.appleOrder.join(' -> ') : '(none)'));
     const d = o.difficulty;
     if (d) {
@@ -277,6 +334,8 @@ if (args.json !== undefined) {
   const payload = outcomes.map(({ file, o }) => ({
     file, name: o.name, simRev: CHOICE.rev, linear: CHOICE.rev >= 5 ? CHOICE.linear : undefined, solved: o.solved, seconds: o.seconds, frames: o.frames,
     appleOrder: o.appleOrder, apples: o.apples, difficulty: o.difficulty, routeMetres: o.routeMetres,
+    optimised: args.optimise, gateSeconds: o.gateSeconds, rounds: o.rounds, forcedOrder: o.forcedOrder,
+    human: args.human, slip: o.slip,
     expansions: o.expansions, simFrames: o.simFrames, deaths: o.deaths, wallMs: o.wallMs,
     segments: o.segments, retried: o.retried, failure: o.failure, verified: o.verified,
   }));

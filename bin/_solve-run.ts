@@ -6,6 +6,10 @@ import type { ReplayFile } from '@/sim/replay.ts';
 import type { Level } from '@/sim/level.ts';
 import type { BikeSpec } from '@/sim/spec.ts';
 import { solveLevel, DEFAULT_SOLVE } from '@/solver/solve.ts';
+import { optimiseLevel, greedyOrder } from '@/solver/optimise.ts';
+import type { OptimiseRound } from '@/solver/optimise.ts';
+import { HUMAN_DURATIONS, measureHumanSlip } from '@/solver/human.ts';
+import type { HumanSlip } from '@/solver/human.ts';
 import { scoreDifficulty } from '@/solver/difficulty.ts';
 import type { Difficulty } from '@/solver/difficulty.ts';
 
@@ -38,6 +42,33 @@ export interface Job {
    * keeps its per-level report shape.
    */
   progress?: boolean;
+  /**
+   * Keep searching after the first run that works and return the fastest found.
+   *
+   * See src/solver/optimise.ts. `timeBudgetMs` then covers the whole thing —
+   * the satisficing gate that produces the first bound AND the optimising
+   * rounds that beat it — with `gateBudgetMs` capping the gate's share.
+   */
+  optimise?: boolean;
+  gateBudgetMs?: number;
+  /** Metres per second the optimiser's ceiling prunes against. 0 = measure it. */
+  boundVref?: number;
+  /**
+   * Collect the apples in exactly this order. 'greedy' means nearest-first,
+   * recomputed as apples are collected, which is the baseline route tension is
+   * measured against.
+   */
+  order?: number[] | 'greedy';
+  /**
+   * Search with a rider's hands rather than a solver's: held inputs no shorter
+   * than 94 ms and every boundary on a 31 ms grid, then ride the answer badly
+   * on purpose and count how often it still finishes. See src/solver/human.ts.
+   */
+  human?: boolean;
+  /** Jitter trials for the human slip test. */
+  humanTrials?: number;
+  /** Timing error per boundary, input frames. 4 is 31 ms. */
+  humanSigma?: number;
 }
 
 export interface Outcome {
@@ -62,6 +93,13 @@ export interface Outcome {
   replay: ReplayFile | null;
   verified: boolean;
   log: string[];
+  /** Optimising mode only: what the cheap satisficing gate got, seconds. */
+  gateSeconds: number;
+  rounds: OptimiseRound[];
+  /** Human mode only: how often a human-sized slip still finishes the run. */
+  slip: HumanSlip | null;
+  /** The order the run actually collected the apples in, as asked for. */
+  forcedOrder: number[] | null;
 }
 
 export interface Done {
@@ -75,19 +113,62 @@ export function solveOne(job: Job, level: Level, spec: BikeSpec, raw: unknown): 
   const log: string[] = [];
   const t0 = Date.now();
   const engine = getEngine(job.rev);
-  const r = solveLevel(level, spec, {
-    rev: job.rev,
-    timeBudgetMs: job.timeBudgetMs,
-    strategies: DEFAULT_SOLVE.strategies.map((s) => ({ ...s, budget: Math.round(s.budget * job.effort) })),
-    branch: job.branch,
-    targetTries: job.targetTries,
-    onProgress: (l) => {
-      log.push(l);
-      // Straight out, unbuffered by anything of ours, so a reader on the other
-      // end of a pipe sees it now rather than at exit.
-      if (job.progress) console.log(l);
-    },
-  });
+  const onProgress = (l: string): void => {
+    log.push(l);
+    // Straight out, unbuffered by anything of ours, so a reader on the other
+    // end of a pipe sees it now rather than at exit.
+    if (job.progress) console.log(l);
+  };
+  const forced = job.order === 'greedy' ? greedyOrder(level) : (job.order ?? null);
+  // The alphabet is the whole of the rate limit: `search` is the only thing
+  // that decides how long a held input may last, so constraining it here
+  // constrains every strategy, both modes and every round at once.
+  const searchOver = job.human ? { durations: HUMAN_DURATIONS } : {};
+  let rounds: OptimiseRound[] = [];
+  let gateSeconds = 0;
+  // Effort and lethality are scored on the GATE's search, always — see
+  // OptimiseResult.gateExpansions for why. In plain mode the gate IS the search.
+  let effortExpansions: number;
+  let effortDeaths: number;
+  let effortMetres: number;
+  let r;
+
+  if (job.optimise) {
+    const o = optimiseLevel(level, spec, {
+      rev: job.rev,
+      timeBudgetMs: job.timeBudgetMs,
+      gateBudgetMs: job.gateBudgetMs ?? Math.min(job.timeBudgetMs / 4, 240000),
+      effort: job.effort,
+      branch: job.branch,
+      targetTries: job.targetTries,
+      boundVref: job.boundVref ?? 0,
+      forceOrder: forced ?? undefined,
+      forceGate: forced !== null,
+      search: searchOver,
+      onProgress,
+    });
+    r = o.best;
+    rounds = o.rounds;
+    gateSeconds = o.gateFrames / 128;
+    effortExpansions = o.gateExpansions;
+    effortDeaths = o.gateDeaths;
+    effortMetres = o.gateRouteMetres;
+  } else {
+    r = solveLevel(level, spec, {
+      rev: job.rev,
+      timeBudgetMs: job.timeBudgetMs,
+      strategies: DEFAULT_SOLVE.strategies.map((s) => ({ ...s, budget: Math.round(s.budget * job.effort) })),
+      branch: job.branch,
+      targetTries: job.targetTries,
+      forceOrder: forced ?? undefined,
+      search: searchOver,
+      onProgress,
+    });
+    gateSeconds = r.solved ? r.frames / 128 : 0;
+    effortExpansions = r.totals.expansions;
+    effortDeaths = r.totals.deaths;
+    effortMetres = r.routeMetres;
+  }
 
   const out: Outcome = {
     name: level.name,
@@ -104,11 +185,21 @@ export function solveOne(job: Job, level: Level, spec: BikeSpec, raw: unknown): 
     nodeBytes: r.poolBytes,
     wallMs: Date.now() - t0,
     segments: r.segments.length,
-    retried: r.segments.filter((s) => s.strategy !== DEFAULT_SOLVE.strategies[0].name).length,
+    // "Needed a retry" means a search that did not get where it was sent. In
+    // plain mode that is a leg that fell past its first strategy; in optimising
+    // mode every round runs one strategy and the same fact is simply a segment
+    // that failed, which is what is counted here.
+    retried: job.optimise
+      ? r.segments.filter((sg) => !sg.ok).length
+      : r.segments.filter((sg) => sg.strategy !== DEFAULT_SOLVE.strategies[0].name).length,
     failure: null,
     replay: null,
     verified: false,
     log,
+    gateSeconds,
+    rounds,
+    slip: null,
+    forcedOrder: forced,
   };
 
   if (!r.solved) {
@@ -142,9 +233,15 @@ export function solveOne(job: Job, level: Level, spec: BikeSpec, raw: unknown): 
 
   out.difficulty = scoreDifficulty({
     level, spec, masks: r.masks,
-    expansions: r.totals.expansions, deaths: r.totals.deaths, routeMetres: r.routeMetres,
+    expansions: effortExpansions, deaths: effortDeaths, routeMetres: effortMetres,
     trials: job.trials, seed: job.seed, rev: job.rev,
   });
+
+  if (job.human) {
+    out.slip = measureHumanSlip(level, spec, r.masks, {
+      trials: job.humanTrials, sigmaFrames: job.humanSigma, seed: job.seed, rev: job.rev,
+    });
+  }
 
   if (job.wantReplay) {
     out.replay = toReplayFile(replay, {
@@ -152,7 +249,7 @@ export function solveOne(job: Job, level: Level, spec: BikeSpec, raw: unknown): 
       levelName: level.name,
       spec,
       recordedAt: new Date().toISOString(),
-      note: `bin/solve on sim rev ${job.rev}, ${r.totals.expansions} expansions, apple order ${r.appleOrder.join('-')}`,
+      note: `bin/solve${job.optimise ? ' --optimise' : ''} on sim rev ${job.rev}, ${r.totals.expansions} expansions, apple order ${r.appleOrder.join('-')}`,
     });
   }
   return out;

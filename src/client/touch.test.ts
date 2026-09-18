@@ -179,21 +179,56 @@ describe('the layout owes each control something different', () => {
     expect(at()(0.92, 0.45)).toBe('flip');
   });
 
-  it('gives only RESTART and MENU permanent glass, and puts the rest behind them', () => {
+  it('gives permanent glass ONLY to what is pressed during a run', () => {
     // FIVE PERMANENT PADS FOR FIVE OCCASIONAL ACTIONS was the trade that went
     // wrong. Levels, full screen, gas-mode and zoom-reset are pressed between
     // runs and never during one, and paying for them with a row of buttons
     // across the band the bike rides through is not a price worth paying.
-    // Restart is the exception and it earns it: no R key on a phone, and this
-    // is a die-and-retry game.
+    //
+    // The two exceptions earn it on exactly that test. RESTART: no R key on a
+    // phone, and this is a die-and-retry game. OVERVIEW: route planning is the
+    // depth of this game, you do it mid-run, and it was bound to TAB — a key
+    // that does not exist on the device this whole file is about.
     const z = zonesAt();
-    expect(z.filter((q) => q.command).map((q) => q.id).sort()).toEqual(['menu', 'restart']);
+    expect(z.filter((q) => q.command).map((q) => q.id).sort())
+      .toEqual(['menu', 'overview', 'restart']);
     expect(openAt().filter((q) => q.command).map((q) => q.id).sort())
-      .toEqual(['auto', 'full', 'levels', 'menu', 'restart', 'zoom']);
-    // And the pad says which way it goes, because a drawer you cannot see the
-    // state of is a drawer you press twice.
+      .toEqual(['auto', 'full', 'help', 'levels', 'menu', 'overview', 'restart', 'zoom']);
+    // And the pads say which way they go, because a state you cannot see is a
+    // state you press twice.
     expect(find(z, 'menu').label).toBe('more');
     expect(find(openAt(), 'menu').label).toBe('close');
+    expect(find(z, 'overview').label).toBe('overview');
+    expect(find(touchZones(PHONE, { autoThrottle: false, overview: true }), 'overview').label)
+      .toBe('ride');
+  });
+
+  it('keeps the overview pad in the gutter on every landscape phone', () => {
+    // THE REASON `cmdW` IS 12 MM AND NOT 13. Three permanent pads at 13 want
+    // 252 px and the gutter on the smallest phone in the table is 250 — two
+    // millimetres over, and the whole block falls back to the portrait branch at
+    // the top-left, straight back into the band the bike rides through. This is
+    // the test that would have caught that, and it is about the third pad rather
+    // than about the constant.
+    for (const vp of VIEWPORTS.filter((v) => v.w > v.h)) {
+      const z = zonesAt(vp);
+      const ov = find(z, 'overview');
+      const lean = find(z, 'leanR');
+      const brake = find(z, 'brake');
+      expect(ov.y, `${vp.name}`).toBeGreaterThanOrEqual(lean.y);
+      expect(ov.x, `${vp.name}`).toBeGreaterThanOrEqual(lean.x + lean.w);
+      expect(ov.x + ov.w, `${vp.name}`).toBeLessThanOrEqual(brake.x);
+      // All three on ONE row, which is what "in the gutter" is worth.
+      expect(ov.y, `${vp.name}`).toBe(find(z, 'restart').y);
+    }
+  });
+
+  it('does not let the overview pad tile against restart', () => {
+    // A mis-press on the pad you reach for mid-run must not be the one that ends
+    // the run. `more` is the harmless thing to have between them.
+    const z = zonesAt();
+    const order = z.filter((q) => q.command).sort((a, b) => a.x - b.x).map((q) => q.id);
+    expect(order).toEqual(['restart', 'menu', 'overview']);
   });
 
   it('makes the occasional controls SMALL and dim, not as prominent as the game', () => {

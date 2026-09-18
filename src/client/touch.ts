@@ -31,27 +31,40 @@
 import { IN_BRAKE, IN_FLIP, IN_LEAN_L, IN_LEAN_R, IN_THROTTLE } from '@/sim/consts.ts';
 
 /**
- * `restart`, `menu`, `levels`, `auto`, `zoom` and `full` are COMMANDS, not sim
- * input: they fire on the press and contribute no bit. They are in the same list
- * as the rest because they occupy screen space and the hit test has to know
- * about them — a flip zone that silently extended under the restart button
- * would be a missed input, and this game punishes one of those immediately.
+ * `restart`, `menu`, `overview`, `levels`, `auto`, `zoom` and `full` are
+ * COMMANDS, not sim input: they fire on the press and contribute no bit. They
+ * are in the same list as the rest because they occupy screen space and the hit
+ * test has to know about them — a flip zone that silently extended under the
+ * restart button would be a missed input, and this game punishes one of those
+ * immediately.
  *
  * `menu` is the drawer, and it is the answer to FIVE PERMANENT PADS FOR FIVE
  * OCCASIONAL ACTIONS. Levels, full screen, gas-mode and zoom-reset are pressed
  * between runs and never during one; paying for them with permanent glass — a
  * row that on a short landscape phone spread across half the width of the band
  * the bike rides through — was a bad trade in every direction. They live behind
- * `menu` now. RESTART DOES NOT, because restart is the one command with a real
- * claim to being instant: this is a die-and-retry game and there is no R key on
- * a phone.
+ * `menu` now.
+ *
+ * TWO THINGS DO NOT, and each has to earn it separately.
+ *
+ * RESTART, because this is a die-and-retry game and there is no R key on a
+ * phone: it is the one command with a real claim to being instant.
+ *
+ * OVERVIEW, because IT IS USED DURING A RUN and everything behind the drawer is
+ * not. Seeing the whole level is how you plan a route, route planning is the
+ * depth of this game, and it was bound to TAB — a key that does not exist on the
+ * device this whole file is about. It is a command rather than a hold pad on
+ * purpose: nothing rests on it, it is pressed and pressed again, and classing it
+ * with the controls would put it into `thumbInsetPx` and tell the camera a hand
+ * lives somewhere no hand lives.
  */
 export type ZoneId =
   | 'throttle' | 'brake' | 'leanL' | 'leanR' | 'flip'
-  | 'restart' | 'menu' | 'levels' | 'auto' | 'zoom' | 'full';
+  | 'restart' | 'menu' | 'overview' | 'levels' | 'auto' | 'zoom' | 'full' | 'help';
 
 /** Every id that is a command. Static: a pad does not change what kind it is. */
-export const COMMAND_IDS: readonly ZoneId[] = ['restart', 'menu', 'levels', 'full', 'auto', 'zoom'];
+export const COMMAND_IDS: readonly ZoneId[] =
+  ['restart', 'menu', 'overview', 'levels', 'full', 'auto', 'zoom', 'help'];
 
 /**
  * Every zone that can ever exist, in the order the elements are created.
@@ -63,7 +76,7 @@ export const COMMAND_IDS: readonly ZoneId[] = ['restart', 'menu', 'levels', 'ful
  * `place` hides the ones this state does not use.
  */
 export const ALL_ZONE_IDS: readonly ZoneId[] = [
-  'restart', 'menu', 'levels', 'full', 'auto', 'zoom',
+  'restart', 'menu', 'overview', 'levels', 'full', 'auto', 'zoom', 'help',
   'flip', 'leanL', 'leanR', 'brake', 'throttle',
 ];
 
@@ -139,12 +152,14 @@ export const PX_PER_MM = 6;
  *   FLIP is rare and critical. It sits directly above the right cluster, where
  *   the right thumb reaches it by rolling up off the throttle, and it is a PLACE
  *   rather than a gesture — a gesture that fails does so silently.
- *   RESTART and MENU are the only commands with permanent glass, they are small,
- *   they are dimmer than the controls, and they live in the BOTTOM GUTTER
- *   between the two thumb clusters — see `touchZones`. LEVELS, GAS-MODE, ZOOM
- *   and FULLSCREEN are behind `menu`, because none of them is pressed during a
- *   run and five permanent pads for five occasional actions was the trade that
- *   put a row of buttons across the band the bike rides through.
+ *   RESTART, OVERVIEW and MENU are the only commands with permanent glass, they
+ *   are small, they are dimmer than the controls, and they live in the BOTTOM
+ *   GUTTER between the two thumb clusters — see `touchZones`. LEVELS, GAS-MODE,
+ *   ZOOM and FULLSCREEN are behind `menu`, because none of them is pressed
+ *   during a run and five permanent pads for five occasional actions was the
+ *   trade that put a row of buttons across the band the bike rides through.
+ *   OVERVIEW is the exception that proves the rule: it IS pressed during a run,
+ *   which is exactly the claim the other four cannot make.
  *
  * THE PADS ARE SHORTER THAN THEY WERE, and that is fix 2. 20 mm of pad height
  * was chosen when the pads were the only thing competing for the screen; on a
@@ -178,7 +193,18 @@ export const MM = {
   flipH: 11,
   leanW: 15,
   leanH: 15,
-  cmdW: 13,
+  /**
+   * 12, NOT 13, AND THE THIRD PERMANENT COMMAND IS WHY.
+   *
+   * The gutter on the smallest landscape phone in the table — 736 x 280 — is
+   * 250 px wide, and three 13 mm pads with their gaps want 252. Two millimetres
+   * over, and the fallback is the portrait branch: the whole command block
+   * jumps to the top-left, back into the band the bike rides through, which is
+   * the layout this rewrite exists to remove. 12 x 9 mm is still a deliberate
+   * press by a wide margin (the floor for a command is 8) and it keeps every
+   * landscape phone in the gutter, which is worth far more than a millimetre.
+   */
+  cmdW: 12,
   cmdH: 9,
   /**
    * The clear margin the command block keeps from each thumb cluster.
@@ -241,6 +267,17 @@ export interface LayoutOpts {
    * mostly stays out of the band the bike is in.
    */
   menu?: boolean;
+  /**
+   * Is the wide view of the whole level up right now?
+   *
+   * A TOGGLE, NOT A HOLD, and that is the one place this pad deliberately
+   * differs from the TAB it replaces. On a desktop you hold TAB and read the
+   * level with both hands free; on a phone a hold would pin a thumb to the
+   * bottom of the glass for as long as you are trying to look at what is on it.
+   * So it latches, the pad says which state it is in, and everything else on
+   * the overlay drops out of it — see `down`.
+   */
+  overview?: boolean;
 }
 
 export function zoomLabel(bias: number): string {
@@ -328,14 +365,17 @@ export function touchZones(vp: Viewport, o: LayoutOpts): Zone[] {
 
   // --- the commands ---------------------------------------------------------
   //
-  // RESTART IS ALWAYS THERE AND THE OTHER FOUR ARE BEHIND `MENU`. Restart is
-  // the one you press mid-run — this is a die-and-retry game with no R key on
-  // the glass — and levels, full screen, gas-mode and zoom-reset are things you
-  // do between runs, which is not worth permanent screen in the band the bike
-  // rides through.
+  // RESTART AND OVERVIEW ARE ALWAYS THERE AND THE OTHER FOUR ARE BEHIND `MENU`.
+  // The test for permanent glass is "is it pressed DURING a run": restart is
+  // (die-and-retry, no R key), overview is (route planning is the game, and
+  // there is no TAB key), and levels, full screen, gas-mode and zoom-reset are
+  // not. `overview` is at the far end rather than beside `restart` so that the
+  // one pad you reach for mid-run is not tiled against the one that ends the
+  // run — `more` is the harmless thing to mis-press between them.
   const cmdRow: Array<[ZoneId, string]> = [
     ['restart', 'restart'],
     ['menu', o.menu ? 'close' : 'more'],
+    ['overview', o.overview ? 'ride' : 'overview'],
   ];
   const drawer: Array<[ZoneId, string]> = [];
   if (o.menu) {
@@ -344,6 +384,13 @@ export function touchZones(vp: Viewport, o: LayoutOpts): Zone[] {
     else if (o.fullscreen === 'on') drawer.push(['full', 'exit full']);
     drawer.push(['auto', o.autoThrottle ? 'gas: auto' : 'gas: held']);
     drawer.push(['zoom', zoomLabel(o.bias ?? 1)]);
+    // THE CONTROL LEGEND, WHICH A PHONE NEEDS MORE THAN A DESKTOP DOES. There
+    // is no keyboard to fumble into the flip with here, and flip is the whole
+    // double-back design — so the one screen that teaches it has to be
+    // reachable. It is in the drawer rather than on permanent glass because it
+    // fails the only test that earns permanent glass: nobody presses it during
+    // a run.
+    drawer.push(['help', 'controls']);
   }
 
   const cmdW = px(MM.cmdW * s);
@@ -692,6 +739,22 @@ export interface TouchCallbacks {
    * level without replacing it would be a worse bug than the one it fixes.
    */
   onBrowse(): void;
+  /**
+   * The wide view of the whole level went on, or came off.
+   *
+   * THE PAD DOES NOT OWN THE STATE. main.ts does — the same `overview.hold()`
+   * TAB drives, so there is exactly one freeze and one state machine rather
+   * than a second one that has to be kept in step with it. This says which way
+   * the press went and `setOverview` says what happened, which is the same
+   * shape as the zoom: the gesture asks and the owner decides.
+   */
+  onOverview(on: boolean): void;
+  /**
+   * The control legend. `main.ts` owns it — the same panel the `?` key opens on
+   * a desktop — because there must be exactly one of it and one place that
+   * decides whether the pads are hidden underneath it.
+   */
+  onHelp(): void;
   /** Something the player should be told, in one sentence. */
   onNote?(msg: string): void;
 }
@@ -725,6 +788,15 @@ export interface TouchControls {
   setHidden(hidden: boolean): void;
   /** What the camera actually settled on. Prints it, and baselines the gesture. */
   setZoom(bias: number): void;
+  /**
+   * Whether the whole-level view is up, as main.ts sees it. The pad prints it,
+   * and every other pad on the glass drops out of it.
+   *
+   * It is pushed in rather than latched here because TAB, the opening peek and
+   * a level change can all move it without a finger being involved, and a pad
+   * that disagreed with the frozen sim would be the worst kind of wrong.
+   */
+  setOverview(on: boolean): void;
   /**
    * How much of the bottom of the screen the resting thumbs cover, in CSS px.
    * The camera derives `screenBiasY` from it — a number of pixels, because a
@@ -800,6 +872,12 @@ export function createTouch(
    * the `more` pad for all the time anybody is actually riding.
    */
   let menuOpen = false;
+  /**
+   * Is the whole-level view up? MIRRORED FROM main.ts, never owned here — see
+   * `setOverview`. It is in this file only so that the pad can print which way
+   * it goes and so that `down` knows a press on anything else has to cancel it.
+   */
+  let overviewOn = false;
   let zones: Zone[] = [];
   /**
    * Pointer id -> the zone it is holding. A MAP AND NOT A SET OF ZONES, because
@@ -898,7 +976,9 @@ export function createTouch(
     // discarded rather than laid out against, and `apply` re-places the moment
     // the overlay is shown.
     if (!(vp.w > 0) || !(vp.h > 0)) return;
-    zones = touchZones(vp, { autoThrottle, bias: zoomBias, fullscreen: fullState(), menu: menuOpen });
+    zones = touchZones(vp, {
+      autoThrottle, bias: zoomBias, fullscreen: fullState(), menu: menuOpen, overview: overviewOn,
+    });
     // WHICH ZONES EXIST IS STATE, AND IT IS EXPRESSED BY HIDING RATHER THAN BY
     // BUILDING. Opening the drawer and flipping auto-throttle both change the
     // set; recreating elements for either would drop the pointer capture on a
@@ -906,6 +986,7 @@ export function createTouch(
     const live = new Set(zones.map((z) => z.id));
     for (const [id, el] of els) if (!live.has(id)) el.style.display = 'none';
     els.get('menu')?.classList.toggle('open', menuOpen);
+    els.get('overview')?.classList.toggle('open', overviewOn);
     for (const z of zones) {
       const el = els.get(z.id);
       if (!el) continue;
@@ -1004,6 +1085,13 @@ export function createTouch(
     // And the touchstart that is about to follow this pointerdown gets
     // cancelled too — see `touchStart` for the level it picked by itself.
     padTouch = true;
+    // EVERY OTHER PAD ON THE GLASS DROPS OUT OF THE OVERVIEW, and that is what
+    // makes the way back unambiguous. The pad itself says `ride`; so does a
+    // thumb on the gas, on lean, on flip, on restart, on the drawer — because
+    // every one of those is somebody who has finished looking. Above the
+    // command branch so it covers the hold pads too, and skipped for `overview`
+    // itself, which toggles.
+    if (overviewOn && id !== 'overview') cb.onOverview(false);
     if (z.command) {
       // THE DRAWER IS A TOGGLE AND EVERYTHING ELSE SHUTS IT. A command you have
       // just given is a command you are finished with, and leaving four extra
@@ -1013,9 +1101,19 @@ export function createTouch(
         place();
         return;
       }
+      // THE WHOLE LEVEL, AND IT IS A TOGGLE. TAB is a hold on a desktop because
+      // both hands are free there; a hold here would pin a thumb to the bottom
+      // of the glass for exactly as long as you were trying to read what is on
+      // it. main.ts owns the state and the freeze — this only asks.
+      if (id === 'overview') {
+        closeMenu();
+        cb.onOverview(!overviewOn);
+        return;
+      }
       closeMenu();
       if (id === 'restart') cb.onRestart();
       else if (id === 'levels') cb.onBrowse();
+      else if (id === 'help') cb.onHelp();
       else if (id === 'full') toggleFullscreen();
       else if (id === 'auto') cb.onAutoThrottle(!autoThrottle);
       else if (id === 'zoom') {
@@ -1090,6 +1188,10 @@ export function createTouch(
     if (opts.surface && e.target !== opts.surface) return;
     const p = point(e);
     if (hitZone(zones, p.x, p.y) !== null) return;
+    // A TAP ON THE LEVEL MEANS RIDE. The other half of the rule in `down`: with
+    // the pads covered there, this covers everywhere else, so "touch anything at
+    // all" is the way out of the wide view and there is no gesture to learn.
+    if (overviewOn) cb.onOverview(false);
     free.set(p.id, p);
     startPinch();
   };
@@ -1258,6 +1360,14 @@ export function createTouch(
     },
     thumbInset: () => (enabled ? thumbInsetPx(zones, root.getBoundingClientRect().height) : 0),
     layout: place,
+    setOverview(on: boolean): void {
+      if (overviewOn === on) return;
+      overviewOn = on;
+      // RE-PLACED, NOT REBUILT, like every other state change here: the label
+      // flips between `overview` and `ride`, and an element that was recreated
+      // under a held thumb would strand its pointer capture.
+      place();
+    },
     setZoom(bias: number): void {
       zoomBias = Number.isFinite(bias) ? bias : 1;
       // The LABEL only, not a rebuild. Rebuilding the overlay would drop the

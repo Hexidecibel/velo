@@ -145,6 +145,36 @@ export interface SearchOpts {
   survivalFrames: number;
   /** Stop once this many goal states are in hand. */
   goalsWanted: number;
+  /**
+   * Total-run frame ceiling. A node is discarded when the most optimistic
+   * completion reachable through it is no faster than this.
+   *
+   * THIS IS WHAT MAKES OPTIMISING AFFORDABLE. Searching for a *fast* line
+   * rather than *a* line means a near-Dijkstra weight, and a near-Dijkstra
+   * weight over this branching factor is hopeless on its own. Given a run that
+   * already works, though, every node can be asked "could anything through here
+   * beat the run we have" — and on a level where the incumbent is close, most
+   * of the state space answers no and costs one subtraction to reject.
+   *
+   * Infinity disables it, which is the default and is the completability gate's
+   * behaviour: a gate that pruned against a bound it does not have would report
+   * levels uncompletable that are merely slow.
+   */
+  costCeil: number;
+  /**
+   * Frames the run must still spend AFTER this search's goal, at the most
+   * optimistic rate. The rest of the route, in other words — without it the
+   * ceiling would only bind on the last leg.
+   */
+  tailFrames: number;
+  /**
+   * Frames per metre used for the CEILING only, and deliberately not `vref`.
+   * `vref` is a steering constant and wants to be about the speed a bike really
+   * travels; this one wants to be a speed no bike exceeds, because it decides
+   * what gets thrown away. Zero ignores the heuristic's contribution to the
+   * bound and leaves `g + tailFrames >= costCeil` as the only test.
+   */
+  boundFramesPerMetre: number;
   masks: readonly number[];
   flipMasks: readonly number[];
   durations: readonly number[];
@@ -162,6 +192,9 @@ export const DEFAULT_SEARCH: Omit<SearchOpts, 'budget' | 'deadline'> = {
   goalExtra: 2500,
   goalsWanted: 6,
   survivalFrames: 40,
+  costCeil: Infinity,
+  tailFrames: 0,
+  boundFramesPerMetre: 0,
   masks: HELD_MASKS,
   flipMasks: FLIP_MASKS,
   durations: DURATIONS,
@@ -214,6 +247,8 @@ export interface SearchStats {
   frames: number;
   /** Goal states rejected because nothing could be ridden out of them. */
   nonviable: number;
+  /** Children discarded because nothing through them could beat `costCeil`. */
+  pruned: number;
   ms: number;
   poolBytes: number;
   /** Smallest heuristic distance any node reached, metres. */
@@ -382,7 +417,7 @@ export function search(
   const framesPerMetre = 128 / opts.vref;
 
   const stats: SearchStats = {
-    expansions: 0, generated: 0, deduped: 0, deaths: 0, frames: 0, nonviable: 0, ms: 0,
+    expansions: 0, generated: 0, deduped: 0, deaths: 0, frames: 0, nonviable: 0, pruned: 0, ms: 0,
     poolBytes: 0, closest: Infinity, closestX: NaN, closestY: NaN,
     exhausted: false, timedOut: false,
   };
@@ -408,6 +443,9 @@ export function search(
     stats.expansions++;
     const pg = nodes.g[parent];
     if (pg >= opts.maxFrames) continue;
+    // Nothing through here can beat the run we already have. The parent test is
+    // the cheap half — one comparison rejects a whole subtree.
+    if (pg + opts.tailFrames >= opts.costCeil) { stats.pruned++; continue; }
     let ph = 0;
     if (opts.speedBonus !== 0) {
       nodes.pool.load(parent, st);
@@ -438,6 +476,10 @@ export function search(
         if (g >= opts.maxFrames) break;
         const hm = h(st);
         if (hm < stats.closest) { stats.closest = hm; stats.closestX = st.px; stats.closestY = st.py; }
+        // The optimistic completion through this child: what it has spent, the
+        // fastest anything could cover what is left of this leg, and the
+        // fastest anything could cover the rest of the route after it.
+        if (g + hm * opts.boundFramesPerMetre + opts.tailFrames >= opts.costCeil) { stats.pruned++; continue; }
 
         if (!hit) {
           const k = key(st);

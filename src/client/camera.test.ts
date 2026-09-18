@@ -151,31 +151,67 @@ describe('the thumb bias', () => {
   // where a centred camera puts a grounded bike — so the one thing the
   // readability rule says must always be legible ends up under a thumb.
   //
-  // THE BUG THIS REPLACES: it was a flat 0.17 of the half-frame, chosen against
-  // an idealised 844 x 390 viewport. A real Android phone in Chrome is about
-  // 915 x 348, and on a frame that short the same fraction was pushing the bike
-  // up UNDER the 52 px of in-canvas HUD — the exact thing the offset exists to
-  // keep it out from under. It is derived now, from the two insets and from how
-  // much room is actually left.
+  // THE FIRST BUG THIS REPLACES: it was a flat 0.17 of the half-frame, chosen
+  // against an idealised 844 x 390 viewport. A real Android phone in Chrome is
+  // about 915 x 348, and on a frame that short the same fraction was pushing the
+  // bike up UNDER the 52 px of in-canvas HUD — the exact thing the offset exists
+  // to keep it out from under.
+  //
+  // THE SECOND: the derivation that replaced it aimed at the MIDDLE of the band
+  // nothing was covering, which was right while a row of command buttons owned
+  // the top and the pads sat halfway up the glass, and too high once the pads
+  // moved to the bottom edge and the clear band became most of the screen. What
+  // is below you in this game is mostly floor. The bike rests as low as the safe
+  // box allows without ever being under a thumb, and no higher.
+  /** The one a person actually played on, and where every number below is measured. */
+  const PHONE = { w: 915, h: 348 };
+  /** What the real pads measure on a landscape phone: 15 mm of pad plus the 3.5 mm edge. */
+  const PADS = 111;
+  /**
+   * The zoom the phone viewport actually derives, read off a real camera rather
+   * than written down — the rail is measured in PIXELS and the bike's size in
+   * pixels is the zoom, so a hardcoded 38 here would quietly stop matching the
+   * game the day the derivation moves.
+   */
+  const zoomAt = (w: number, h: number): number => {
+    const cam = createCamera(cloneCamera(DEFAULT_CAMERA));
+    cam.snap({ x: 0, y: 0, vx: 0, vy: 0 });
+    for (let i = 0; i < 120; i++) cam.update({ x: 0, y: 0, vx: 0, vy: 0 }, 1 / 60, w, h);
+    return cam.zoom;
+  };
+  const PHONE_ZOOM = zoomAt(PHONE.w, PHONE.h);
   /** A phone-shaped set of params: a thumb cluster at the bottom, a cap on top. */
   const handsOn = (thumbInsetPx: number, cap = 0.3): CameraParams =>
     ({ ...cloneCamera(DEFAULT_CAMERA), thumbInsetPx, screenBiasY: cap });
-  const withBias = (bias: number, w = VIEW.w, h = VIEW.h, inset = 141) => {
+  const withBias = (bias: number, w = PHONE.w, h = PHONE.h, inset = PADS) => {
     const cam = createCamera(handsOn(inset, bias));
     cam.snap({ x: 0, y: 0, vx: 0, vy: 0 });
     const t = { x: 0, y: 0, vx: 0, vy: 0 };
     for (let i = 0; i < 120; i++) cam.update(t, 1 / 60, w, h);
     return cam;
   };
+  /**
+   * Where the bike lands on the glass, in CSS px from the top — which is the
+   * only unit any of this is actually about. World y is up and the renderer
+   * flips, hence the sign.
+   */
+  const bikeAt = (cam: { y: number; zoom: number }, h: number, bikeY = 0): number =>
+    h / 2 - (bikeY - cam.y) * cam.zoom;
 
   it('is off by default — a desktop has nothing covering the screen', () => {
     expect(DEFAULT_CAMERA.screenBiasY).toBe(0);
     expect(DEFAULT_CAMERA.thumbInsetPx).toBe(0);
-    expect(screenBiasFor(DEFAULT_CAMERA, 900)).toBe(0);
+    expect(screenBiasFor(DEFAULT_CAMERA, 900, zoomAt(1600, 900))).toBe(0);
     expect(withBias(0, VIEW.w, VIEW.h, 0).y).toBeCloseTo(0, 6);
     // And it stays off even if the cap is raised, because nothing is covering a
     // desktop: the WANT is what is zero, not just the ceiling.
-    expect(screenBiasFor({ ...DEFAULT_CAMERA, screenBiasY: 0.3 }, 900)).toBe(0);
+    expect(screenBiasFor({ ...DEFAULT_CAMERA, screenBiasY: 0.3 }, 900, zoomAt(1600, 900))).toBe(0);
+    // EVERY desktop window, not just the reference one. This function is the
+    // whole of what moved in the last two framing passes, and "the desktop did
+    // not move" has to be a property rather than one measurement.
+    for (const [w, h] of [[1280, 713], [1600, 900], [2560, 1440], [1366, 640], [3440, 1440]]) {
+      expect(screenBiasFor(DEFAULT_CAMERA, h, zoomAt(w, h)), `${w}x${h}`).toBe(0);
+    }
   });
 
   it('puts the bike HIGHER in the frame, which means the camera goes lower', () => {
@@ -183,33 +219,87 @@ describe('the thumb bias', () => {
     // what raises the bike on screen. Getting this sign backwards would bury
     // the bike under the thumbs it is supposed to escape, and it would look
     // deliberate.
-    const cam = withBias(0.3);
+    // On a 240 px viewport, where the rail still asks for something. The phone
+    // the complaint came from is 348 px and now asks for nothing at all, so the
+    // SIGN has to be asserted somewhere the bias is not zero — a sign test that
+    // passes because both sides are zero is not a sign test.
+    const SHORT = { w: 736, h: 240 };
+    const cam = withBias(0.3, SHORT.w, SHORT.h);
     expect(cam.y).toBeLessThan(0);
-    const halfH = VIEW.h * 0.5 / cam.zoom;
-    expect(-cam.y).toBeCloseTo(screenBiasFor(handsOn(141), VIEW.h) * halfH, 6);
+    const halfH = SHORT.h * 0.5 / cam.zoom;
+    expect(-cam.y).toBeCloseTo(screenBiasFor(handsOn(PADS), SHORT.h, cam.zoom) * halfH, 6);
   });
 
-  it('CENTRES THE BIKE IN THE BAND NOTHING IS COVERING, which is the derivation', () => {
-    // The HUD owns the top 52 px and the pads own the bottom `thumbInsetPx`. The
-    // bike wants the middle of what is left, not the middle of the glass — and
-    // that is a number of PIXELS, so it is a large fraction of a short viewport
-    // and a small one of a tall viewport without anybody choosing either.
-    const h = 348;
-    const p = handsOn(141);
-    const bias = screenBiasFor(p, h);
-    const clearMid = (p.hudInsetPx + (h - p.thumbInsetPx)) / 2;
-    expect(h / 2 - bias * (h / 2)).toBeCloseTo(clearMid, 6);
+  it('RESTS THE BIKE ITSELF CLEAR OF THE PADS, and asks for nothing more', () => {
+    // The derivation, stated as the thing it guarantees. The RESTING bike —
+    // chassis plus its own reach below it, in pixels at the framing on screen —
+    // clears the top of the pads, and that is the whole of the want. The rail
+    // used to be measured against the full safe box instead, which insured a
+    // transient (a sustained climb) by taxing every frame, and on a 348 px
+    // landscape phone the tax was the bike sitting above centre for the whole
+    // game.
+    const p = handsOn(PADS);
+    const bias = screenBiasFor(p, PHONE.h, PHONE_ZOOM);
+    const rest = PHONE.h / 2 * (1 - bias);
+    const bikeBottom = rest + p.restClearM * PHONE_ZOOM;
+    expect(bikeBottom).toBeLessThanOrEqual(PHONE.h - PADS + 1e-9);
   });
 
-  it('SCALES WITH THE ROOM: the same hands ask for less of a taller screen', () => {
-    // The whole of fix 3. A constant fraction cannot be right on two viewports
-    // that differ by a factor of three in height, and it was not.
-    const p = handsOn(141);
-    const short = screenBiasFor(p, 348);
-    const tall = screenBiasFor(p, 820);
-    expect(short).toBeGreaterThan(tall);
-    // In PIXELS the two are the same shift, because the hands are the same size.
-    expect(short * 348 * 0.5).toBeCloseTo(tall * 820 * 0.5, 6);
+  it('CENTRES the bike on the landscape phone the complaint came from', () => {
+    // 915 x 348 — a landscape Android in Chrome with the URL bar and the system
+    // bars showing — is the viewport a player photographed and said the bike
+    // looked cut off on, and "centre it vertically" was their own suggested
+    // remedy. On that viewport the pads cannot reach a bike sitting in the
+    // middle, so there is nothing to dodge and the answer is dead centre: the
+    // framing all twenty levels were authored at.
+    expect(screenBiasFor(handsOn(PADS), PHONE.h, PHONE_ZOOM)).toBe(0);
+    // And the shorter landscape phone next to it, which was 40% of the way down
+    // the glass under the old rail, comes back to within a pixel or two of the
+    // middle rather than being left as the one screen that still reads wrong.
+    const short = { w: 736, h: 280 };
+    const bias = screenBiasFor(handsOn(PADS), short.h, zoomAt(short.w, short.h));
+    expect(bias * (short.h / 2)).toBeLessThan(4);
+  });
+
+  it('is LOWER than centring the bike in the clear band, which is the change', () => {
+    // The old answer, kept here as the thing being moved away from: the middle
+    // of the band between the HUD and the pads. It wastes a third of a phone's
+    // scarcest dimension on the ground the bike is standing on.
+    const p = handsOn(PADS);
+    const bias = screenBiasFor(p, PHONE.h, PHONE_ZOOM);
+    const rest = PHONE.h / 2 * (1 - bias);
+    const clearMid = (p.hudInsetPx + (PHONE.h - PADS)) / 2;
+    expect(rest).toBeGreaterThan(clearMid);
+    // And it is a real move rather than a rounding: about a twentieth of the
+    // glass on the viewport this is all measured at.
+    expect(rest - clearMid).toBeGreaterThan(PHONE.h * 0.04);
+  });
+
+  it('asks for NOTHING at all on a screen the pads cannot reach across', () => {
+    // The whole point of deriving it in pixels. The same hands on a tablet or in
+    // portrait are nowhere near the bike wherever the camera puts it, so there is
+    // nothing to dodge and the answer is dead centre — the desktop framing.
+    expect(screenBiasFor(handsOn(PADS), 820, zoomAt(1180, 820))).toBe(0);
+    expect(screenBiasFor(handsOn(101), 800, zoomAt(412, 800))).toBe(0);
+    // And it is monotone in the height: the shorter the screen, the more of it
+    // the same hands take and the further up the bike has to go. Same zoom for
+    // every rung, so what is being compared is the height and nothing else.
+    const ladder = [240, 280, 310, 348, 412, 500].map((h) => screenBiasFor(handsOn(PADS), h, PHONE_ZOOM));
+    for (let i = 1; i < ladder.length; i++) expect(ladder[i]).toBeLessThanOrEqual(ladder[i - 1]);
+  });
+
+  it('never rests the bike under a thumb, unless the HUD leaves no room to avoid it', () => {
+    for (const h of [240, 280, 300, 310, 348, 390, 412, 640, 820, 900]) {
+      const p = handsOn(PADS);
+      const bias = screenBiasFor(p, h, PHONE_ZOOM);
+      const bikeBottom = h / 2 * (1 - bias) + p.restClearM * PHONE_ZOOM;
+      const room = (h / 2 - p.hudInsetPx) / (h / 2) - p.safeBox;
+      // Either the resting bike is clear of the pads, or the HUD rail is what
+      // bound the bias — which is the documented tie-break and only happens on a
+      // viewport with less clear band than the safe box wants.
+      const clear = bikeBottom <= h - PADS + 1e-9;
+      expect(clear || bias >= room - 1e-9, `viewport ${h} px tall`).toBe(true);
+    }
   });
 
   it('gives up the comfort rather than hiding the bike under the HUD', () => {
@@ -218,14 +308,70 @@ describe('the thumb bias', () => {
     // allows the follow `safeBox` of the half-frame above centre, so
     // `safeBox + bias` is the worst case and it has to stay out of the HUD band.
     for (const h of [240, 280, 300, 348, 390, 412, 640, 820, 900]) {
-      const p = handsOn(141);
-      const bias = screenBiasFor(p, h);
+      const p = handsOn(PADS);
+      const bias = screenBiasFor(p, h, PHONE_ZOOM);
       const worst = (bias + p.safeBox) * (h / 2);
       expect(h / 2 - worst, `viewport ${h} px tall`).toBeGreaterThanOrEqual(p.hudInsetPx - 1e-9);
     }
     // A viewport with no room at all gets no bias rather than a negative one.
-    expect(screenBiasFor(handsOn(141), 140)).toBe(0);
-    expect(screenBiasFor(handsOn(141), 0)).toBe(0);
+    expect(screenBiasFor(handsOn(PADS), 140, PHONE_ZOOM)).toBe(0);
+    expect(screenBiasFor(handsOn(PADS), 0, PHONE_ZOOM)).toBe(0);
+  });
+
+  it('bounds what a SUSTAINED CLIMB gives up, which is what the new rail costs', () => {
+    // The trade, measured rather than asserted in prose. Protecting the resting
+    // bike instead of the worst case means a long climb can now walk the bike
+    // into the top of the band the pads occupy — `leadY` goes positive, the
+    // camera rides above the bike, and the bike sits low for the whole ascent.
+    //
+    // What makes that acceptable is WHERE it lands. On the landscape phone the
+    // thumb pads are at the left and right edges and the centre column holds the
+    // command drawer, which starts ~33 px below the pad row. The bike is drawn
+    // near the middle of the frame, so the excursion has to clear the DRAWER,
+    // and it is the drawer this pins. If a future layout change moves the drawer
+    // up, this fails and says so.
+    const DRAWER_TOP = 270;
+    const cam = createCamera(handsOn(PADS));
+    cam.snap({ x: 0, y: 0, vx: 0, vy: 0 });
+    let y = 0;
+    for (let i = 0; i < 180; i++) {
+      y += 6 / 60;
+      cam.update({ x: 0, y, vx: 6, vy: 6 }, 1 / 60, PHONE.w, PHONE.h);
+    }
+    const climbing = bikeAt(cam, PHONE.h, y) + DEFAULT_CAMERA.restClearM * cam.zoom;
+    expect(climbing).toBeLessThan(DRAWER_TOP);
+    // And it really is the transient it is described as: at rest the same bike
+    // on the same viewport is comfortably above the pads.
+    const rest = bikeAt(withBias(0.3), PHONE.h) + DEFAULT_CAMERA.restClearM * cam.zoom;
+    expect(rest).toBeLessThan(PHONE.h - PADS);
+  });
+
+  it('LETS A FALL OPEN THE GROUND UP, which is what pays for resting low', () => {
+    // The one case that genuinely needs to see down, and the reason a low
+    // resting position costs nothing: falling drives `leadY` toward
+    // `-maxLeadY`, the camera drops below the bike, and the bike walks UP the
+    // frame. More world below it than at rest, and still clear of the HUD.
+    const restCam = withBias(0.3);
+    const rest = bikeAt(restCam, PHONE.h);
+
+    const cam = createCamera(handsOn(PADS));
+    cam.snap({ x: 0, y: 0, vx: 0, vy: 0 });
+    // A fall: the bike is moving down hard and the camera has had time to lead.
+    let y = 0;
+    for (let i = 0; i < 120; i++) {
+      y -= 12 / 60;
+      cam.update({ x: 0, y, vx: 0, vy: -12 }, 1 / 60, PHONE.w, PHONE.h);
+    }
+    const falling = bikeAt(cam, PHONE.h, y);
+    // 28 px on this viewport, and NOT the 84 that `maxLeadY` alone would buy:
+    // in a STEADY fall the follow's own lag sits above the target and cancels
+    // most of the lead, so the reveal is the difference between the two. Worth
+    // knowing before leaning on the lead to pay for a low resting position — it
+    // pays, but it pays less than the parameter reads.
+    expect(falling).toBeLessThan(rest - 20);
+    expect(falling).toBeGreaterThanOrEqual(DEFAULT_CAMERA.hudInsetPx);
+    // And in metres of world below the bike, which is the thing a player reads.
+    expect((PHONE.h - falling) / cam.zoom).toBeGreaterThan((PHONE.h - rest) / restCam.zoom + 0.5);
   });
 
   it('CANNOT push the bike off the edge, however hard it is asked to', () => {
@@ -241,12 +387,17 @@ describe('the thumb bias', () => {
   });
 
   it('fades out under the overview — there is no corner to hide in there', () => {
-    const p = handsOn(141);
+    // On a viewport SHORT enough to still want a bias, because a fade-out
+    // asserted where there is nothing to fade proves nothing. 240 px is the
+    // bottom of the phone table and the one rung where the rail still bites.
+    const SHORT = { w: 736, h: 240 };
+    const p = handsOn(PADS);
+    expect(screenBiasFor(p, SHORT.h, zoomAt(SHORT.w, SHORT.h))).toBeGreaterThan(0);
     const cam = createCamera(p);
     cam.snap({ x: 0, y: 0, vx: 0, vy: 0 });
     const t = { x: 0, y: 0, vx: 0, vy: 0 };
     for (let i = 0; i < 60; i++) {
-      cam.update(t, 1 / 60, VIEW.w, VIEW.h, { x: 0, y: 20, zoom: 10, blend: 1 });
+      cam.update(t, 1 / 60, SHORT.w, SHORT.h, { x: 0, y: 20, zoom: 10, blend: 1 });
     }
     expect(cam.y).toBeCloseTo(20, 6);
   });

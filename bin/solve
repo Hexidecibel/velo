@@ -8,6 +8,42 @@
 #   bin/solve levels/*.json --rev 5 --linear 1                   # the experimental rev
 #   bin/solve levels/21-draft.json --progress                    # say what it is doing
 #
+#   bin/solve levels/21-rollers.json --optimise --time 1200      # find a FAST run
+#   bin/solve levels/21-rollers.json --optimise --order greedy   # force the obvious order
+#   bin/solve levels/08-needle.json --human                      # ride it with hands
+#
+# --optimise CHANGES THE QUESTION. Without it this tool satisfices, on purpose
+# and at all three levels of its decision: the first apple order that completes
+# wins, the first strategy that gets a leg done wins, and the first arrival the
+# search trips over is the one it hands on. That is exactly right for the thing
+# the default is FOR — "can this level be done at all", run on every generated
+# level, where one run is the whole answer and cheapness is the point. It is
+# also why, on the seventeen levels where a person and this tool both had a
+# time, the person was faster on sixteen: the tool was never looking for a fast
+# run and never claimed to be.
+#
+# With it, the tool gates first — one cheap satisficing pass, exactly as above —
+# and then spends the rest of --time beating what the gate found. Every round
+# searches against a CEILING set to the best run so far, so a round either
+# returns something strictly faster or returns nothing, and the answer can only
+# improve. --gate-time caps the gate's share; the default is a quarter.
+# --order greedy forces nearest-apple-first instead of searching the order,
+# which is how route tension is measured: solve twice, once each way, and the
+# difference is what the route choice is worth.
+#
+# It is much more expensive and it is not the gate. Twenty minutes a level
+# rather than two, and the numbers it produces are competitive times rather
+# than completability.
+#
+# --human ASKS A THIRD QUESTION. The search is frame-perfect: it changes held
+# inputs after 16 ms and hits a take-off window on the first attempt, which is
+# how it can rate a level ordinary that no person will ever get down. --human
+# takes the short end of the macro alphabet away — nothing held for under 94 ms,
+# every boundary on a 31 ms grid — and then rides the answer badly on purpose,
+# jittering every input by a human-sized timing error and counting how often it
+# still finishes. That finish rate is what a difficulty score ought to be
+# calibrated against. See src/solver/human.ts.
+#
 # --progress streams the search log as it happens instead of printing it in the
 # final report. A single-level solve is otherwise silent for one to fourteen
 # minutes, which is indistinguishable from a hung process — and it is what the
@@ -35,6 +71,12 @@
 #   a difficulty score  measured from the search, not from level statistics
 #   the winning apple order   route choice is where this game's depth lives
 #
+# DIFFICULTY IS ALWAYS SCORED ON THE GATE'S SEARCH, --optimise or not. Two of
+# its four axes — expansions per route metre, deaths per expansion — are
+# measures of what the search experienced, and scored on an optimising run they
+# would measure how long the optimiser was given, which is a fact about the
+# budget and not about the level.
+#
 # COST. This is not a CI tool. The two tutorial levels take two and four
 # seconds; a typical level takes one to four minutes on one core and the worst
 # of the twenty takes fourteen. The whole set is about an hour of CPU, which is
@@ -47,5 +89,5 @@
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 ensure_deps
 cd "$ROOT"
-[[ $# -ge 1 ]] || { echo "usage: bin/solve <level.json> [more.json ...] [--save <dir|file>] [--jobs N] [--time SECONDS]" >&2; exit 2; }
+[[ $# -ge 1 ]] || { echo "usage: bin/solve <level.json> [more.json ...] [--save <dir|file>] [--jobs N] [--time SECONDS] [--optimise [--gate-time SECONDS] [--order greedy|i,j,k]]" >&2; exit 2; }
 exec "$ROOT/node_modules/.bin/tsx" "$ROOT/bin/_solve.ts" "$@"

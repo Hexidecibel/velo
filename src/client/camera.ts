@@ -109,9 +109,9 @@ export interface CameraParams {
    *
    * The level card, the clock and the apple counter are drawn at a fixed pixel
    * size by artrender.ts — 12 px down, 34 px tall, plus the hard drop shadow —
-   * so this is a constant rather than a fraction. It is here because it is half
-   * of the sum that decides `screenBiasY`: the bike wants to sit in the middle
-   * of the band that nothing is covering, and the HUD is the top edge of it.
+   * so this is a constant rather than a fraction. It is here because it is one
+   * of the two rails `screenBiasFor` works between: the bike may never be
+   * pushed up under the HUD, however much comfort that would buy.
    */
   hudInsetPx: number;
   /**
@@ -119,8 +119,17 @@ export interface CameraParams {
    * on a desktop; `main.ts` sets it from the touch overlay's own measured
    * layout, which sizes itself in millimetres and therefore knows a number the
    * camera cannot derive.
+   *
+   * The other rail. The bike may never end up under a thumb, and `screenBiasFor`
+   * pushes it exactly far enough up the frame that it cannot — and no further.
    */
   thumbInsetPx: number;
+  /**
+   * How far below the tracked chassis point the bike itself reaches, in metres.
+   * `screenBiasFor` turns it into pixels with the live zoom and keeps THAT much
+   * of the frame off the pads. See DEFAULT_CAMERA for where the number is from.
+   */
+  restClearM: number;
   /**
    * The MOST the bike may be pushed up the frame, as a fraction of the
    * half-viewport. 0 centres it, which is right on a desktop and wrong in a
@@ -133,12 +142,18 @@ export interface CameraParams {
    * be keeping clear of. A constant fraction cannot be right on two viewports
    * that differ by a factor of three in height.
    *
-   * IT EXISTS FOR THUMBS. In landscape on a phone, hands cover the bottom
-   * corners of the screen — which is exactly where a grounded bike sits when
-   * the camera centres it, so the one thing the readability rule says must
-   * always be legible is under a thumb. Biasing the view down moves the bike up
-   * into the clear part of the frame, and the ground it is about to hit comes
-   * with it.
+   * IT EXISTS FOR THUMBS AND FOR NOTHING ELSE. In landscape on a phone, hands
+   * cover the bottom corners of the screen — which is exactly where a grounded
+   * bike sits when the camera centres it, so the one thing the readability rule
+   * says must always be legible is under a thumb. Biasing the view down moves
+   * the bike up into the clear part of the frame, and the ground it is about to
+   * hit comes with it.
+   *
+   * WHICH IS ALSO THE WHOLE OF ITS MANDATE, and the second thing it got wrong.
+   * It used to aim at the MIDDLE of the band nothing was covering, which treats
+   * the HUD band at the top as if it were as unusable as a hand and buys
+   * symmetry with screen the player wanted for something else. See
+   * `screenBiasFor`.
    *
    * It is a PRESENTATION offset and nothing else: it moves the published view,
    * never the follow, so the safe-box guarantee below still holds against the
@@ -205,6 +220,18 @@ export const DEFAULT_CAMERA: CameraParams = {
   // Raised by main.ts from the touch overlay's own layout when there are pads on
   // the glass, and left at zero otherwise.
   thumbInsetPx: 0,
+  // THE BIKE'S OWN REACH BELOW THE CHASSIS ORIGIN, in metres, plus a bump.
+  //
+  // Measured off the shipped bike rather than chosen: the suspension anchors sit
+  // 0.15 m under the chassis origin and the wheels are 0.25 m in radius, so the
+  // bottom of the bike is 0.40 m below the point the camera tracks. The rest is
+  // the suspension's travel and a small bump — the number that matters is "the
+  // bike and the ground it is standing on", not "the chassis dot".
+  //
+  // It is in METRES and multiplied by the live zoom, so the same bike is the
+  // same number of pixels of protection on every viewport. See `screenBiasFor`,
+  // which is the only thing that reads it.
+  restClearM: 0.75,
   // Zero on a desktop, where nothing is covering the screen. main.ts raises the
   // CAP when the touch controls come up — see TOUCH_CAMERA there — and
   // `screenBiasFor` derives the value under it.
@@ -404,35 +431,96 @@ export function clampZoomBias(p: CameraParams, cssW: number, cssH: number | unde
  * smaller distance in pixels but a much larger one relative to the 52 px of HUD
  * at the top, and it was pushing a grounded bike up UNDER the level card. A
  * comfort offset that hides the bike behind the HUD has inverted its own
- * purpose.
+ * purpose. So it is derived. This is the derivation.
  *
- * So it is derived, from the two things that are actually covering the screen:
+ * IT USED TO AIM AT THE MIDDLE OF THE CLEAR BAND, AND THAT WAS TOO HIGH.
  *
- *   THE WANT. The clear band runs from the bottom of the HUD to the top of the
- *   thumb pads, and the bike wants to be in the middle of THAT rather than in
- *   the middle of the glass. That is a shift of half the difference between the
- *   two insets — and it is a number of PIXELS, which is why it comes out small
- *   on a tall screen and large on a short one without anybody choosing either.
+ * Centring the bike between the HUD and the pads was the right answer while a
+ * row of command buttons sat across the top and the pads sat halfway up the
+ * screen: the clear band was a slot, and the middle of a slot is where you put
+ * things. Once the pads moved to the bottom edge the clear band became most of
+ * the glass, and centring in it spends a lot of a phone's scarcest dimension on
+ * the ground the bike is standing on.
  *
- *   THE ROOM. `safeBox` already allows the follow to put the bike that fraction
- *   of the half-frame away from centre, so the worst case is `safeBox + bias`
- *   and it must still land below the HUD. On a short viewport that is the
- *   binding constraint and the want does not get paid in full — which is the
- *   whole of fix 3, stated as arithmetic instead of as a constant.
+ * IN THIS GAME, WHAT IS BELOW YOU IS MOSTLY FLOOR. What decides a run is ahead
+ * and above: the ceiling you are about to clip, the lip you are aiming at, the
+ * apple over the roof, where a jump is going to land. And the one case that
+ * genuinely needs to see down — a fall — is already paid for by the vertical
+ * lead: falling drives `leadY` to `-maxLeadY`, which walks the bike UP the
+ * frame and opens the ground beneath it. Resting the bike low costs that case
+ * nothing and buys the other cases a third of the screen.
  *
- *   THE CAP. `screenBiasY` survives as the most this is ever allowed to ask
- *   for, which is what keeps the desktop at exactly zero (nothing is covering a
- *   desktop, so `thumbInsetPx` is 0 and the want is negative anyway) and what
- *   leaves a slider on the tuning panel that means something.
+ * So the rule is no longer "centre it in what is clear". It is:
+ *
+ *   THE BIKE RESTS AS LOW IN THE FRAME AS THE SAFE BOX ALLOWS WITHOUT EVER
+ *   PUTTING IT UNDER A THUMB.
+ *
+ * which is three terms, two of them rails and one of them a ceiling:
+ *
+ *   THE WANT — the thumb rail, and it protects THE RESTING BIKE rather than the
+ *   worst case the follow could ever reach. That is a correction, and it is
+ *   worth stating what it corrects. The rail used to be measured against the
+ *   whole safe box: `safeBox` lets the follow put the bike 0.42 of the
+ *   half-frame BELOW centre during a sustained climb, and the resting position
+ *   was chosen so that excursion landed exactly on the top edge of the pads.
+ *   It was right in the abstract and wrong in the hand. On a 348 px landscape
+ *   phone the worst case is 73 px, so protecting it spent 10 px pushing a
+ *   RESTING bike up the frame — permanently, on every level, to insure against
+ *   a transient that happens on climbs — and on a 280 px screen the same rule
+ *   spent 29 px and put the bike at 40% of the glass. The user's reply to the
+ *   result was that the bike looks cut off and should be centred, and the
+ *   photograph agreed: a short landscape viewport is the one place where the
+ *   game cannot afford to spend a tenth of its vertical budget on insurance.
+ *
+ *   So the want is now `(thumbInsetPx + restClearM * zoom) / half - 1`: the
+ *   bike AS IT SITS, with its own wheels and a bump's worth of suspension under
+ *   it, must clear the pads — and nothing more is asked for. Still a number of
+ *   PIXELS over a half-frame, so the same hands ask for something on a 240 px
+ *   screen and nothing at all on a tablet.
+ *
+ *   WHAT THAT GIVES UP, said plainly: on a sustained climb at 915 x 348 the
+ *   chassis can now reach about 10 px into the band the pads occupy, and the
+ *   bike's wheels about 20. It is transient, it is the centre column — the
+ *   nearest thing on the glass there is the command drawer, another 30 px down,
+ *   with the thumb pads themselves off at the left and right edges — and the
+ *   alternative was paying for it on every frame of every level. The resting
+ *   position, which is the one a player sees most of the time, is protected
+ *   absolutely.
+ *
+ *   THE ROOM — the HUD rail, unchanged and still the one that outranks the
+ *   want. The same `safeBox` also allows `box` ABOVE centre, and that worst
+ *   case must land below the HUD. On a viewport short enough that the two rails
+ *   cross (a 280 px phone has 117 px of clear band and a safe box of ±59), the
+ *   HUD wins and the bike is higher than the thumb rail asked for. Losing the
+ *   bike under the level card is worse than losing the ground under it behind a
+ *   hand, and this `min` is where that is said.
+ *
+ *   THE CAP — `screenBiasY`, the most this may ever ask for. It is what leaves
+ *   a slider on the tuning panel that means something.
+ *
+ * AND IT IS CLAMPED AT ZERO AT THE BOTTOM, which is deliberate and is the line
+ * between this fix and a desktop one. Zero is "dead centre", the framing every
+ * one of the twenty levels was authored and signed off at. This function will
+ * stop pushing the bike up, and will never start pushing it down: on a tablet
+ * and in portrait the thumb rail goes negative and the answer is simply centre.
+ * Whether the DESKTOP wants a low resting position too is a real question with
+ * the same answer behind it, and it is a separate proposal with its own numbers
+ * rather than a side effect of a phone fix.
  */
-export function screenBiasFor(p: CameraParams, cssH: number): number {
+export function screenBiasFor(p: CameraParams, cssH: number, zoom: number): number {
   const half = cssH * 0.5;
   if (!(half > 0)) return 0;
   const box = clamp(p.safeBox, 0, MAX_SCREEN_BIAS);
   const hud = Math.max(p.hudInsetPx, 0);
-  const want = (Math.max(p.thumbInsetPx, 0) - hud) * 0.5 / half;
-  // The bike's worst case is (box + bias) of the half-frame above centre. Keep
-  // that out of the HUD band; on a viewport with no room at all this goes
+  // The bike as it SITS — its own reach below the tracked point, in pixels at
+  // the framing actually on screen — has to clear the pads, and that is all
+  // that is asked for. Negative, which is the common case off a short phone and
+  // every case off a desktop, means the pads cannot reach the resting bike at
+  // all and the clamp below returns 0: dead centre, the desktop framing.
+  const clearPx = Math.max(p.restClearM, 0) * Math.max(zoom, 0);
+  const want = (Math.max(p.thumbInsetPx, 0) + clearPx) / half - 1;
+  // The bike's other worst case is (box + bias) of the half-frame above centre.
+  // Keep that out of the HUD band; on a viewport with no room at all this goes
   // negative and the clamp below returns 0, which is the honest answer.
   const room = (half - hud) / half - box;
   return clamp(Math.min(want, p.screenBiasY, room), 0, MAX_SCREEN_BIAS - box);
@@ -548,7 +636,9 @@ export function createCamera(params: CameraParams): Camera {
       // the renderer flips, so dropping the camera's centre raises the bike on
       // screen. Clamped against the safe box so the two together can never put
       // the bike off the edge — the guarantee above outranks the comfort.
-      const shift = screenBiasFor(p, cssH) * halfH;
+      // The live zoom, not a derived one: the clearance is the bike's size ON
+      // SCREEN, and a bike zoomed in on is a bigger thing to keep off a thumb.
+      const shift = screenBiasFor(p, cssH, fzoom) * halfH;
       const b = ov ? clamp(ov.blend, 0, 1) : 0;
       if (b <= 0) {
         cam.x = fx;

@@ -90,6 +90,50 @@ export interface ArtRenderOpts extends RenderOpts {
    */
   touch?: boolean;
   /**
+   * WHAT THE FREEZE SAYS, across the canvas, or null.
+   *
+   * The overview stops the sim and the clock, and on a desktop the readout in
+   * the corner says exactly that. A phone has no readout — the dev chrome is
+   * hidden there, which is right — so a player who pressed the overview pad
+   * would get a silently frozen game and a camera that had wandered off. A
+   * frozen game that does not say it is frozen reads as a crash.
+   *
+   * The SENTENCE comes from main.ts rather than from here, because the way out
+   * of it is a key on one device and a pad on another, and the renderer has no
+   * business knowing which. Drawn at the overview's own blend, so it arrives
+   * and leaves with the framing rather than popping.
+   *
+   * TWO LINES AND NOT ONE, and portrait is why. `TIME STOPPED — TAP TO RIDE` on
+   * one line is about 260 px wide, and centred on a 412 px-wide portrait phone
+   * that runs its left end straight into the command column the portrait layout
+   * parks in the top-left. A headline and a hint under it are each narrow enough
+   * to clear it on every viewport in the table, and they read better anyway:
+   * what happened, then what to do about it.
+   */
+  overviewText?: { title: string; hint: string } | null;
+  /**
+   * WHAT THE ARMED START LINE SAYS, or null.
+   *
+   * A restart leaves the run posed and frozen until the first control, so the
+   * clock and the ghost leave the line with the player rather than ahead of
+   * them — and a frozen game that does not say it is frozen reads as a crashed
+   * one, which is the lesson `overviewText` above already paid for.
+   *
+   * SAME FAMILY, OPPOSITE SENTENCE. The overview is something that happened to
+   * the game; this is the game waiting for the player, so it is an instruction
+   * ("go") rather than a status ("stopped"), and `main.ts` writes it for the
+   * same reason it writes the other one: the way out is a key on one device and
+   * a pad on another.
+   *
+   * DRAWN AT FULL OPACITY AND NOT AT A BLEND, which is the one place it
+   * deliberately differs. There is no camera move to arrive with, and it has to
+   * be gone on the frame the run starts: this is a die-and-retry game whose
+   * loop is R, and a banner fading out over the first tenth of a second of a
+   * run is a hundred milliseconds of "did that register" at the exact moment
+   * the answer must be obvious. Null is how it leaves, and null is instant.
+   */
+  armedText?: { title: string; hint: string } | null;
+  /**
    * THE PLAYER'S OWN LIVERY. Absent means the shipped bike, which is what every
    * offscreen caller (thumbnails, the smoke harness) wants: a thumbnail is a
    * picture of the LEVEL and must not change because somebody repainted their
@@ -221,7 +265,8 @@ export function renderArt(
 
   if (art.hud > 0) {
     drawHud(ctx, cssW, cssH, level.name, state, level.apples.length, P,
-      opts.detailChip === false ? null : q, opts.touch === true);
+      opts.detailChip === false ? null : q, opts.touch === true,
+      opts.overviewText ?? null, opts.overview, opts.armedText ?? null);
   }
 
   if (opts.markers) {
@@ -723,6 +768,8 @@ function drawHud(
   ctx: CanvasRenderingContext2D, cssW: number, cssH: number,
   name: string, state: SimState, appleCount: number, P: Palette, quality: number | null,
   touch = false,
+  overviewText: { title: string; hint: string } | null = null, overviewBlend = 0,
+  armedText: { title: string; hint: string } | null = null,
 ): void {
   // "10 — Cathedral" is an index and a title. Both are content, so both are
   // read off the level rather than configured.
@@ -845,6 +892,56 @@ function drawHud(
     ctx.fillStyle = state.finished ? P.lime : P.red;
     ctx.fillText(msg, cssW / 2, cssH * 0.22);
   }
+
+  // A HEADLINE AND A HINT UNDER IT, in the death banner's treatment and in the
+  // death banner's place, because both of the things drawn with it are the same
+  // kind of statement: the game is not moving, and here is what moves it.
+  //
+  // ONE FUNCTION FOR BOTH of them rather than two copies twenty lines apart —
+  // the second copy is how the two banners end up in slightly different places
+  // and at slightly different weights, which on the one screen that can show
+  // either of them reads as a bug in whichever one you saw second.
+  const banner = (
+    text: { title: string; hint: string }, alpha: number, titleFill: string,
+  ): void => {
+    const y = cssH * 0.22;
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, alpha);
+    ctx.textAlign = 'center';
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = P.ink;
+    ctx.font = `800 20px ${HUD_FONT}`;
+    ctx.strokeText(text.title, cssW / 2, y);
+    ctx.fillStyle = titleFill;
+    ctx.fillText(text.title, cssW / 2, y);
+    ctx.font = `700 13px ${HUD_FONT}`;
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = P.ink;
+    ctx.strokeText(text.hint, cssW / 2, y + 22);
+    ctx.fillStyle = P.cream;
+    ctx.fillText(text.hint, cssW / 2, y + 22);
+    ctx.restore();
+  };
+
+  // THE FREEZE, SAID OUT LOUD: the game has stopped and here is what starts it
+  // again. It fades with the overview's own blend, so it is never on screen
+  // while the sim is running.
+  if (overviewText && overviewBlend > 0.05) banner(overviewText, overviewBlend, P.yellow);
+
+  // THE ARMED START LINE, SAID OUT LOUD, and the one banner here that is an
+  // INSTRUCTION rather than a status: the game is waiting for the player rather
+  // than the other way round. Lime for the same reason a light is green — this
+  // is the only banner in the game that means go.
+  //
+  // FULL OPACITY, NO BLEND. It has no camera move to arrive with, and it has to
+  // be gone on the frame the run starts rather than a tenth of a second later;
+  // `main.ts` passes null the moment the run is released, and null is instant.
+  //
+  // Never over a death banner. They share this exact position, and a run that
+  // is over is not a run that is waiting to start — `main.ts` does not arm one,
+  // and this is the guard that keeps a future edit from stacking two sentences
+  // on the same pixels.
+  if (armedText && !state.dead && !state.finished) banner(armedText, 1, P.lime);
   ctx.restore();
 }
 
@@ -1767,4 +1864,26 @@ export function portraitExtent(spec: BikeSpec): { w: number; h: number; cy: numb
   const top = spec.rider.armLength + spec.rider.headRadius;
   const bottom = spec.wheel.anchors[0].y - wr;
   return { w: 2 * (ax + wr), h: top - bottom, cy: (top + bottom) / 2 };
+}
+
+/**
+ * THE SAME BIKE, IN A POSE YOU CHOOSE.
+ *
+ * `drawBikePortrait` is this with the pose held at "standing still, facing +x",
+ * which is right for an avatar and wrong for the control legend: a legend tile
+ * for BRAKE has to show the nose diving, and one for LEAN has to show the
+ * rider's weight actually moved. Both of those are states the sim already has
+ * names for — `spec.rider.leanL`, the chassis orientation, the wheel spin
+ * scalar — so the legend can be built out of them rather than out of a second
+ * artist's idea of what a bike looks like.
+ *
+ * `tier: 'fine'`, for the reason spelled out on `BikeTier` and repeated on
+ * `drawBikePortrait`: a picture in a panel must never be able to move the
+ * shared detail latches and change what the PLAYER's bike is drawn at.
+ */
+export function drawBikePose(
+  ctx: CanvasRenderingContext2D, pose: Pose, spec: BikeSpec, P: Palette, look: BikeLook,
+  zoom: number, facing: number,
+): void {
+  drawBike(ctx, pose, spec, 1 / zoom, P, facing, 0, 1, 'fine', look);
 }

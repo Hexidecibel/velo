@@ -67,6 +67,23 @@ describe('overview cannot affect a recorded replay', () => {
     expect(JSON.stringify(b)).toBe(JSON.stringify(a));
   });
 
+  it('survives being TOGGLED, which is how a phone drives it', () => {
+    // The overview pad is a toggle where TAB is a hold — a hold would pin a
+    // thumb to the glass for exactly as long as you were trying to read what is
+    // on it. The freeze underneath is the same freeze and it is `overview.hold`
+    // both times, so the replay claim has to survive the phone's usage pattern
+    // as well as the desktop's: several separate looks rather than one long one.
+    const plain = drive(600, () => false);
+    const toggled = drive(1400, (f) =>
+      (f >= 100 && f < 350) || (f >= 500 && f < 900) || (f >= 1000 && f < 1150));
+
+    expect(toggled.sim.hash()).toBe(plain.sim.hash());
+    expect(toggled.sim.state.tick).toBe(plain.sim.state.tick);
+    const a = plain.rec.build(plain.level, cloneSpec(DEFAULT_SPEC), plain.sim);
+    const b = toggled.rec.build(toggled.level, cloneSpec(DEFAULT_SPEC), toggled.sim);
+    expect(JSON.stringify(b)).toBe(JSON.stringify(a));
+  });
+
   it('does not let the clock run while frozen', () => {
     const { sim } = drive(300, (f) => f >= 100);
     // 100 frames advanced, 200 frozen. The clock is state.tick, which only

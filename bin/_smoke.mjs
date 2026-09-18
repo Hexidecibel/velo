@@ -193,7 +193,13 @@ try {
         startX: window.velo.level.start.x,
         levelName: window.velo.level.name,
         levels: window.velo.levels.length,
-        legend: !!document.querySelector('#legend details'),
+        // THE LEGEND IS PICTURES NOW, drawn by the game's own renderer into
+        // data URLs (legendart.ts). Counting the images is a much stronger
+        // check than the old "is there a details element": it proves a canvas
+        // was obtained, a pose was built out of the spec, and drawBike ran --
+        // none of which a unit test can reach. Six: two on the flip tile and
+        // one on each of the four drive tiles.
+        legend: document.querySelectorAll('#legend .lg-bike[src^="data:image"]').length,
         levelbar: document.querySelectorAll('#levelbar select option').length,
         recorded: window.velo.sim.state.tick > 0,
         finite: nums.every(Number.isFinite),
@@ -211,7 +217,27 @@ try {
   if (report.levelName !== 'test01 — the ugly one') throw new Error(`?level=test01 did not select test01 (got "${report.levelName}")`);
   // Displacement from the level's OWN start, never an absolute coordinate.
   if (report.x - report.startX <= 2.5) throw new Error(`bike did not move under throttle (${(report.x - report.startX).toFixed(2)} m from the start line)`);
-  if (!report.legend) throw new Error('the control legend never rendered');
+  if (report.legend < 6) throw new Error(`the control legend drew ${report.legend} bikes, wanted 6`);
+
+  // `?` OPENS AND CLOSES IT, END TO END. keys.test.ts asserts that every
+  // advertised key reaches a handler by reading the dispatch; this asserts that
+  // the handler does the thing, through a real KeyboardEvent on the real page.
+  // Three advertised keys in this game have turned out to be dead, and the
+  // cheapest of the three to have caught was the one that opens the panel that
+  // lists the other seventeen.
+  const helpKey = JSON.parse(await evalIn(cdp, `
+    (() => {
+      const card = () => !document.querySelector('#legend .lg-card').hidden;
+      const tap = () => window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Slash', bubbles: true }));
+      const a = card(); tap();
+      const b = card(); tap();
+      return JSON.stringify({ a, b, c: card() });
+    })()
+  `));
+  console.log('    ? key: ' + JSON.stringify(helpKey));
+  if (helpKey.a === helpKey.b || helpKey.b === helpKey.c) {
+    throw new Error(`? did not toggle the control legend (${JSON.stringify(helpKey)})`);
+  }
   if (report.levelbar < report.levels) throw new Error(`level selector listed ${report.levelbar} of ${report.levels} levels`);
   if (report.sliders < 20) throw new Error(`tuning panel only built ${report.sliders} sliders`);
   if (report.canvas === 'missing' || report.canvas.startsWith('0x')) throw new Error(`canvas never sized (${report.canvas})`);
@@ -360,8 +386,20 @@ try {
   // half, so a baseline sampled while it is still going can be anything —
   // including a small number that makes "the tick went backwards" unfalsifiable.
   // That was an intermittent failure, not a theoretical one.
+  // THE THROTTLE IS PART OF THE BASELINE NOW. A restart leaves the run ARMED —
+  // posed and frozen until the first control, so the clock and the ghost start
+  // with the player rather than ahead of them — so a harness that restarts and
+  // then waits is a harness watching a bike that is correctly doing nothing.
+  // It has to press something, exactly as a player does. The gate is asserted
+  // properly further down; this is just a run being started.
   await evalIn(cdp, `(window.velo.restart(false), true)`);
+  await evalIn(cdp, `
+    (() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowUp', bubbles: true })); return true; })()
+  `);
   await new Promise((r) => setTimeout(r, 1500));
+  await evalIn(cdp, `
+    (() => { window.dispatchEvent(new KeyboardEvent('keyup', { code: 'ArrowUp', bubbles: true })); return true; })()
+  `);
   const hashBefore = await evalIn(cdp, `window.velo.specHash()`);
   const tickBefore = await evalIn(cdp, `window.velo.sim.state.tick`);
   if (tickBefore < 512) throw new Error(`live-tune baseline never ran (${tickBefore} ticks)`);
@@ -502,11 +540,26 @@ try {
   // and it is not the part that needs proving. What needs proving is the chain
   // from a verified time on a real server to a second sim stepping beside the
   // player's inside the built bundle, and that is what this checks.
+  //
+  // THE NAME ON THIS RUN IS HOSTILE ON PURPOSE, and it is hostile HERE rather
+  // than in a test of its own because this is the only path in the repo that
+  // carries a display name the whole way: typed by one person, posted, stored,
+  // served to a DIFFERENT client, and rendered into that client's readout and
+  // board. That is the shape of the bug it guards — STORED, not reflected.
+  //
+  // `cleanName` (identity.ts, and the server's own copy) is hygiene and not
+  // sanitisation: it collapses control characters, squeezes whitespace and caps
+  // the length at 24, and it passes `<` and `>` through, because a name is text.
+  // Twenty-four characters is a working payload, `<img src=x>` fires its
+  // handler on a 404, and the readout is on by default. So every assertion
+  // below now doubles as the proof that a name is drawn as TEXT: if the
+  // escaping at the sink is ever dropped, `#hud img` appears and this fails.
+  const HOSTILE = 'Smoke<img src=x>Pilot';
   const fixture = JSON.parse(await readFile(join(ROOT, 'src/server/fixture.replay.json'), 'utf8'));
   const posted = await (await fetch(apiBase + '/api/runs', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ playerId: 'smokepilot01', name: 'Smoke Pilot', category: 'human', replay: fixture }),
+    body: JSON.stringify({ playerId: 'smokepilot01', name: HOSTILE, category: 'human', replay: fixture }),
   })).json();
   if (!posted.ok) throw new Error(`the server refused the fixture replay: ${posted.code} ${posted.reason}`);
   console.log(`    posted: ${posted.levelName} ${posted.timeSeconds.toFixed(3)}s verified server-side in ${posted.verifyMs} ms`);
@@ -546,7 +599,20 @@ try {
         rank: b && b.rank,
         above: b && b.above && b.above.name,
         rows: document.querySelectorAll('#board .bd-row').length,
-        shown: (document.getElementById('board').textContent || '').includes('Smoke Pilot'),
+        shown: (document.getElementById('board').textContent || '').includes(${JSON.stringify(HOSTILE)}),
+        // MARKUP IN A NAME IS TEXT, EVERYWHERE IT IS DRAWN. Asserted on the
+        // rendered DOM rather than on the escaper, because an escaper proves
+        // nothing about a sink that forgot to call it — which is exactly the
+        // bug this guards. boardui.ts builds nodes and sets textContent; the
+        // readout builds markup and escapes. Both have to come out as an
+        // element count of zero.
+        // The board legitimately contains <img> — the avatars, which are canvas
+        // data: URLs it drew itself. Anything else with a src is not ours.
+        injectedInBoard: [...document.querySelectorAll('#board img')]
+          .filter((e) => !(e.getAttribute('src') || '').startsWith('data:')).length
+          + document.querySelectorAll('#board script, #board iframe, #board svg, #board object').length,
+        injectedInHud: document.querySelectorAll('#hud img, #hud script, #hud iframe, #hud svg, #hud object').length,
+        hudHasNameAsText: (document.getElementById('hud').textContent || '').includes(${JSON.stringify(HOSTILE)}),
         ghostName: g && g.name,
         ghostKind: g && g.kind,
         ghostAt: g && g.at,
@@ -564,13 +630,100 @@ try {
   // above" an unranked player is the slowest one on the board, which is the
   // only one there is.
   if (lb.rank !== null) throw new Error(`a fresh profile should have no rank (got ${lb.rank})`);
-  if (lb.above !== 'Smoke Pilot') throw new Error(`wrong ghost offered (above=${lb.above})`);
-  if (lb.ghostName !== 'Smoke Pilot' || lb.ghostKind !== 'above') throw new Error(`wrong ghost built (${lb.ghostName}/${lb.ghostKind})`);
+  if (lb.above !== HOSTILE) throw new Error(`wrong ghost offered (above=${lb.above})`);
+  if (lb.ghostName !== HOSTILE || lb.ghostKind !== 'above') throw new Error(`wrong ghost built (${lb.ghostName}/${lb.ghostKind})`);
   if (!lb.ghostMoved) throw new Error('the ghost never left the start line — its sim is not being stepped');
   if (lb.ghostAt !== lb.recorded) {
     throw new Error(`the ghost is out of step with the player (${lb.ghostAt} ghost frames vs ${lb.recorded} recorded)`);
   }
   if (!lb.hudGhost) throw new Error('the HUD never named the ghost — a second bike with no label reads as a bug');
+  // The name came back off the server intact, so the two checks under it are
+  // testing what they claim to. If a future server-side filter strips the
+  // markup, this is what says so — rather than the escaping checks quietly
+  // passing because there was nothing left to escape.
+  if (lb.above !== HOSTILE) throw new Error(`the server rewrote the name (${lb.above}) — the XSS checks below are no longer testing anything`);
+  if (lb.injectedInBoard !== 0) throw new Error(`a display name created ${lb.injectedInBoard} element(s) in the board panel — stored XSS`);
+  if (lb.injectedInHud !== 0) throw new Error(`a display name created ${lb.injectedInHud} element(s) in the readout — stored XSS`);
+  if (!lb.hudHasNameAsText) throw new Error('the readout did not draw the name as visible text — markup in a name must be shown, not interpreted');
+
+  // --- the armed start line, through the real key path ---------------------
+  //
+  // THE WHOLE CLAIM IN ONE BLOCK, and it has to be here rather than in a unit
+  // test for the same reason the overview's does: the gate lives in main.ts's
+  // frame loop, and no unit test reaches a frame loop. It also has to be HERE
+  // rather than earlier in this file, because a ghost only exists after the
+  // section above — and "the ghost does not go either" is the actual complaint
+  // this feature answers. A fix where the player waits on the line and the
+  // ghost sets off is not a fix; it just moves the false gap from the clock to
+  // the road.
+  //
+  // Four things frozen, then three things starting together on the first
+  // control: the clock, the recorder and the ghost.
+  await evalIn(cdp, `(() => { window.velo.overview.skipIntro(); window.velo.restart(false); return 1; })()`);
+  await new Promise((r) => setTimeout(r, 200));
+  const armBefore = JSON.parse(await evalIn(cdp, `JSON.stringify({
+    armed: window.velo.armed.armed,
+    tick: window.velo.sim.state.tick,
+    frames: window.velo.recordedFrames,
+    ghostAt: window.velo.ghost && window.velo.ghost.at,
+    ghostX: window.velo.ghost && window.velo.ghost.x,
+    startX: window.velo.level.start.x,
+    says: (document.getElementById('hud').textContent || '').includes('ARMED'),
+  })`));
+  // A COMMAND KEY IS NOT GO. The legend, the chooser, the board and R itself
+  // all leave the run on the line — only a control starts it, and `?` is the
+  // cheapest one to press here because it is visibly a no-op for the sim.
+  await evalIn(cdp, `
+    (() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Slash', bubbles: true })); return true; })()
+  `);
+  await new Promise((r) => setTimeout(r, 700));
+  const armHeld = JSON.parse(await evalIn(cdp, `JSON.stringify({
+    armed: window.velo.armed.armed,
+    tick: window.velo.sim.state.tick,
+    frames: window.velo.recordedFrames,
+    ghostAt: window.velo.ghost && window.velo.ghost.at,
+    ghostX: window.velo.ghost && window.velo.ghost.x,
+  })`));
+  // Shut the legend again, then GO. Held or freshly pressed makes no difference
+  // to the gate — it reads the mask, not an edge — and this is the fresh press.
+  await evalIn(cdp, `
+    (() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Slash', bubbles: true }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowUp', bubbles: true }));
+      return true;
+    })()
+  `);
+  await new Promise((r) => setTimeout(r, 600));
+  const armAfter = JSON.parse(await evalIn(cdp, `JSON.stringify({
+    armed: window.velo.armed.armed,
+    tick: window.velo.sim.state.tick,
+    frames: window.velo.recordedFrames,
+    ghostAt: window.velo.ghost && window.velo.ghost.at,
+    ghostX: window.velo.ghost && window.velo.ghost.x,
+    says: (document.getElementById('hud').textContent || '').includes('ARMED'),
+  })`));
+  await evalIn(cdp, `
+    (() => { window.dispatchEvent(new KeyboardEvent('keyup', { code: 'ArrowUp', bubbles: true })); return true; })()
+  `);
+  console.log('    armed: ' + JSON.stringify({ before: armBefore, held: armHeld, after: armAfter }));
+  if (!armBefore.armed) throw new Error('a restart did not arm the start line');
+  if (armBefore.tick !== 0) throw new Error(`a restart left the clock at ${armBefore.tick} rather than 0`);
+  if (!armBefore.says) throw new Error('the readout never said the run was ARMED — a frozen game that says nothing reads as a crashed one');
+  if (!armHeld.armed) throw new Error('a command key started the run — only sim input may');
+  if (armHeld.tick !== 0) throw new Error(`the clock ran while armed (0 -> ${armHeld.tick})`);
+  if (armHeld.frames !== 0) throw new Error(`the recorder grew while armed (0 -> ${armHeld.frames}) — an armed run would change the replay`);
+  if (armHeld.ghostAt !== 0) throw new Error(`the ghost advanced ${armHeld.ghostAt} frames while the player was still on the line`);
+  if (armHeld.ghostX !== armBefore.ghostX) throw new Error('the ghost moved while the player was still on the line — the false time gap is still there');
+  if (armAfter.armed) throw new Error('the throttle did not start the run');
+  if (armAfter.says) throw new Error('the readout still says ARMED after the run started');
+  if (armAfter.tick <= 0) throw new Error('the clock never started');
+  if (armAfter.frames <= 0) throw new Error('the recorder never started');
+  if (armAfter.ghostAt <= 0) throw new Error('the ghost never started with the player');
+  // ALL THREE ON THE SAME FRAME, which is the contract the ghost's whole
+  // meaning rests on: one ghost frame per recorded input frame, from the first.
+  if (armAfter.ghostAt !== armAfter.frames) {
+    throw new Error(`the ghost and the recorder did not start together (${armAfter.ghostAt} ghost frames vs ${armAfter.frames} recorded)`);
+  }
 
   // --- the end-of-level screen, end to end ---------------------------------
   //
@@ -850,6 +1003,39 @@ try {
   // HUD, which is what the screenshot that started this showed: a level-name
   // dropdown and a `browse C` button printed through the level card and the
   // clock. Nothing in a unit test can see a DOM panel over a canvas.
+  //
+  // THE CONTROL LEGEND IS THE ONE PIECE OF DESKTOP CHROME THAT CAME BACK, and
+  // it is a different thing here: a card in the middle that prints the name of
+  // each PAD rather than a keycap for a keyboard the device does not have, open
+  // on a first run because flip is the whole double-back design and a phone has
+  // no keyboard to find it by accident. So it is checked rather than banned —
+  // and then CLOSED, because main.ts hides the pads underneath it (its close
+  // button sits exactly where a thumb cluster is) and everything below this
+  // measures where the pads are.
+  const help = JSON.parse(await evalIn(cdp, `
+    (() => {
+      const open = !document.querySelector('#legend .lg-card').hidden;
+      const caps = document.querySelectorAll('#legend .lg-card .lg-cap').length;
+      const pads = document.querySelectorAll('#legend .lg-card .lg-pad').length;
+      // The class, not the geometry: the pads are taken away with opacity and
+      // pointer-events rather than display, so a hidden pad still has a rect.
+      const padsHidden = document.getElementById('touch').classList.contains('tc-away');
+      document.querySelector('#legend .lg-close').click();
+      return JSON.stringify({ open, caps, pads, padsHidden,
+        shut: document.querySelector('#legend .lg-card').hidden });
+    })()
+  `));
+  console.log('    touch legend: ' + JSON.stringify(help));
+  if (!help.open) throw new Error('the control legend was not offered on a first run on a phone');
+  if (help.caps > 0) throw new Error(`the touch legend printed ${help.caps} keycaps on a device with no keyboard`);
+  if (help.pads < 5) throw new Error(`the touch legend named ${help.pads} pads, wanted at least 5`);
+  // The bug this catches, which a screenshot caught first: the card's own `×`
+  // went past the wrapper that hides the pads, so closing it left a phone with
+  // no controls at all.
+  if (!help.padsHidden) throw new Error('the pads were live underneath the control legend');
+  if (!help.shut) throw new Error('the control legend would not close');
+  await new Promise((r) => setTimeout(r, 200));
+
   const chrome2 = JSON.parse(await evalIn(cdp, `
     (() => {
       const vis = (id) => getComputedStyle(document.getElementById(id)).display !== 'none';
@@ -872,7 +1058,7 @@ try {
     })()
   `));
   console.log('    touch chrome: ' + JSON.stringify(chrome2));
-  for (const id of ['levelbar', 'legend', 'hud']) {
+  for (const id of ['levelbar', 'hud']) {
     if (chrome2[id]) throw new Error(`the desktop ${id} is still drawn over the touch HUD`);
   }
   // 52 px is the band the art renderer draws the level card, clock and apple
@@ -935,6 +1121,62 @@ try {
   }
   await evalIn(cdp, `(() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', bubbles: true })); return 1; })()`);
   await new Promise((r) => setTimeout(r, 300));
+
+  // --- the overview pad, which is the phone's TAB key -----------------------
+  //
+  // THE FREEZE GATE LIVES IN THE FRAME LOOP and no unit test can reach it, which
+  // is why the keyboard half of this is already checked above. The pad is a
+  // SECOND way into the same gate, through a real touch, and the claim that has
+  // to survive it is the one the whole feature is licensed by: no tick advances
+  // and the recorder gains no frame while it is up. A second freeze, or a pad
+  // that only moved the camera, would both pass every test in the repo and lose
+  // a tick out of a replay here.
+  await evalIn(cdp, `(() => { window.velo.overview.skipIntro(); window.velo.restart(false); return 1; })()`);
+  await tapPad('tc-throttle');
+  await new Promise((r) => setTimeout(r, 400));
+  const ovBefore = JSON.parse(await evalIn(cdp, `JSON.stringify({
+    frozen: window.velo.overview.frozen, tick: window.velo.sim.state.tick,
+    frames: window.velo.recordedFrames,
+  })`));
+  await tapPad('tc-overview');
+  const ovLabel = await evalIn(cdp, `document.querySelector('.tc-overview span').textContent`);
+  const ovLit = await evalIn(cdp, `document.querySelector('.tc-overview').classList.contains('open')`);
+  const ovDuring = JSON.parse(await evalIn(cdp, `JSON.stringify({
+    frozen: window.velo.overview.frozen, tick: window.velo.sim.state.tick,
+    frames: window.velo.recordedFrames, zoom: window.velo.cam.zoom,
+  })`));
+  await new Promise((r) => setTimeout(r, 900));
+  const ovHeld = JSON.parse(await evalIn(cdp, `JSON.stringify({
+    tick: window.velo.sim.state.tick, frames: window.velo.recordedFrames,
+    zoom: window.velo.cam.zoom, minZoom: window.velo.cam.params.minZoom,
+  })`));
+  // TOUCH ANYTHING TO RIDE. A hold pad is the most important case: it is
+  // somebody who has finished looking and wants the bike back, and if it did not
+  // drop out of the overview their throttle would go into a frozen sim.
+  await tapPad('tc-leanL');
+  await new Promise((r) => setTimeout(r, 500));
+  const ovAfter = JSON.parse(await evalIn(cdp, `JSON.stringify({
+    frozen: window.velo.overview.frozen, tick: window.velo.sim.state.tick,
+    label: document.querySelector('.tc-overview span').textContent,
+  })`));
+  console.log('    overview pad: ' + JSON.stringify({
+    label: ovLabel, lit: ovLit, before: ovBefore, held: ovHeld, after: ovAfter,
+  }));
+  if (!ovDuring.frozen) throw new Error('the overview pad did not freeze the sim');
+  if (ovLabel !== 'ride') throw new Error(`the overview pad still says "${ovLabel}" while it is up`);
+  if (!ovLit) throw new Error('the overview pad is up and does not look like it');
+  if (ovHeld.tick !== ovDuring.tick) {
+    throw new Error(`the clock ran while the overview pad was up (${ovDuring.tick} -> ${ovHeld.tick})`);
+  }
+  if (ovHeld.frames !== ovDuring.frames) {
+    throw new Error(`the recorder gained a frame while the overview pad was up`);
+  }
+  if (!(ovHeld.zoom < ovHeld.minZoom)) {
+    throw new Error(`the overview pad did not take the camera past the driving floor (${ovHeld.zoom})`);
+  }
+  if (ovAfter.frozen) throw new Error('a hold pad did not drop out of the overview');
+  if (ovAfter.label !== 'overview') throw new Error('the overview pad did not go back to saying so');
+  if (!(ovAfter.tick > ovHeld.tick)) throw new Error('the sim did not resume after the overview');
 
   // --- the pinch, driven by two real fingers -------------------------------
   //

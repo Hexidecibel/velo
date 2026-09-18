@@ -116,6 +116,31 @@ const PHONE_PRESETS = [
  * of this flag is that neither of those is visible in a number.
  */
 const MENU = process.env.SHOTS_MENU === '1';
+/**
+ * `SHOTS_LEGEND=1` — leave the control legend up on the phone pass.
+ *
+ * It is OPEN ON A FIRST RUN, which is the point of it: a phone has no keyboard
+ * to fumble the flip out of, so the one screen that teaches the flip has to be
+ * in front of you once. A fresh Chrome profile is a first run every time, so
+ * without this every phone shot would be a shot of the legend rather than of
+ * the pads — and the pads are what the phone pass exists to photograph. Closing
+ * it goes through the same button a thumb goes through, which also puts the
+ * pads back (main.ts hides them underneath it, like the results screen).
+ */
+const LEGEND = process.env.SHOTS_LEGEND === '1';
+const CLOSE_LEGEND = `(()=>{const b=document.querySelector('#legend .lg-close');`
+  + `if(b&&!b.closest('.lg-card').hidden)b.click();})();`;
+/**
+ * `SHOTS_OVERVIEW=1` — press the overview pad before the phone shot.
+ *
+ * Overview on a phone is a whole mode: the camera goes below its own readability
+ * floor, the sim freezes, and a banner has to say so loudly enough that a frozen
+ * game does not read as a crashed one. Every part of that is a picture. The pad
+ * is pressed the way a thumb presses it, and then a beat is allowed for the ease
+ * to finish — the blend is a half-life, so a shot taken immediately photographs
+ * the transition rather than the destination.
+ */
+const OVERVIEW = process.env.SHOTS_OVERVIEW === '1';
 const phonesEnv = process.env.SHOTS_PHONES || '';
 const PHONES = !phonesEnv ? [] : phonesEnv === '1' ? PHONE_PRESETS : phonesEnv.split(',').map((x) => {
   const m = /^([A-Za-z0-9-]+):(\d+)x(\d+)$/.exec(x.trim());
@@ -131,10 +156,12 @@ const PHONES = !phonesEnv ? [] : phonesEnv === '1' ? PHONE_PRESETS : phonesEnv.s
  * this photographs the state a player gets and not one only the harness can
  * reach.
  */
-const OPEN_MENU = `(()=>{const el=document.querySelector('#touch .tc-menu');if(!el)return;`
+const pressPad = (cls) => `(()=>{const el=document.querySelector('#touch .${cls}');if(!el)return;`
   + `const r=el.getBoundingClientRect();`
   + `el.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerId:99,`
   + `clientX:r.x+r.width/2,clientY:r.y+r.height/2}));})();`;
+const OPEN_MENU = pressPad('tc-menu');
+const OPEN_OVERVIEW = pressPad('tc-overview');
 
 await mkdir(OUT, { recursive: true });
 const serve = createServer(async (req, res) => {
@@ -211,7 +238,9 @@ try {
     // loop, drives briefly and photographs whatever the game decided, pads and
     // HUD and all.
     const variants = phone ? [
-      [`phone-${phone}`, `(()=>{window.velo.loop.start();${MENU ? OPEN_MENU : ''}return 1})()`],
+      [`phone-${phone}`, `(()=>{window.velo.loop.start();${LEGEND ? '' : CLOSE_LEGEND}`
+        + `${MENU ? OPEN_MENU : ''}`
+        + `${OVERVIEW ? OPEN_OVERVIEW : ''}return 1})()`],
     ] : at.length === 3 ? [
       ['at', `window.velo.renderAt(${at[0]},${at[1]},${at[2]},{art:true})`],
       ['at-debug', `window.velo.renderAt(${at[0]},${at[1]},${at[2]},{art:true,debug:true})`],
@@ -249,6 +278,31 @@ try {
       // bike is drawn STANDING STILL and upright, which is the framing that
       // actually answers "do six silhouettes read as six bikes" — a shot taken
       // mid-wheelie answers a different question.
+      // THE CONTROL LEGEND, which is now pictures of the bike rather than a
+      // list of keys — so whether it reads is a question about an image and
+      // nothing else. Three frames: as it sits, with the dev toolbar up, and
+      // collapsed to its chip. `riding` is stripped because the drive above
+      // left the bike moving and the legend deliberately fades to a fifth while
+      // it is; the faded state is judged in the ordinary art-62 shots.
+      variants.push(['legend', `(()=>{
+        document.body.classList.remove('riding');
+        window.velo.legend.setOpen(true);
+        return document.querySelectorAll('#legend .lg-bike').length;
+      })()`]);
+      variants.push(['legend-dev', `(()=>{
+        document.body.classList.remove('riding');
+        window.velo.legend.setOpen(true);
+        const b = document.querySelector('#legend .lg-devtoggle');
+        if (b && !b.classList.contains('on')) b.click();
+        return document.querySelectorAll('#legend .lg-tool').length;
+      })()`]);
+      variants.push(['legend-shut', `(()=>{
+        document.body.classList.remove('riding');
+        const b = document.querySelector('#legend .lg-devtoggle');
+        if (b && b.classList.contains('on')) b.click();
+        window.velo.legend.setOpen(false);
+        return 1;
+      })()`]);
       variants.push(['look', `(()=>{
         window.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyY',bubbles:true}));
         return document.querySelectorAll('#look .lk-opt').length;
@@ -274,7 +328,12 @@ try {
     for (const [name, expr] of variants.filter(([n]) => !only.length || only.includes(n))) {
       const said = await ev(cdp, `(()=>{const r=${expr};return r===undefined?1:r})()`);
       if (name === 'chooser') console.log(`    thumbnails: ${await said}`);
-      if (name === 'hud-off' || name.startsWith('phone-')) await new Promise((r) => setTimeout(r, 500));
+      // The overview blend is an exponential with a 0.13 s half-life that only
+      // LANDS on 1 within a thousandth, so half a second photographs the
+      // transition and not the destination. Wait it out when it is in play.
+      if (name === 'hud-off' || name.startsWith('legend') || name.startsWith('phone-')) {
+        await new Promise((r) => setTimeout(r, OVERVIEW && name.startsWith('phone-') ? 1600 : 500));
+      }
       const r = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false, fromSurface: true });
       await writeFile(join(OUT, `${lv}--${name}.png`), Buffer.from(r.data, 'base64'));
     }

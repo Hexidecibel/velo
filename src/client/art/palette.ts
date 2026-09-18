@@ -357,7 +357,23 @@ const HEX = /^#[0-9a-fA-F]{6}$/;
  */
 export function levelPalette(style: LevelStyle | null | undefined, simHash: string): Palette {
   const named = resolvePalette(typeof style?.palette === 'string' ? style.palette : undefined);
-  const base = named ?? derivePalette(seedFrom(`palette:${simHash}`));
+  // `paletteSeed` RE-ROLLS the derivation without touching geometry or identity.
+  //
+  // Derivation is per-level and independent by design, which is what lets a
+  // hundred levels get their own look with no hand-authoring and no per-set
+  // coordination. The cost of independence is the birthday problem: with enough
+  // levels, two of them eventually derive neighbouring hues and read as the same
+  // place, and palette.test.ts fails on a pair that is nobody's fault.
+  //
+  // The wrong fixes are naming a palette (which collapses the level onto one
+  // hand-authored look) and moving a vertex (which moves simHash and retires the
+  // level's leaderboard). This is the right one: one level re-rolls, alone,
+  // deriving exactly as independently as before. It lives in `style`, so it is
+  // outside simHash and cannot cost anyone a time.
+  const nudge = typeof style?.paletteSeed === 'number' && Number.isFinite(style.paletteSeed)
+    ? `#${style.paletteSeed}`
+    : '';
+  const base = named ?? derivePalette(seedFrom(`palette:${simHash}${nudge}`));
   const colors = style?.colors;
   if (!colors || typeof colors !== 'object') return base;
 

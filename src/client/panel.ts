@@ -314,12 +314,12 @@ const CAMERA_GROUPS: Group<CameraParams>[] = [
       },
       {
         label: 'screen bias up (cap)', min: 0, max: 0.5, step: 0.01,
-        hint: 'A CEILING, not the value. The bike is pushed up the frame to sit in the middle of the band nothing is covering — between the in-canvas HUD at the top and the thumb pads at the bottom — which is a number of PIXELS and so a bigger fraction of a short screen than of a tall one. A flat 0.17 was chosen on an idealised phone and pushed the bike UNDER the level card on a real one. 0 on a desktop, where nothing covers anything.',
+        hint: 'A CEILING, not the value. The bike is pushed up the frame exactly far enough that the safe box can never put it under a thumb, and no further — what is below you in this game is mostly floor, and a fall opens it up through the vertical lead anyway. Held below the HUD band at the top, which outranks it. 0 on a desktop, where nothing covers anything and the bike sits dead centre.',
         get: (c) => c.screenBiasY, set: (c, v) => { c.screenBiasY = v; },
       },
       {
         label: 'HUD inset (px)', min: 0, max: 200, step: 2,
-        hint: 'How much of the top of the canvas the in-canvas level card, clock and apple counter own. Drawn at a fixed pixel size, so this is pixels. The top edge of the band the bike is centred in.',
+        hint: 'How much of the top of the canvas the in-canvas level card, clock and apple counter own. Drawn at a fixed pixel size, so this is pixels. The rail the screen bias is never allowed to push the bike up into.',
         get: (c) => c.hudInsetPx, set: (c, v) => { c.hudInsetPx = v; },
       },
       {

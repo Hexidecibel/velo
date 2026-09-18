@@ -148,33 +148,206 @@ body:has(#panel.hidden) #levelbar { right: 14px; }
 #levelbar .lb-note { color: var(--dim); font-size: 10px; }
 #levelbar .lb-note.bad { color: var(--bad); }
 
-/* --- control legend ------------------------------------------------------ */
+/* --- the control legend ---------------------------------------------------
+   Two blocks stacked in the bottom-left corner: the DEV TOOLBAR (off by
+   default) and the LEGEND itself, which is pictures of the bike rather than a
+   list of keys. See chrome.ts for why they are two things and not one list.
+
+   THE ART RULE APPLIES TO THIS PANEL MORE THAN TO ANY OTHER, because this one
+   contains little drawings of the bike: "the player and the collision edge are
+   always the highest-contrast things on screen" is trivially broken by a corner
+   full of bikes. So the surface is the same drab one every other panel uses,
+   the pictures sit on the level's own background colour rather than glowing off
+   it, and the whole block fades to a quarter while the bike is moving. */
 #legend {
   position: fixed;
   left: 12px;
   bottom: 10px;
-  max-width: 320px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: calc(100vw - 24px);
   text-shadow: 0 1px 2px #000;
+  transition: opacity .3s ease;
 }
-#legend details {
+/* WHILE YOU ARE RIDING IT GETS OUT OF THE WAY, and comes straight back when the
+   bike stops, when a pointer is over it, or when the keyboard is in it. A
+   reference you cannot see while you need it is no reference; a reference
+   competing with the collision edge at 60 fps is a bug in the art direction. */
+body.riding #legend { opacity: .2; }
+body.riding #legend:hover,
+body.riding #legend:focus-within { opacity: 1; }
+#legend [hidden] { display: none !important; }
+
+#legend button {
+  font: inherit;
+  cursor: pointer;
+  border-radius: 3px;
+}
+#legend button:focus-visible,
+#legend .lg-chip:focus-visible {
+  outline: 2px solid var(--edge);
+  outline-offset: 1px;
+}
+
+/* --- collapsed: one chip, and it is the whole way back -------------------- */
+.lg-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
   background: #17132ee0;
   border: 1px solid var(--line);
-  border-radius: 3px;
-  padding: 4px 8px;
-}
-#legend summary {
-  cursor: pointer;
   color: var(--dim);
   letter-spacing: .1em;
   text-transform: uppercase;
   font-size: 10px;
-  list-style: none;
 }
-#legend summary::-webkit-details-marker { display: none; }
-#legend summary::before { content: '\25B8 '; }
-#legend details[open] summary::before { content: '\25BE '; }
-#legend div { color: var(--dim); margin-top: 4px; }
-#legend b { color: var(--ink); font-weight: normal; }
+.lg-chip:hover { color: var(--ink); border-color: var(--edge); }
+
+/* --- open: the card ------------------------------------------------------- */
+.lg-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 372px;
+  max-width: calc(100vw - 24px);
+  padding: 7px 8px 8px;
+  background: #17132ee8;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+.lg-head { display: flex; align-items: center; gap: 6px; }
+.lg-title {
+  flex: 1 1 auto;
+  color: var(--dim);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+.lg-devtoggle, .lg-close {
+  padding: 1px 7px;
+  background: #221d42;
+  border: 1px solid var(--line);
+  color: var(--dim);
+  font-size: 10px;
+  letter-spacing: .08em;
+}
+.lg-devtoggle:hover, .lg-close:hover { color: var(--ink); border-color: var(--edge); }
+.lg-devtoggle.on { color: var(--edge); border-color: #2a5f78; background: #13233a; }
+.lg-close { padding: 0 7px; font-size: 13px; line-height: 1.2; }
+
+/* THE HERO. Space-to-flip is the mechanic the whole double-back level design
+   rests on and it spent three milestones as line four of a text block. Here it
+   is the same bike facing both ways, which says it without a sentence. */
+.lg-hero {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px;
+  background: #100d20;
+  border: 1px solid #332c5e;
+  border-radius: 3px;
+}
+.lg-heroart { display: flex; align-items: center; gap: 3px; flex: 0 0 auto; }
+.lg-arrow { color: var(--edge); font-size: 17px; line-height: 1; margin: 0 1px; }
+.lg-herotext { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.lg-herotext b { color: var(--ink); font-weight: normal; letter-spacing: .1em; text-transform: uppercase; font-size: 11px; }
+.lg-heronote { color: var(--dim); font-size: 10px; line-height: 1.35; }
+
+/* THE FOUR DRIVE TILES. One picture each, of the bike in the pose that control
+   puts it in — drawn by the game's own renderer (legendart.ts). */
+.lg-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.lg-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 4px 2px 5px;
+  background: #100d20;
+  border: 1px solid #241f45;
+  border-radius: 3px;
+}
+.lg-name { color: var(--ink); font-size: 10px; letter-spacing: .06em; }
+/* `image-rendering: auto` deliberately, as on .avatar: these are supersampled
+   at 2x and drawn back down, and the ink outlines want the smoothing.
+
+   `max-width: 100%` is not a nicety: the four tiles are a four-column grid and a
+   360 px-wide portrait phone gives each column 78 px, which is narrower than
+   the 74 px picture plus its tile's padding. Without this the fourth tile is
+   cut off by the edge of the card — which is what the first phone screenshot of
+   this legend showed, and which no arithmetic in the layout predicted. */
+.lg-bike { display: block; max-width: 100%; height: auto; }
+
+/* --- the rest of what a player does, as keycaps --------------------------- */
+.lg-keys { display: flex; flex-wrap: wrap; gap: 3px 9px; }
+.lg-key { display: inline-flex; align-items: center; gap: 4px; }
+.lg-label { color: var(--dim); font-size: 10px; }
+.lg-caps { display: inline-flex; align-items: center; gap: 2px; }
+.lg-sep { color: #5b5482; font-size: 9px; }
+.lg-cap {
+  display: inline-block;
+  min-width: 15px;
+  padding: 0 4px;
+  background: #241f48;
+  border: 1px solid #3a3268;
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 10px;
+  line-height: 15px;
+  text-align: center;
+}
+/* No keyboard: the tile prints the PAD, not a key the device does not have. */
+.lg-pad {
+  padding: 0 5px;
+  border: 1px solid #3a3268;
+  border-radius: 3px;
+  background: #1c1838;
+  color: var(--edge);
+  font-size: 10px;
+  line-height: 16px;
+}
+
+/* --- the dev toolbar ------------------------------------------------------ */
+/* OFF BY DEFAULT AND REMEMBERED. Visibly a different kind of thing from the
+   legend under it: no pictures, a tighter row, and a colder border. These are
+   the affordances for BUILDING the game, and the whole reason this exists is
+   that they used to sit in one list at the same weight as `gas`. */
+.lg-dev {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  max-width: 372px;
+  padding: 5px 6px;
+  background: #0e1a22e8;
+  border: 1px solid #2a5f78;
+  border-radius: 4px;
+}
+.lg-devtitle {
+  color: #7fd4ff;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  font-size: 9px;
+  padding-right: 2px;
+}
+.lg-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px 2px;
+  background: #13233a;
+  border: 1px solid #27455c;
+  color: #cfe9fb;
+  font-size: 10px;
+}
+.lg-tool:hover { border-color: #7fd4ff; }
+.lg-tool .lg-cap { background: #1b3145; border-color: #2f5570; color: #cfe9fb; }
 
 /* --- the tuned banner ---------------------------------------------------- */
 #panel .tuned {
@@ -586,12 +759,14 @@ body:has(#panel.hidden) #results { margin-left: 0; }
   border-radius: 4px;
   border-color: #ffffff14;
 }
-/* THE DRAWER, and it is a state the player has to be able to see. `more` opens
-   the four occasional commands and `close` shuts them; the pad that did it says
-   which, and lights so that "did that press land" is not a question — the finger
-   is covering the word. Everything else on the glass shuts it again, so this is
-   lit for a second or two at a time and never during a run. */
-#touch .tc-menu.open {
+/* THE TWO PADS THAT LATCH, and both are states the player has to be able to
+   see. `more` opens the four occasional commands and `close` shuts them;
+   `overview` freezes the game to show the whole level and `ride` gives it back.
+   The pad that did it says which, and lights so that "did that press land" is
+   not a question — the finger is covering the word. Everything else on the glass
+   drops out of both, so each is lit for a second or two at a time. */
+#touch .tc-menu.open,
+#touch .tc-overview.open {
   border-color: var(--edge);
   color: #29d9f2b0;
   background: #29d9f21f;
@@ -623,9 +798,55 @@ body.touch #view { touch-action: none; }
    chooser the button did, at a size a thumb can hit, in the block where the rest
    of the occasional controls live. */
 body.touch #hud,
-body.touch #legend,
 body.touch #board,
 body.touch #levelbar { display: none; }
+
+/* THE LEGEND IS THE ONE PIECE OF DESKTOP CHROME THAT CAME BACK, and only
+   because it stopped being a list of keys. A phone player needs to be taught
+   the flip more than a desktop player does — there is no keyboard to fumble
+   into it by accident — and the tiles teach it with pictures of the bike and
+   the names of the PADS, not with keycaps for a keyboard that is not there.
+
+   It is a CARD IN THE MIDDLE rather than a corner block: the corners are where
+   the thumbs are, the bottom gutter is where the commands are, and the one part
+   of a landscape phone that is free is the part the bike rides through — which
+   is fine for a thing that is up between runs and gone during them. main.ts
+   hides the pads while it is open, exactly as it does for the results screen,
+   so nothing underneath it can be half-pressed through it.
+
+   Closed, it is GONE rather than a chip: a chip in a corner on a phone is a
+   chip in a thumb's way. The way back is the `help` pad in the command drawer,
+   which is where every other between-runs command already lives. */
+body.touch #legend {
+  left: 50%;
+  top: 50%;
+  bottom: auto;
+  transform: translate(-50%, -50%);
+  z-index: 6;
+  max-width: none;
+}
+body.touch #legend:not(.lg-open) { display: none; }
+/* No keyboard means no dev toolbar and no switch for one: every tool behind it
+   is a thing you reach for while BUILDING this game, on the machine you are
+   building it on. */
+body.touch .lg-chip,
+body.touch .lg-devtoggle,
+body.touch .lg-dev { display: none; }
+body.touch .lg-card {
+  width: min(430px, calc(100vw - 28px));
+  /* TIGHTER THAN THE DESKTOP CARD, because the viewport that matters is 915 x
+     348 and the one below it is 736 x 280 — and at 280 the desktop spacing put
+     the last row of chips below the fold, where a kid has to discover that a
+     panel scrolls before they can read the end of it. */
+  gap: 5px;
+  max-height: 92vh;
+  overflow-y: auto;
+}
+body.touch .lg-hero { padding: 4px 7px; }
+body.touch .lg-tile { padding: 3px 2px 4px; }
+/* Never faded on a phone: it is a modal that is up between runs, and the pads
+   are hidden under it, so there is no "while you are riding" to fade for. */
+body.touch.riding #legend { opacity: 1; }
 body.touch #results { max-height: 78vh; }
 
 /* --- the level chooser ---------------------------------------------------- */

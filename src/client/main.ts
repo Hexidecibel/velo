@@ -20,6 +20,7 @@ import { interpolate, render } from './render.ts';
 import type { GhostDraw, Pose } from './render.ts';
 import { createCamera, cloneCamera, DEFAULT_CAMERA } from './camera.ts';
 import { cloneOverview, createOverview, DEFAULT_OVERVIEW, overviewFrame } from './overview.ts';
+import { createArmed } from './armed.ts';
 import { createPanel } from './panel.ts';
 import { BOOT_PRESET, PRESETS } from './presets.ts';
 import { createAttemptLog, createRecorder, MIN_BANKED_FRAMES, verify } from './recorder.ts';
@@ -27,6 +28,7 @@ import { crossCheck } from '@/sim/crosscheck.ts';
 import { LEVELS, adoptLevel, findBySimHash, resolveLevel, upsertLevel } from './levels.ts';
 import type { LevelEntry } from './levels.ts';
 import { createLegend, createLevelBar } from './chrome.ts';
+import type { Legend } from './chrome.ts';
 import { buildChooser, chooserSummary, CHOOSER_SORTS } from './chooser.ts';
 import type { ChooserSort } from './chooser.ts';
 import { createChooserUi } from './chooserui.ts';
@@ -210,6 +212,16 @@ function levelP(): ReturnType<typeof levelPalette> {
   return paletteCache.P;
 }
 
+/**
+ * The control legend, built down in the wiring section.
+ *
+ * Declared up here and optional because `dropLooks` runs on the boot path,
+ * BEFORE the wiring — a const down there would be in its temporal dead zone and
+ * the first level load would throw on it. The legend draws the player's bike in
+ * the level's palette, so it is one of the things a look change invalidates.
+ */
+let legend: Legend | null = null;
+
 let myLookCache: BikeLook | null = null;
 /** The player's own bike, on this level. */
 function myLook(): BikeLook {
@@ -222,6 +234,7 @@ function dropLooks(): void {
   myLookCache = null;
   ghostLook = null;
   lastReplayLook = null;
+  legend?.refresh();
 }
 
 /**
@@ -325,7 +338,51 @@ cam.snap({ x: level.start.x, y: level.start.y, vx: 0, vy: 0 });
 // tick advances, no input frame is recorded and the clock does not move.
 const overview = createOverview(cloneOverview(DEFAULT_OVERVIEW));
 overview.startIntro();
+// THE ARMED START LINE. A restart and a level load set the run up and freeze it
+// until the first sim input, so the clock, the recorder and the GHOST all leave
+// the line together with the player instead of ahead of them. It is the same
+// freeze mechanism the overview owns and deliberately not a second one: it is
+// consulted in `step()` at the one place that can move the sim, one line below
+// the overview's own gate. See armed.ts for why held-counts and why only sim
+// input, and armed.test.ts for the replay-identity proof.
+const armed = createArmed();
+armed.arm();
+
+/**
+ * ONE WAY IN AND OUT OF THE WIDE VIEW, for TAB and for the pad both.
+ *
+ * TWO INPUTS, ONE STATE MACHINE, ONE FREEZE. The phone's overview pad is a
+ * toggle and TAB is a hold, but both of them mean the same thing to
+ * `overview.hold`, and neither of them may own a second copy of "is it up" —
+ * a pad that disagreed with the frozen sim would be the worst kind of wrong,
+ * and two freezes would be two ways for a replay to go missing a tick.
+ *
+ * `touch.setOverview` is told what happened rather than asked: it is the pad's
+ * LABEL, and the label has to follow the state even when the state was moved by
+ * a key the phone does not have.
+ */
+function holdOverview(on: boolean): void {
+  overview.hold(on);
+  touch.setOverview(on);
+}
 let debug = false;
+
+/**
+ * Is the bike moving right now? Drives `body.riding`, which fades the control
+ * legend to a fifth.
+ *
+ * THIS IS THE ART DIRECTION'S OWN RULE APPLIED TO A DOM PANEL. "The player and
+ * the collision edge are always the highest-contrast things on screen" is easy
+ * to keep while the chrome is grey text, and the new legend is a block of
+ * little drawings of the bike in the bottom-left corner — which is the most
+ * obvious way there has ever been to break it. So it stands down while you
+ * ride and comes back the moment you stop, hover it, or put the keyboard in it
+ * (the last two are CSS; see #legend).
+ *
+ * A latched boolean rather than a class set every frame: `classList.toggle`
+ * with the same value is cheap but not free, and this runs at 60 Hz forever.
+ */
+let riding = false;
 let hudCache = '';
 // THE DEBUG READOUT, ON OR OFF. Remembered, and the user's own reason for it:
 // "starting to feel like the hud overlay should be toggleable too, almost ready
@@ -456,6 +513,11 @@ function restart(keepReplay = true): void {
   recorder.reset();
   playback = null;
   wasOver = false;
+  // ON THE LINE, WAITING FOR YOU. Not a countdown and not a delay — the frame
+  // that sees a control is the frame that rides — but the clock does not start
+  // until you do, and neither does the ghost. Restarting into a moving ghost
+  // opened a gap in the first half-second that had nothing to do with riding.
+  armed.arm();
   // The ghost restarts WITH you. The loop is die-retry-die-retry and a ghost
   // that kept its position across a restart would be racing a phantom you are
   // forty metres behind, which is worse than no ghost at all.
@@ -727,6 +789,10 @@ function startPlayback(): void {
   prevState = sim.snapshot();
   recorder.reset();
   playback = { masks: decodeInputs(lastReplay.inputs), at: 0 };
+  // A playback is something you WATCH, so it does not wait to be told to go —
+  // there is no input coming and the armed banner over a replay that never
+  // starts would read as a hang. The montage rides on this same path.
+  armed.disarm();
   cam.snap({ x: level.start.x, y: level.start.y, vx: 0, vy: 0 });
 }
 
@@ -1202,7 +1268,10 @@ function closeResults(): void {
   results = null;
   resultsModel = null;
   resultsUi.hide();
-  touch.setHidden(false);
+  // Through the legend rather than straight at the pads: the control legend
+  // hides them too, and a panel closing on top of an open legend must not put a
+  // `gas` pad back under its close button.
+  syncLegendPads(legend?.open ?? false);
 }
 
 function resultsAction(id: ActionId): void {
@@ -1426,6 +1495,10 @@ function scriptRun(masks: number[]): Promise<Replay | null> {
   // not finish, and saying so is better than never answering.
   scripted?.done(null);
   restart(false);
+  // `restart` arms the start line and a scripted run is not input either. The
+  // scripted branch in `step()` sits above the gate, so this is belt and
+  // braces — but it also keeps the banner off a run nobody is waiting to start.
+  armed.disarm();
   return new Promise((resolve) => {
     scripted = { masks, at: 0, done: resolve };
   });
@@ -1510,6 +1583,21 @@ function step(): void {
     }
     return;
   }
+  // THE ARMED GATE, AND IT IS THE OVERVIEW'S FREEZE ONE LINE LOWER. Same
+  // guarantee and for the same reason: returning here is above every line that
+  // can move anything, so `sim.advance` does not run and the clock does not
+  // move, `recorder.capture` does not run and the input stream gains no frame,
+  // and `ghost.advance` does not run — the ghost waits on the line with you,
+  // which is the entire point. A run armed for a minute banks a byte-identical
+  // replay to one started instantly; armed.test.ts asserts that against the
+  // real sim and the real recorder, and bin/smoke asserts it in Chrome through
+  // the real key path.
+  //
+  // BELOW the `over` branch on purpose. A dead run must still bank its replay
+  // even in the impossible case of arriving here armed, and `finishRun` is up
+  // there. Any sim bit at all releases it, HELD OR FRESHLY PRESSED — see
+  // armed.ts.
+  if (!armed.release(mask)) return;
   wasOver = false;
   appliedMask = mask;
   sim.advance(mask);
@@ -1574,6 +1662,17 @@ function draw(alpha: number, dtMs: number): void {
   const dtSec = dtMs / 1000;
   const pose = interpolate(prevState, sim.state, alpha);
 
+  // See `riding`. The threshold is a speed and not "is a key held", because the
+  // answer wanted is "is the player's eye on the bike" — coasting down a slope
+  // with nothing pressed is exactly when the legend must not be in the way, and
+  // sitting on the start line holding the brake is exactly when it may be.
+  const moving = !editor.active && !loop.paused && !sim.state.dead
+    && Math.abs(sim.state.vx) + Math.abs(sim.state.vy) > 0.6;
+  if (moving !== riding) {
+    riding = moving;
+    document.body.classList.toggle('riding', moving);
+  }
+
   // WHERE THE HANDS ARE, in CSS px, read from the pads themselves rather than
   // guessed. The camera turns it into `screenBiasY` — see `screenBiasFor` — and
   // it is read every frame for the same reason the viewport is: a rotation, a
@@ -1582,6 +1681,51 @@ function draw(alpha: number, dtMs: number): void {
   cam.params.thumbInsetPx = touch.thumbInset();
 
   overview.tick(dtSec);
+  // WHAT THE FREEZE SAYS ON THE CANVAS. The debug readout in the corner already
+  // says it, and the readout is hidden on a phone — which is right, and which
+  // left the one device with an overview PAD as the one device that got a
+  // silently frozen game. The sentence is built here rather than in the renderer
+  // because the way out is a key on one machine and a pad on another.
+  const overviewText = !overview.frozen
+    ? null
+    : {
+      title: 'TIME STOPPED',
+      hint: overview.mode === 'held'
+        ? (touch.enabled ? 'tap anything to ride' : 'release TAB to ride')
+        // The opening peek used to promise "any key to start", and since the
+        // start line became ARMED that is a promise it cannot keep: any key
+        // ends the peek, but only a control starts the run. Skipping is what
+        // this hint is actually about; the armed banner underneath takes over
+        // and says how to go.
+        : (touch.enabled ? 'tap to skip' : 'any key to skip'),
+    };
+  // WHAT THE ARMED LINE SAYS, and it says GO rather than STOPPED.
+  //
+  // Same argument as the overview's banner — a frozen game that does not say it
+  // is frozen reads as a crashed one, and the corner readout that says so is
+  // hidden on a phone — but the opposite sentence. The overview is a thing that
+  // HAPPENED to the game and the player is waiting for it to end; this is the
+  // game waiting for the PLAYER, so it is an instruction rather than a status.
+  //
+  // Short, because it is on screen once per retry in a game whose loop is R,
+  // and because it goes the instant a control is touched: `armed.armed` is
+  // false on the frame that starts the run, so the banner is gone on that
+  // frame's draw. No blend, no fade-out — a fade would be a hundred
+  // milliseconds of "did that register" at exactly the moment the answer has to
+  // be obvious. The overview's fade exists because its camera is easing; this
+  // has no camera move to wait for.
+  //
+  // Not while the overview is up (one freeze speaks at a time, and both banners
+  // are drawn in the same place), and not in the editor, where the bike is
+  // parked on purpose and the player is looking at the ground.
+  const armedText = armed.armed && !overview.frozen && !editor.active
+    ? {
+      title: 'GO WHEN READY',
+      // Names the controls rather than "any key", because it IS only the
+      // controls: R, TAB, the chooser and the legend all leave it armed.
+      hint: touch.enabled ? 'tap any pad' : 'gas, brake or lean',
+    }
+    : null;
   const ov = overview.blend > 0
     ? { ...overviewFrame(level, { x: pose.px, y: pose.py }, cssW, cssH, overview.params), blend: overview.blend }
     : null;
@@ -1627,6 +1771,8 @@ function draw(alpha: number, dtMs: number): void {
         detailChip: hudVisible,
         // No R key on a phone, so the death banner must not name one.
         touch: touch.enabled,
+        overviewText,
+        armedText,
         // THE BIKE ON SCREEN IS WHOEVER IS RIDING IT. During a playback of
         // somebody else's file or somebody else's board row that is THEIR
         // livery, because the player's own sim is what carries the line — see
@@ -1685,7 +1831,7 @@ function resize(): { cssW: number; cssH: number } {
  * nothing on screen to explain it is indistinguishable from "it is broken".
  */
 function audioLine(): string {
-  if (audio.error) return `<span class="bad">off — ${audio.error}</span>`;
+  if (audio.error) return `<span class="bad">off — ${esc(audio.error)}</span>`;
   if (audio.muted) return '<span class="warn">MUTED</span> — M unmutes';
   switch (audio.state) {
     case 'idle':
@@ -1717,9 +1863,32 @@ function hudWarnState(): HudWarnState {
   };
 }
 
-/** Badge text comes off a file on disk (data/spec.json), so it is escaped. */
+/**
+ * THE RULE FOR `hud.innerHTML`: every interpolated STRING goes through this.
+ *
+ * The readout is the one place in the client that builds markup out of a
+ * template literal — everything else (the board, the chooser, the results
+ * screen, the legend) builds DOM nodes and sets `textContent`, which cannot be
+ * got wrong. This one can, and it did: a ghost's display name, which is typed
+ * by ANOTHER PERSON, was interpolated raw. `cleanName` is hygiene and not
+ * sanitisation by its own admission — it collapses control characters and caps
+ * the length at 24, and it passes `<` and `>` straight through, because a name
+ * is text and text is allowed to contain angle brackets. So the escaping has to
+ * happen where the text becomes MARKUP, which is here.
+ *
+ * Stored, not reflected: a name travels with a submitted run, comes back off
+ * the board or out of a replay file, and lands in somebody else's readout. The
+ * readout is on by default. Twenty-four characters is a working payload.
+ *
+ * Quotes as well as angle brackets, because "not today's call sites" is not a
+ * property of an escaper: the day somebody writes `title="${...}"` the quote is
+ * what breaks out, and it costs two more replaces to be safe in an attribute
+ * too. Numbers, hex digests and enum branches do not need it and do not have it;
+ * anything that is a string somebody could have typed does.
+ */
 function esc(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function setHudVisible(on: boolean): void {
@@ -1728,7 +1897,11 @@ function setHudVisible(on: boolean): void {
   hud.classList.toggle('compact', !on);
   // Force a rewrite: the cache is keyed on the HTML, and the two modes can
   // agree on an empty string.
-  hudCache = ' ';
+  // The sentinel is written ESCAPED on purpose. As a raw NUL byte it made GNU
+  // grep treat this whole file as binary, so every search silently matched
+  // nothing and exited 1 -- which cost an hour and produced a confident,
+  // wrong claim that the zoom keys below were never wired.
+  hudCache = '\u0000';
   updateHud();
   toast(
     on
@@ -1762,7 +1935,12 @@ function updateHud(): void {
     (m & IN_LEAN_R ? 'R&gt;&nbsp; ' : '&middot;&nbsp;&nbsp; ') +
     (m & IN_FLIP ? 'FLIP' : '&middot;');
   const status = overview.frozen
-    ? `<span class="warn">OVERVIEW — sim and clock frozen at ${ticksToSeconds(s.tick).toFixed(2)}s${overview.mode === 'held' ? ', release TAB' : ', any key to start'}</span>`
+    ? `<span class="warn">OVERVIEW — sim and clock frozen at ${ticksToSeconds(s.tick).toFixed(2)}s${overview.mode === 'held' ? (touch.enabled ? ', tap to ride' : ', release TAB') : (touch.enabled ? ', tap to skip' : ', any key to skip')}</span>`
+    : armed.armed
+      // The dev readout's own version of the canvas banner, and it names the
+      // half the canvas does not have room for: the clock and the GHOST are
+      // both held. That is the thing to check first when a run looks stuck.
+      ? `<span class="warn">ARMED — clock and ghost held at ${ticksToSeconds(s.tick).toFixed(2)}s, ${touch.enabled ? 'tap any pad' : 'gas/brake/lean'} to go</span>`
     : s.finished
       ? `<span class="ok">FINISHED ${ticksToSeconds(s.endTick).toFixed(3)}s</span>`
       : s.dead
@@ -1779,8 +1957,8 @@ function updateHud(): void {
 
   const lines = [
     editLine ? `<span class="warn">${esc(editLine)}</span>` : '',
-    `<span class="k">velo</span> <span class="v">rev ${SIM_REV}</span>  <span class="k">preset</span> <span class="v">${presetLabel}${specIsTuned ? ' <span class="warn">+tuned</span>' : ''}</span>`,
-    `<span class="k">level</span> ${level.name}  <span class="k">simHash</span> ${level.simHash}`,
+    `<span class="k">velo</span> <span class="v">rev ${SIM_REV}</span>  <span class="k">preset</span> <span class="v">${esc(presetLabel)}${specIsTuned ? ' <span class="warn">+tuned</span>' : ''}</span>`,
+    `<span class="k">level</span> ${esc(level.name)}  <span class="k">simHash</span> ${level.simHash}`,
     `<span class="k">spec </span> ${specHash(spec)}`,
     '',
     `${status}   <span class="k">apples</span> ${level.apples.length - s.applesLeft}/${level.apples.length}` +
@@ -1793,7 +1971,7 @@ function updateHud(): void {
     '',
     `<span class="k">audio</span> ${audioLine()}`,
     liveTuneError
-      ? `<span class="bad">${liveTuneError}</span>`
+      ? `<span class="bad">${esc(liveTuneError)}</span>`
       : liveTune.enabled
         ? `<span class="k">live tune</span> on${liveTune.heldPaths.size ? `, holding ${liveTune.heldPaths.size} field(s)` : ', no override'}`
         : '<span class="k">live tune</span> off',
@@ -1802,7 +1980,7 @@ function updateHud(): void {
     // the answer when somebody comes back to the screen an hour later asking
     // why the bike feels wrong.
     liveTune.droppedPaths.length > 0
-      ? `<span class="bad">data/spec.json: ${liveTune.droppedPaths.join(', ')} — no such field in this build, NOT applied` +
+      ? `<span class="bad">data/spec.json: ${esc(liveTune.droppedPaths.join(', '))} — no such field in this build, NOT applied` +
         ' (renamed? bin/spec lists the real paths)</span>'
       : '',
     // The panel is closed by default now, so the two things it would otherwise
@@ -1824,7 +2002,7 @@ function updateHud(): void {
       ? (() => {
           const riding = montage.riders.filter((r) => !r.done).length;
           return (
-            `<span class="k">montage</span> ${montage.label}   ` +
+            `<span class="k">montage</span> ${esc(montage.label)}   ` +
             (riding > 0
               ? `<span class="v">${riding} still riding</span>`
               : '<span class="warn">all stopped — this is where the level beat you</span>') +
@@ -1833,21 +2011,28 @@ function updateHud(): void {
         })()
       : '',
     ghost
-      ? `<span class="k">ghost</span> ${ghost.meta.name}${ghost.meta.rank !== null ? ` (#${ghost.meta.rank})` : ''} ` +
+      // SOMEBODY ELSE'S NAME, ESCAPED. See `esc`: this is the sink the bug
+      // was in, and the name arrives here from the leaderboard or from a
+      // replay file rather than from anything this machine typed.
+      ? `<span class="k">ghost</span> ${esc(ghost.meta.name)}${ghost.meta.rank !== null ? ` (#${ghost.meta.rank})` : ''} ` +
         `<span class="v">${ticksToSeconds(ghost.timeTicks).toFixed(3)}s</span>  ` +
         `<span class="k">${GHOST_LABELS[ghost.meta.kind]}</span>  ` +
         // Which bike that is, so the one riding beside you is identifiable as
         // theirs rather than as a second copy of yours.
-        `<span class="k">${appearanceLabel(ghost.meta.appearance)}</span>  ` +
+        `<span class="k">${esc(appearanceLabel(ghost.meta.appearance))}</span>  ` +
         `${ghost.done ? 'finished' : `${ghost.at}/${ghost.frames}`}` +
         // A gap in METRES, not seconds. The ghost is stepped one frame for one
         // frame with you, so the two clocks are identical by construction and a
         // time gap would always read 0.00s. What differs is where you each are.
         `   <span class="${s.px - ghost.x >= 0 ? 'ok' : 'warn'}">${Math.abs(s.px - ghost.x).toFixed(1)} m ${s.px - ghost.x >= 0 ? 'ahead' : 'behind'}</span>`
       : ghostNote
-        ? `<span class="k">ghost</span> <span class="warn">${ghostNote}</span>`
+        ? `<span class="k">ghost</span> <span class="warn">${esc(ghostNote)}</span>`
         : '',
-    replayNote ? `<span class="${replayNote.startsWith('REPLAY DESYNC') || replayNote.startsWith('CANNOT PLAY') ? 'bad' : 'warn'}">${replayNote}</span>` : '',
+    // `replayNote` is assembled from a board row's NAME, a level's title out of
+    // a loaded file, and parser error text that quotes both. Every one of those
+    // is somebody else's string; the class beside it is chosen from our own
+    // prefixes and is not.
+    replayNote ? `<span class="${replayNote.startsWith('REPLAY DESYNC') || replayNote.startsWith('CANNOT PLAY') ? 'bad' : 'warn'}">${esc(replayNote)}</span>` : '',
     '',
     `<span class="k">rev ${SIM_REV} bumps freely during M1 — times reset on every physics change.</span>`,
   ];
@@ -1865,7 +2050,53 @@ const levelBar = createLevelBar(levelbarRoot, LEVELS, (id) => {
   if (hit) setLevel(hit);
 }, () => openChooser());
 levelBar.update(entry.id, bests);
-createLegend(legendRoot);
+/**
+ * THE CONTROL LEGEND, AND THE DEV TOOLBAR BEHIND ONE SWITCH.
+ *
+ * See chrome.ts for the split and why it exists. The only thing main.ts owns
+ * here is what each dev tool DOES — every one of them is the same statement the
+ * key case runs, called from the same place, so a button and its key can never
+ * drift into meaning two different things.
+ */
+legend = createLegend(legendRoot, {
+  touch: wantsTouch(location.search, (q) => window.matchMedia(q).matches),
+  palette: () => levelP(),
+  look: () => myLook(),
+  dev: {
+    panel: () => panel.toggle(),
+    readout: () => setHudVisible(!hudVisible),
+    collision: () => {
+      debug = !debug;
+    },
+    art: () => {
+      artParams.enabled = artParams.enabled > 0 ? 0 : 1;
+      panel.sync();
+    },
+    replay: () => startPlayback(),
+    exportReplay: () => exportReplay(),
+    importReplay: () => importReplay(),
+    montage: () => startMontage(),
+    editor: () => editor.toggle(),
+  },
+  /**
+   * ON A PHONE THE PADS GO UNDER IT, and this is the ONE place that happens —
+   * the `?` key, the `controls` pad and the card's own `×` all arrive here.
+   * Same move `openResults` makes and for the same reason: the card's buttons
+   * sit exactly where the thumb clusters are, and a close button you cannot
+   * press because a `gas` pad is on top of it is a trap rather than a panel.
+   * The controls are not switched OFF — `setHidden` only hides them — so
+   * closing the card puts them straight back.
+   */
+  onOpen: (on) => syncLegendPads(on),
+});
+
+function syncLegendPads(open: boolean): void {
+  if (touch.enabled) touch.setHidden(open || results !== null);
+}
+
+function setLegendOpen(on: boolean): void {
+  legend?.setOpen(on);
+}
 
 // --- the level chooser ------------------------------------------------------
 //
@@ -1937,7 +2168,10 @@ function closeChooser(): void {
   thumbs.stop();
   chooserUi.hide();
   loop.paused = pausedBeforeChooser;
-  touch.setHidden(false);
+  // Through the legend rather than straight at the pads: the control legend
+  // hides them too, and a panel closing on top of an open legend must not put a
+  // `gas` pad back under its close button.
+  syncLegendPads(legend?.open ?? false);
 }
 
 // The leaderboard panel. Created before live tune, because live tune's first
@@ -2105,7 +2339,10 @@ function closeClaim(): void {
   claimOfferedName = null;
   clearClaimParam();
   loop.paused = pausedBeforeClaim;
-  touch.setHidden(false);
+  // Through the legend rather than straight at the pads: the control legend
+  // hides them too, and a panel closing on top of an open legend must not put a
+  // `gas` pad back under its close button.
+  syncLegendPads(legend?.open ?? false);
 }
 
 /**
@@ -2200,7 +2437,10 @@ function closeLook(): void {
   if (!lookUi.visible) return;
   lookUi.hide();
   loop.paused = pausedBeforeLook;
-  touch.setHidden(false);
+  // Through the legend rather than straight at the pads: the control legend
+  // hides them too, and a panel closing on top of an open legend must not put a
+  // `gas` pad back under its close button.
+  syncLegendPads(legend?.open ?? false);
 }
 
 // The end-of-level screen. Every row it draws comes off the HUMAN board, and
@@ -2373,6 +2613,17 @@ const touch = createTouch(
     // stacked on each other — so the chooser is how a phone changes level, and
     // this pad is the only way to it.
     onBrowse: () => openChooser(),
+    // THE PHONE'S TAB KEY, and the reason it needed one: overview is the only
+    // answer this game has to "where am I and where do I go", route planning is
+    // its depth, and it was bound to a key no phone has. The pad asks; this is
+    // the same `overview.hold` TAB drives, so there is exactly one freeze.
+    onOverview: (on) => holdOverview(on),
+    // The `controls` pad in the command drawer. A phone needs the legend more
+    // than a desktop does — flip is the whole double-back design and there is no
+    // keyboard to find it by accident — and this is the only way back to it once
+    // it has been closed, because a permanent chip on a phone is a chip in a
+    // thumb's way.
+    onHelp: () => setLegendOpen(!(legend?.open ?? false)),
     onNote: (msg) => toast(msg, 'controls'),
     // Persisted when the fingers come off and not before: a pinch fires this
     // path on every pointermove, and writing localStorage sixty times a second
@@ -2404,6 +2655,13 @@ function applyZoom(bias: number): number {
   return applied;
 }
 applyZoom(storedZoom);
+
+// FIRST RUN ON A PHONE OPENS THE LEGEND, AND THE PADS HAVE TO GO WITH IT. The
+// flag defaults to open, so a phone that has never been told about flip gets
+// told; the card's close button then sits where a thumb cluster is, which is
+// why the pads are hidden underneath it rather than left live. Closing it is
+// remembered, and the `controls` pad in the drawer is the way back.
+syncLegendPads(legend?.open ?? false);
 // ONE mask, assembled in one place. See `Input.addSource`.
 input.addSource(() => touch.mask());
 if (touch.enabled) {
@@ -2582,7 +2840,7 @@ input.onCommand((code) => {
     case 'Tab':
       // HOLD to see the whole level. The sim is frozen while it is down, so
       // this cannot advance the clock or add a frame to the recording.
-      overview.hold(true);
+      holdOverview(true);
       break;
     case 'KeyR':
       restart(false);
@@ -2652,6 +2910,12 @@ input.onCommand((code) => {
     case 'KeyP':
       loop.paused = !loop.paused;
       break;
+    case 'Slash':
+      // `?` — the control legend. It is a toggle like every other panel here,
+      // and it is the ONE key that has to be guessable without having read the
+      // legend, because it is the key that opens the legend.
+      setLegendOpen(!(legend?.open ?? false));
+      break;
     case 'KeyQ':
       // EDIT AND RIDE. Q freezes the sim and hands you the handles; Q again
       // compiles what you drew and loads it. The editor takes the keyboard in
@@ -2689,7 +2953,7 @@ input.onCommand((code) => {
 });
 
 input.onCommandUp((code) => {
-  if (code === 'Tab') overview.hold(false);
+  if (code === 'Tab') holdOverview(false);
 });
 
 // Clicking anywhere also ends the opening peek — "skippable by any input" has
@@ -2736,6 +3000,12 @@ interface VeloWindow extends Window {
     return cam;
   },
   overview,
+  /**
+   * THE ARMED START LINE, for bin/smoke and for devtools. Exposed as the live
+   * object rather than a boolean snapshot so a harness can watch it flip on the
+   * frame the run starts — which is the property worth asserting.
+   */
+  armed,
   /** Frames in the CURRENT recording. bin/smoke uses it to prove the freeze. */
   get recordedFrames() {
     return recorder.frames;
@@ -2755,6 +3025,20 @@ interface VeloWindow extends Window {
       : null;
   },
   startMontage,
+  /**
+   * The control legend, for `bin/shots`.
+   *
+   * It is a block of DRAWINGS now — the bike in the pose each control puts it
+   * in — and "does that read at 46 px tall" is a question about an image, which
+   * means the harness has to be able to open it, open the dev toolbar under it,
+   * and shut it again. Through the same functions a click goes through.
+   */
+  legend: {
+    get open() {
+      return legend?.open ?? false;
+    },
+    setOpen: (on: boolean) => setLegendOpen(on),
+  },
 
   // --- customisation and cross-device identity, for bin/smoke ---------------
   //

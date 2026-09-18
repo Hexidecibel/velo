@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Cross-ENGINE determinism: run the same fixed input stream through every
+# JavaScript engine this box can host and insist the state-hash chains are
+# bit-identical.
+#
+#   bin/engines                    the default check
+#   bin/engines --frames 8000      a longer window
+#   bin/engines --every 1          hash every frame (the default)
+#   bin/engines --level 10-cathedral   run the fixture on a shipped level too
+#   bin/engines --strict           partial engine coverage exits non-zero
+#   bin/engines --list             what is installed, without running anything
+#
+# WHY THIS EXISTS SEPARATELY FROM bin/smoke.
+#
+# bin/smoke calls its comparison "the cross-engine check" and it is not one. It
+# runs the fixture in Chrome and in Node — which are both V8 — and passes. That
+# is a useful check of the BUNDLE (a broken build desyncs there), and it is not
+# evidence about engines, because there is only one engine in it. A check that
+# overstates its coverage is worse than no check, because you stop looking.
+#
+# The claim the whole leaderboard rests on is this: a time is accepted only if
+# the server's re-simulation reproduces the client's hash chain, so a player
+# whose browser computes one different float has their run REFUSED. Not
+# mis-scored — refused. The nephews are on phones, every browser on iOS is
+# JavaScriptCore, and "a kid sets a great time on an iPhone and the server says
+# no" is the exact shape of the failure. Nothing in bin/smoke could ever see it.
+#
+# The design argument is strong: the sim uses only `+ - * /` and `Math.sqrt`,
+# every one of which IEEE-754 specifies exactly, and src/sim/purity.test.ts bans
+# the rest of `Math.*` under src/sim/ so it stays that way. "Should, by
+# construction" is still not "does, measured", and this is the one claim worth
+# measuring rather than arguing.
+#
+# WHAT IT ACTUALLY RUNS. Four engines, three families:
+#
+#   node     V8            the server's own engine — the arbiter, so every other
+#                          chain is compared against this one
+#   chrome   V8            the system Chrome, the desktop case
+#   firefox  SpiderMonkey  a genuinely different implementation
+#   webkit   JavaScriptCore  Playwright's WebKit build. Not an iPhone, but the
+#                          same engine family iOS Safari runs, and the closest
+#                          thing to one available without an iPhone.
+#
+# Browser engines are driven through Playwright. velo does not depend on it —
+# the runtime dependency list is Hono and nothing else, and that is worth
+# keeping — so this script FINDS a playwright-core on the box and says which one
+# it used. When it cannot find one, or a browser is not downloaded, that engine
+# is reported UNTESTED with the command that would fix it, and the verdict says
+# which engine families went unchecked. It never quietly reports a pass over
+# engines it did not run.
+#
+# Engines run one at a time on purpose. This box also runs Plex and the *arr
+# stack; three headless browsers rasterising in parallel is a visible spike for
+# no gain, since the whole check is a few seconds of arithmetic per engine.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+exec "$NODE" "$ROOT/bin/_engines.mjs" "$@"
