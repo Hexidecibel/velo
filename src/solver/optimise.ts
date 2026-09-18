@@ -107,6 +107,18 @@ export interface OptimiseRound {
 export interface OptimiseResult {
   /** The fastest run found. On a level the gate could not do, the gate's own report. */
   best: SolveResult;
+  /**
+   * The GATE's own run, kept rather than thrown away once it has served as a
+   * bound.
+   *
+   * Difficulty is scored on the most forgiving line anyone has found and the
+   * gate's is a candidate — often the winning one, because the fastest line is
+   * by construction the most marginal and on a wide level that makes it the
+   * DANGEROUS one. 02-the-long-climb reads 6% slip on this line and 29% on
+   * `best`. Scoring only `best` would report the second tutorial as harder than
+   * 24-kickback. See difficulty.ts's header.
+   */
+  gate: SolveResult;
   /** What the cheap satisficing pass got, for the before/after. */
   gateFrames: number;
   gateMs: number;
@@ -187,7 +199,7 @@ export function optimiseLevel(level: Level, spec: BikeSpec, userOpts: Partial<Op
   if (!gate.solved) {
     say(`  gate: no run found in ${(gateMs / 1000).toFixed(0)} s — nothing to optimise`);
     return {
-      best: gate, gateFrames: 0, gateMs, rounds, ms: Date.now() - t0,
+      best: gate, gate, gateFrames: 0, gateMs, rounds, ms: Date.now() - t0,
       gateExpansions: gate.totals.expansions, gateDeaths: gate.totals.deaths, gateRouteMetres: gate.routeMetres,
     };
   }
@@ -324,7 +336,7 @@ export function optimiseLevel(level: Level, spec: BikeSpec, userOpts: Partial<Op
   }
 
   return {
-    best, gateFrames: gate.frames, gateMs, rounds, ms: Date.now() - t0,
+    best, gate, gateFrames: gate.frames, gateMs, rounds, ms: Date.now() - t0,
     gateExpansions: gate.totals.expansions, gateDeaths: gate.totals.deaths, gateRouteMetres: gate.routeMetres,
   };
 }

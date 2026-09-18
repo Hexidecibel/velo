@@ -47,11 +47,21 @@ export type Band = 'gentle' | 'steady' | 'tricky' | 'hard' | 'brutal';
  * rather than piling nineteen of them into one band. They are PRESENTATION —
  * the score is the measurement and re-cutting these changes no ordering.
  */
+// RECUT for SCORE_REV 2. The old edges (15/28/38/48) were cut for a set that
+// spanned 8-56 under the previous composite. Scoring on the most forgiving line
+// with the human-slip term spans 13-85 instead, and against the old edges
+// SIXTEEN of twenty-four levels read "brutal" -- a band every level is in is not
+// a band. These are cut against the real distribution: the two tutorials are
+// gentle, and only Needle, Mind Your Head and Whoops are brutal.
+//
+// They will need recutting again if the composite changes. That is the cost of
+// words rather than numbers, and it is worth paying -- but a band table is only
+// ever right for the scale it was drawn against, so check it when SCORE_REV moves.
 export const BAND_EDGES: readonly { max: number; band: Band }[] = [
-  { max: 15, band: 'gentle' },
-  { max: 28, band: 'steady' },
-  { max: 38, band: 'tricky' },
-  { max: 48, band: 'hard' },
+  { max: 25, band: 'gentle' },
+  { max: 42, band: 'steady' },
+  { max: 55, band: 'tricky' },
+  { max: 68, band: 'hard' },
   { max: Infinity, band: 'brutal' },
 ];
 

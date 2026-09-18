@@ -15,5 +15,5 @@ export { optimiseLevel, greedyOrder, DEFAULT_OPTIMISE } from './optimise.ts';
 export type { OptimiseOpts, OptimiseResult, OptimiseRound } from './optimise.ts';
 export { HUMAN_DURATIONS, HUMAN_GRID, measureHumanSlip } from './human.ts';
 export type { HumanSlip } from './human.ts';
-export { scoreDifficulty, measureLine, measureTolerance, WEIGHTS, SCALE } from './difficulty.ts';
-export type { Difficulty, LineStats, Tolerance } from './difficulty.ts';
+export { scoreDifficulty, measureLine, measureTolerance, tensionOf, WEIGHTS, SCALE, SCORE_REV, TENSION_NOISE_FLOOR } from './difficulty.ts';
+export type { Difficulty, Line, LineStats, LineMode, Tolerance, Tension } from './difficulty.ts';

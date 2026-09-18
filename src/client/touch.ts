@@ -60,11 +60,11 @@ import { IN_BRAKE, IN_FLIP, IN_LEAN_L, IN_LEAN_R, IN_THROTTLE } from '@/sim/cons
  */
 export type ZoneId =
   | 'throttle' | 'brake' | 'leanL' | 'leanR' | 'flip'
-  | 'restart' | 'menu' | 'overview' | 'levels' | 'auto' | 'zoom' | 'full' | 'help';
+  | 'restart' | 'menu' | 'overview' | 'levels' | 'auto' | 'zoom' | 'full' | 'help' | 'look';
 
 /** Every id that is a command. Static: a pad does not change what kind it is. */
 export const COMMAND_IDS: readonly ZoneId[] =
-  ['restart', 'menu', 'overview', 'levels', 'full', 'auto', 'zoom', 'help'];
+  ['restart', 'menu', 'overview', 'levels', 'look', 'full', 'auto', 'zoom', 'help'];
 
 /**
  * Every zone that can ever exist, in the order the elements are created.
@@ -76,7 +76,7 @@ export const COMMAND_IDS: readonly ZoneId[] =
  * `place` hides the ones this state does not use.
  */
 export const ALL_ZONE_IDS: readonly ZoneId[] = [
-  'restart', 'menu', 'overview', 'levels', 'full', 'auto', 'zoom', 'help',
+  'restart', 'menu', 'overview', 'levels', 'look', 'full', 'auto', 'zoom', 'help',
   'flip', 'leanL', 'leanR', 'brake', 'throttle',
 ];
 
@@ -108,23 +108,133 @@ export interface Zone {
  * real number is set by the device-pixel-ratio the platform picks, and it is
  * knowable only statistically:
  *
- *   Android           densityDpi / 160 dpr, so ~160 CSS px/in   6.30 px/mm
- *   iPhone 15 Pro     393 px across 2.78 in                     5.56 px/mm
- *   iPhone SE         375 px across 2.31 in                     6.38 px/mm
- *   iPad Pro 11"      834 px across 7.0 in                      4.69 px/mm
+ *   Android           densityDpi / 160 dpr, so 160 CSS px/in    6.30 px/mm
+ *   iPhone (@3x)      460 ppi / 3, so 153 CSS px/in             6.04 px/mm
+ *   iPhone SE (@2x)   326 ppi / 2, so 163 CSS px/in             6.42 px/mm
  *
  * 6.0 is the middle of the phone range, so a pad specified at 12 mm lands
- * between 10.9 mm (a 5.56 px/mm iPhone) and 12.6 mm (a 6.3 px/mm Android) —
- * inside the comfortable band at both ends, which is the whole requirement. A
- * tablet gets pads about 25% larger than nominal, which is the harmless
- * direction and is also roughly right for a hand holding a heavier device.
+ * between 11.4 mm (an @3x iPhone) and 12.6 mm (a 6.3 px/mm Android) — inside
+ * the comfortable band at both ends, which is the whole requirement.
  *
- * It is one constant and not a media query because the overlay only exists when
+ * It is a constant and not a media query because the overlay only exists when
  * the primary pointer is coarse — or when `?touch=1` has forced it on in order
  * to PHOTOGRAPH the phone layout, which is exactly the case where the phone's
  * density is the right assumption rather than the monitor's.
  */
 export const PX_PER_MM = 6;
+
+/**
+ * THE SAME QUESTION FOR A TABLET, AND IT IS A DIFFERENT NUMBER.
+ *
+ * A tablet is not a dense phone. Every iPad ships a 264 ppi panel at @2x, which
+ * is 132 CSS px per inch — 5.20 px/mm — and the big Windows and Android
+ * tablets sit in the same place:
+ *
+ *   iPad Pro 11" / 13" / Air   264 ppi @2x, 132 CSS px/in       5.20 px/mm
+ *   Surface Pro                1368 CSS px across 260 mm        5.26 px/mm
+ *   10" Android tablet         1280 CSS px across 221 mm        5.79 px/mm
+ *
+ * (An iPad mini is the outlier at 6.42, and it is the one tablet this number is
+ * generous to: its pads come out near 17 mm rather than 21, which is still well
+ * inside the comfortable band and errs in the direction of giving the smallest
+ * tablet its screen back.)
+ *
+ * WHY THIS MATTERS AT ALL, given that a pad 15% too big is not a pad you miss:
+ * because the moment the layout starts placing things by REACH — how far up the
+ * side of the glass a thumb gets from where the hand grips it — every
+ * millimetre in the table has to be a real millimetre or the arithmetic is right
+ * and the hand is wrong. `MM.gripReach` is the number that made this matter.
+ *
+ * The previous note here claimed 4.69 px/mm and "about 25% larger, which is the
+ * harmless direction". The 4.69 came from dividing 834 px by a 7.0 in device
+ * width; the 11" iPad Pro's PANEL is 6.32 in across its short side, not 7.0.
+ */
+export const TABLET_PX_PER_MM = 5.2;
+
+/**
+ * THE SHORTER SIDE OF THE GLASS, IN CSS PX, ABOVE WHICH THIS IS A TABLET.
+ *
+ * In CSS pixels and deliberately not in millimetres, because the millimetre
+ * scale is the thing this test decides — asking "how many mm across is it"
+ * first would be circular. CSS px is the one number the page actually knows.
+ *
+ * The gap it sits in is enormous, which is why one threshold does the job in
+ * both orientations: the widest phone hands the page about 430 px on its short
+ * side (an iPhone Pro Max is 430 x 932), and the smallest tablet hands it 744
+ * (an iPad mini is 744 x 1133). 700 is in the middle of nothing.
+ *
+ * It is the SHORT side so that rotating a device never changes what kind of
+ * device it is — a layout that reflowed on rotation would be two layouts to
+ * learn, which is the same rule that keeps the phone from reflowing.
+ */
+export const TABLET_MIN_PX = 700;
+
+/**
+ * EDGE GRIP: where up the side edge the hand is, as a fraction of the glass.
+ *
+ * A FRACTION, IN A FILE WHERE EVERYTHING ELSE IS A MILLIMETRE, and the two are
+ * different kinds of number rather than an inconsistency. A PAD is a thumb, and
+ * a thumb is 15 mm on every device ever made — sizing one as a fraction of a
+ * canvas is the bug this file was rewritten to remove. WHERE THE HAND GRIPS is
+ * not a thumb, it is a property of the slab: you hold a tablet at the place it
+ * balances, and that place is three-fifths of the way down a 160 mm edge and
+ * three-fifths of the way down a 197 mm one alike.
+ *
+ * 0.6 AND NOT 0.5, for two reasons that happen to agree.
+ *
+ * The hand one: you do not hold a landscape tablet at its exact middle. The
+ * fingers hook the back below the centre of mass and the slab leans back into
+ * the palms, so the thumb comes over the edge somewhere in the lower half. The
+ * same is true in portrait, where holding at the middle is tippy and everyone
+ * grips lower.
+ *
+ * The picture one, and this is the one a screenshot decided: at 0.5 the pads
+ * land exactly in the horizontal band the bike is framed in — the camera rests
+ * it at 50% of the screen — so the lean pads and the gas sat ON the road the
+ * bike was driving down. It is the same sentence the phone layout is built from
+ * ("the bottom is for hands and the middle is for the game"), with "the bottom"
+ * meaning "below the game" rather than "the last 15 mm of glass".
+ */
+export const GRIP_Y = 0.6;
+
+/**
+ * Which grip this screen is held in — and it is the whole of the tablet pass.
+ *
+ * A TABLET IS NOT A BIG PHONE, BECAUSE THE GRIP IS DIFFERENT.
+ *
+ * A phone in landscape is two thumbs on the BOTTOM CORNERS. It is 150 mm across
+ * and 60 mm tall; the hand wraps the corner, the whole of the glass is inside
+ * the thumb's arc, and the bottom corners are where the thumbs already are with
+ * no reach at all. Every placement in the phone layout follows from that.
+ *
+ * None of it survives the slab. A 13" iPad in landscape is 263 mm across and
+ * 197 mm tall, it weighs 680 g, and its bottom corners are a foot apart. You
+ * cannot hold it by them — the thing cantilevers out of your hands — and even
+ * if you could, this game wants gas, lean and flip held AT THE SAME TIME, so
+ * the hands cannot leave. What people actually do with a tablet is grip the two
+ * SIDE EDGES at the balance point, fingers behind, thumbs forward onto the
+ * glass. The controls have to be where that thumb is, which is up the side and
+ * nowhere near the bottom.
+ *
+ * THE OTHER TABLET GRIP IS NO GRIP AT ALL — the thing flat on a table or a lap,
+ * driven with index fingers — and the happy part is that the same answer serves
+ * it. Hands come to a flat tablet from its left and right, land near the side
+ * edges around the middle of the height, and find bottom-corner pads awkward
+ * for exactly the reason a held tablet does. One layout, both grips; the grip
+ * that could not be served by the same layout is the phone's, and the phone has
+ * its own.
+ */
+export type Grip = 'corner' | 'edge';
+
+export function gripFor(vp: Viewport): Grip {
+  return Math.min(vp.w, vp.h) >= TABLET_MIN_PX ? 'edge' : 'corner';
+}
+
+/** CSS px per mm for this screen: what the caller said, or what it looks like. */
+export function pxPerMmFor(vp: Viewport): number {
+  if (vp.mm && vp.mm > 0) return vp.mm;
+  return gripFor(vp) === 'edge' ? TABLET_PX_PER_MM : PX_PER_MM;
+}
 
 /**
  * THE LAYOUT, in millimetres, and what each control is paying for.
@@ -206,6 +316,43 @@ export const MM = {
    */
   cmdW: 12,
   cmdH: 9,
+  /**
+   * THE FLOOR A COMMAND PAD MAY SHRINK TO, and the reason there is one at all.
+   *
+   * The drawer grew a sixth item — `your bike`, which is the only route a phone
+   * has to the customiser — and six pads at 12 mm want 477 px of the 460 the
+   * smallest landscape phone has above its clusters, and 429 of the 429 the
+   * 915 x 348 phone has in its gutter. Seventeen pixels over is enough to break
+   * the layout into two rows, and two rows is the stack this whole block exists
+   * to prevent: on the narrow phone it climbs into the HUD band, and on the wide
+   * one it climbs out of the gutter and into the band the bike rides through.
+   *
+   * So the DRAWER's row shrinks to fit rather than wrapping, down to here. A
+   * command is a deliberate press by a thumb that is not holding anything —
+   * which is exactly why it was allowed to be 12 mm when a hold pad is 15 — and
+   * 8 mm is the floor below which a deliberate press stops being reliable. In
+   * practice the shrink lands at 10.7 mm on the phone that needed it, which is
+   * a millimetre and a half, not a different kind of control.
+   *
+   * THE THREE PERMANENT PADS DO NOT SHRINK. `restart`, `more` and `overview`
+   * are pressed DURING a run, one of them one-handed with the other thumb on
+   * the gas, and paying for a between-runs menu with the size of those would be
+   * the wrong trade in the one direction that matters.
+   */
+  cmdMin: 8,
+  /**
+   * EDGE GRIP ONLY: the thumb's working radius from where the hand grips the
+   * side of the slab, in mm.
+   *
+   * It is what stops the tablet layout from simply spreading to fill a screen
+   * that has room for anything. A hand gripping the middle of a 197 mm edge can
+   * put its thumb on the glass within about 45 mm of the grip; past that is a
+   * regrip, and a regrip in this game is a dead run. Every tablet placement
+   * below is inside it — flip is one dead strip above the cluster, the cluster
+   * hangs off the grip line, and the commands are one clear strip below it —
+   * and `touch.test.ts` asserts the whole stack fits in the circle.
+   */
+  gripReach: 45,
   /**
    * The clear margin the command block keeps from each thumb cluster.
    *
@@ -320,7 +467,8 @@ function clamp(v: number, lo: number, hi: number): number {
  * afford because the scarce dimension there is width and not height.
  */
 export function touchZones(vp: Viewport, o: LayoutOpts): Zone[] {
-  const mm = vp.mm && vp.mm > 0 ? vp.mm : PX_PER_MM;
+  const mm = pxPerMmFor(vp);
+  const grip = gripFor(vp);
   const px = (v: number): number => v * mm;
   const left0 = Math.max(vp.left ?? 0, 0) + px(MM.edge);
   const right0 = vp.w - Math.max(vp.right ?? 0, 0) - px(MM.edge);
@@ -343,11 +491,31 @@ export function touchZones(vp: Viewport, o: LayoutOpts): Zone[] {
 
   const zones: Zone[] = [];
 
-  // --- the two thumb clusters, hard against the bottom corners -------------
-  const leanTop = bottom0 - leanH;
+  // --- where the hands are, which is the only thing that differs -----------
+  //
+  // CORNER GRIP (a phone): the clusters are hard against the bottom corners,
+  // because that is where the thumbs already are and the ends of the arc they
+  // sweep are the hardest places to reach, not the easiest.
+  //
+  // EDGE GRIP (a tablet): the hands are on the two SIDE edges, and the thumbs
+  // come forward onto the glass from there. They are still hard against the
+  // left and right edges — that has not changed and must not, it is the one
+  // thing both grips agree on — but they are LIFTED OFF THE BOTTOM to the grip
+  // line, because the bottom corners of a 13" iPad are 263 mm apart and no
+  // hand that is holding the thing is anywhere near them.
+  //
+  // THE GRIP LINE IS `GRIP_Y` OF THE WAY DOWN THE EDGE — see the constant for
+  // why that is a fraction in a file of millimetres, and why it is 0.6.
+  //
+  // The cluster HANGS BELOW the line rather than straddling it: reaching onto
+  // the glass, the thumb tip lands below the web of the hand, and it sweeps
+  // down and inboard far more comfortably than up. It also keeps the pads out
+  // of the horizontal band the bike is framed in, which is dead centre.
   const rightW = gasW + brakeW;
   const rightX = right0 - rightW;
-  const rowY = bottom0 - gasH;
+  const gripY = grip === 'edge' ? top0 + (bottom0 - top0) * GRIP_Y : bottom0 - Math.max(leanH, gasH);
+  const leanTop = grip === 'edge' ? gripY : bottom0 - leanH;
+  const rowY = grip === 'edge' ? gripY : bottom0 - gasH;
 
   // --- flip, above the right cluster, across a dead strip ------------------
   //
@@ -380,6 +548,21 @@ export function touchZones(vp: Viewport, o: LayoutOpts): Zone[] {
   const drawer: Array<[ZoneId, string]> = [];
   if (o.menu) {
     drawer.push(['levels', 'levels']);
+    // THE CUSTOMISER, WHICH HAD NO TOUCH PATH AT ALL UNTIL THIS PAD.
+    //
+    // It was bound to `Y` and to a button on the leaderboard panel, and
+    // `body.touch #board { display: none }` hides that panel — so on the one
+    // device a kid actually opens the link on there was NO WAY to change your
+    // paint, your helmet or the engine. Not a hard way: none. A game that ships
+    // four exhaust notes and cannot be reached by a thumb has shipped nothing,
+    // and since the name lives on that same screen there was no way to stop
+    // being anonymous either once the board went.
+    //
+    // In the drawer and not on permanent glass, by the same test as everything
+    // else here: nobody presses `your bike` during a run. It sits beside
+    // `levels` because the two are the same kind of question — what am I
+    // riding, and what am I riding it as.
+    drawer.push(['look', 'your bike']);
     if (o.fullscreen === 'off') drawer.push(['full', 'full screen']);
     else if (o.fullscreen === 'on') drawer.push(['full', 'exit full']);
     drawer.push(['auto', o.autoThrottle ? 'gas: auto' : 'gas: held']);
@@ -406,19 +589,30 @@ export function touchZones(vp: Viewport, o: LayoutOpts): Zone[] {
   const gutR = rightX - px(MM.cmdMargin * s);
   const gutW = gutR - gutL;
 
-  /** Lay a list of rows out as a block, top row first, ending at `endY`. */
-  const block = (rows: Array<Array<[ZoneId, string]>>, endY: number, mid: number): void => {
+  /**
+   * Lay a list of rows out as a block, top row first, ending at `endY`.
+   *
+   * `mid` centres each row on it; `x0Fixed` overrides that and starts every row
+   * at the same x. THE EDGE GRIP WANTS THE SECOND ONE: its block hangs off the
+   * left edge because that is where the hand is, so the edge is the datum and a
+   * short last row centred under a full one reads as a mistake rather than as a
+   * block. Centring is right in a gutter, where the gutter is the datum.
+   */
+  const block = (
+    rows: Array<Array<[ZoneId, string]>>, endY: number, mid: number, x0Fixed?: number, w = cmdW,
+  ): void => {
     const n = rows.length;
+    const rw = (k: number): number => k * w + (k - 1) * cmdGap;
     for (let r = 0; r < n; r++) {
       const row = rows[r];
       const y = endY - (n - r) * cmdH - (n - 1 - r) * cmdGap;
-      const x0 = mid - rowW(row.length) / 2;
+      const x0 = x0Fixed ?? mid - rw(row.length) / 2;
       for (let i = 0; i < row.length; i++) {
         zones.push({
           id: row[i][0],
-          x: x0 + i * (cmdW + cmdGap),
+          x: x0 + i * (w + cmdGap),
           y,
-          w: cmdW,
+          w,
           h: cmdH,
           label: row[i][1],
           command: true,
@@ -427,20 +621,81 @@ export function touchZones(vp: Viewport, o: LayoutOpts): Zone[] {
     }
   };
 
+  /**
+   * How wide the drawer's pads have to be to make it ONE ROW in `room` px, or 0
+   * when that would take them below the floor.
+   *
+   * ONE ROW IS THE WHOLE POINT. A second row of commands is not a slightly
+   * taller menu, it is a menu that has left the cheap glass it was placed in —
+   * the gutter on a wide phone, the strip above the clusters on a narrow one —
+   * and climbed into either the HUD band or the band the bike rides through.
+   * Shrinking a between-runs pad by a millimetre and a half is a far smaller
+   * price than that, and `MM.cmdMin` is where shrinking stops being a price
+   * worth paying at all.
+   */
+  const oneRowW = (n: number, room: number): number => {
+    if (n <= 0) return cmdW;
+    const w = Math.min(cmdW, (room - (n - 1) * cmdGap) / n);
+    return w >= px(MM.cmdMin * s) ? w : 0;
+  };
+
   const chunk = (list: Array<[ZoneId, string]>, cols: number): Array<Array<[ZoneId, string]>> => {
     const out: Array<Array<[ZoneId, string]>> = [];
     for (let i = 0; i < list.length; i += cols) out.push(list.slice(i, i + cols));
     return out;
   };
 
-  if (gutW >= rowW(cmdRow.length)) {
-    const gutCols = clamp(fits(gutW), 1, Math.max(drawer.length, 1));
-    if (drawer.length <= gutCols) {
+  if (grip === 'edge') {
+    // UNDER THE LEFT HAND, AND THAT IS THE WHOLE TABLET COMMAND DECISION.
+    //
+    // The gutter answer does not survive the slab. On a 13" iPad the strip
+    // between the two clusters is 900 px wide and its centre — where the phone
+    // puts `restart / more / overview` — is 130 mm from either hand: not a
+    // reach, a regrip. It is also the horizontal centre of the screen, which is
+    // exactly where the bike is framed and where the level's floor runs, and
+    // the before-shot of the chimney has the command row sitting on that floor
+    // beside an apple. Cheap glass on a phone is the most expensive glass on a
+    // tablet, because the same strip is now the middle of the picture.
+    //
+    // So they hang off the LEFT cluster, against the edge the left hand is
+    // already holding, one `cmdMargin` below it. The left thumb drops onto them
+    // without letting go of anything and — the part that matters during a run —
+    // THE RIGHT THUMB NEVER LEAVES THE GAS to press `overview`.
+    //
+    // Left-aligned rather than centred under the cluster: the hand is at the
+    // edge, so the edge is the datum.
+    const cmdTop = leanTop + leanH + px(MM.cmdMargin * s);
+    block([cmdRow], cmdTop + cmdH, 0, left0);
+    if (drawer.length) {
+      // THE DRAWER OPENS DOWNWARD, into the band of clear glass the lifted
+      // clusters left behind. Upward is the lean pads and there is nothing to
+      // be gained by fighting them for the room; downward is empty, out of the
+      // play band, and a state that the next touch anywhere shuts.
+      //
+      // Three columns so it is a block under the hand rather than a row running
+      // out across the screen towards the other one.
+      const cols = clamp(fits(rightX - px(MM.cmdMargin * s) - left0), 1, Math.min(3, drawer.length));
+      const rows = chunk(drawer, cols);
+      const end = cmdTop + cmdH + cmdGap + rows.length * cmdH + (rows.length - 1) * cmdGap;
+      block(rows, end, 0, left0);
+    }
+  } else if (gutW >= rowW(cmdRow.length)) {
+    const gutterW = oneRowW(drawer.length, gutW);
+    if (!drawer.length || gutterW > 0) {
       // IN THE GUTTER, AT THE VERY BOTTOM, and the drawer opens into it too.
       // On a landscape phone the gutter is 70-odd millimetres of glass that no
       // thumb rests on and the bike is never framed in, which makes it the
       // cheapest screen in the game — so even the open state costs nothing.
-      block([...chunk(drawer, gutCols), cmdRow], bottom0, (gutL + gutR) / 2);
+      //
+      // ONE ROW, NARROWER IF IT HAS TO BE. Six pads at full width want four
+      // more pixels than the 915 x 348 phone's gutter has; wrapping them to a
+      // second row would climb straight out of the gutter and into the band
+      // the bike is framed in, to save a millimetre and a half on a pad nobody
+      // presses during a run. See `oneRowW`.
+      block([cmdRow], bottom0, (gutL + gutR) / 2);
+      if (drawer.length) {
+        block([drawer], bottom0 - cmdH - cmdGap, (gutL + gutR) / 2, undefined, gutterW);
+      }
     } else {
       // A NARROW GUTTER STACKS, AND A STACK IS THE THING THIS REWRITE IS
       // REMOVING. Rather than pile three rows up through the play band, the
@@ -450,8 +705,21 @@ export function touchZones(vp: Viewport, o: LayoutOpts): Zone[] {
       // the level and a stack would cost the whole open state.
       block([cmdRow], bottom0, (gutL + gutR) / 2);
       const wideR = rightX - px(MM.cmdMargin * s);
-      const wideCols = clamp(fits(wideR - left0), 1, drawer.length);
-      block(chunk(drawer, wideCols), leanTop - px(MM.gap * s), (left0 + wideR) / 2);
+      const wideRoom = wideR - left0;
+      // ONE ROW IF IT CAN BE HAD AT ALL, for the reason on `oneRowW` and for a
+      // second one specific to this branch: this row hangs off the BOTTOM of
+      // the strip above the clusters, so every extra row grows UPWARDS into the
+      // in-canvas HUD — and "nothing is ever above the HUD band" is a rule this
+      // file keeps exactly rather than nearly. Six pads at full width on a
+      // 736 x 280 phone put the top row at y = 43 against a band that ends at
+      // 52, which is a picture of two HUDs on top of each other.
+      const wideW = oneRowW(drawer.length, wideRoom);
+      if (wideW > 0) {
+        block([drawer], leanTop - px(MM.gap * s), (left0 + wideR) / 2, undefined, wideW);
+      } else {
+        const wideCols = clamp(fits(wideRoom), 1, drawer.length);
+        block(chunk(drawer, wideCols), leanTop - px(MM.gap * s), (left0 + wideR) / 2);
+      }
     }
   } else {
     // NO GUTTER — portrait, where the clusters already fill the width. Top-left,
@@ -524,11 +792,28 @@ export function touchZones(vp: Viewport, o: LayoutOpts): Zone[] {
  * a hand does not live on flip: it is touched for a tenth of a second and the
  * play area behind it is legible for the rest of the run. Counting it would
  * push the bike a centimetre up the screen to dodge a pad nobody is touching.
+ *
+ * AND A PAD THAT IS NOT AGAINST THE BOTTOM MAKES NO BOTTOM BAND. This is the
+ * tablet case and it is the reason the test below exists rather than the bare
+ * minimum. Under the edge grip the clusters are lifted to the middle of the
+ * side edges, so the bottom of a tablet's glass is CLEAR — the hands are two
+ * strips at the far left and right of a screen whose middle the bike is framed
+ * in, and they cannot reach it. `vpH - min(z.y)` would have answered 450 px on
+ * a 13" iPad, which the camera would have read as "the bottom half of the
+ * screen is under a hand" and used to shove the bike up under the HUD to dodge
+ * a hand that is not there. Nothing is measured off the pads that the pads do
+ * not actually claim.
+ *
+ * The test is scale-free rather than a tolerance: a pad is against the bottom
+ * if the glass left below it is less than the pad's own height. On a phone
+ * that gap is the 3.5 mm edge margin plus at most a home indicator, against a
+ * 15 mm pad; on a tablet it is 40 mm against the same 15.
  */
 export function thumbInsetPx(zones: readonly Zone[], vpH: number): number {
   let top = vpH;
   for (const z of zones) {
     if (z.id === 'flip' || z.command) continue;
+    if (vpH - (z.y + z.h) > z.h) continue;
     top = Math.min(top, z.y);
   }
   return Math.max(vpH - top, 0);
@@ -755,6 +1040,15 @@ export interface TouchCallbacks {
    * decides whether the pads are hidden underneath it.
    */
   onHelp(): void;
+  /**
+   * The customiser, which is also the profile screen — the same panel `Y` opens
+   * on a desktop, and the ONLY way to it on a phone.
+   *
+   * `main.ts` owns it for the same reason it owns the legend: there must be
+   * exactly one of it, one place that decides whether the pads are hidden under
+   * it, and one sim hold.
+   */
+  onLook(): void;
   /** Something the player should be told, in one sentence. */
   onNote?(msg: string): void;
 }
@@ -1113,6 +1407,7 @@ export function createTouch(
       closeMenu();
       if (id === 'restart') cb.onRestart();
       else if (id === 'levels') cb.onBrowse();
+      else if (id === 'look') cb.onLook();
       else if (id === 'help') cb.onHelp();
       else if (id === 'full') toggleFullscreen();
       else if (id === 'auto') cb.onAutoThrottle(!autoThrottle);

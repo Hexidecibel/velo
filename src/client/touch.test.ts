@@ -16,11 +16,12 @@ import { cloneSpec, DEFAULT_SPEC } from '@/sim/spec.ts';
 import { IN_BRAKE, IN_FLIP, IN_LEAN_L, IN_LEAN_R, IN_MASK, IN_THROTTLE } from '@/sim/consts.ts';
 import { createInput } from './input.ts';
 import {
-  HUD_BAND_PX, MIN_PAD_MM, MM, PINCH_DEAD, PINCH_MIN_SPREAD, PX_PER_MM, hitZone, pinchPair,
-  pinchScale, playAreaPointers, slideZone, smallestPadMm, spread, thumbInsetPx, touchZones,
-  wantsTouch, zoneMask, zoomLabel,
+  GRIP_Y, HUD_BAND_PX, MIN_PAD_MM, MM, PINCH_DEAD, PINCH_MIN_SPREAD, PX_PER_MM, TABLET_MIN_PX,
+  TABLET_PX_PER_MM, gripFor, hitZone, pinchPair, pinchScale, playAreaPointers, pxPerMmFor,
+  slideZone, smallestPadMm, spread, thumbInsetPx, touchZones, wantsTouch, zoneMask, zoomLabel,
 } from './touch.ts';
 import type { Pointer, Viewport, Zone, ZoneId } from './touch.ts';
+import { DRIVE, PLAY } from './keys.ts';
 
 /**
  * THE VIEWPORTS THIS HAS TO BE RIGHT ON, and the whole reason the layout is
@@ -32,15 +33,38 @@ import type { Pointer, Viewport, Zone, ZoneId } from './touch.ts';
  * 844 x 390 that no browser actually hands you — and shipped a layout that was
  * fine there and unusable on the real thing.
  */
-const VIEWPORTS: Array<{ name: string; w: number; h: number }> = [
+const PHONES: Array<{ name: string; w: number; h: number }> = [
   { name: 'land-chrome', w: 915, h: 348 },
   { name: 'land-full', w: 915, h: 412 },
   { name: 'land-iphone', w: 844, h: 390 },
   { name: 'land-small', w: 736, h: 280 },
   { name: 'portrait', w: 412, h: 800 },
   { name: 'portrait-narrow', w: 360, h: 640 },
-  { name: 'tablet', w: 1180, h: 820 },
 ];
+
+/**
+ * AND THE TABLETS, WHICH ARE A DIFFERENT GRIP AND NOT A BIGGER PHONE.
+ *
+ * Real devices in CSS px, in both orientations, because portrait is a way
+ * people actually hold a tablet in a way it barely is for phone gaming — and
+ * because an iPad portrait at 0.70 is further from the reference aspect than
+ * any landscape phone is.
+ *
+ * `tablet` used to be 1180 x 820 in this list, which is a size nobody owns; it
+ * is kept because the shot harness has always had it and because it is the one
+ * entry that is NOT a 264-ppi Apple panel, so it proves the layout is decided
+ * by the glass rather than by a device table.
+ */
+const TABLETS: Array<{ name: string; w: number; h: number }> = [
+  { name: 'tablet', w: 1180, h: 820 },
+  { name: 'ipad11-land', w: 1194, h: 834 },
+  { name: 'ipad11-port', w: 834, h: 1194 },
+  { name: 'ipad13-land', w: 1366, h: 1024 },
+  { name: 'ipad13-port', w: 1024, h: 1366 },
+];
+
+/** Every screen the layout has to be right on, whichever grip it is held in. */
+const VIEWPORTS = [...PHONES, ...TABLETS];
 
 /** The one the user played on, and the one every claim below is measured at. */
 const PHONE: Viewport = { w: 915, h: 348 };
@@ -66,7 +90,7 @@ const find = (zones: readonly Zone[], id: ZoneId): Zone => {
   return z;
 };
 /** A pad's short side, in millimetres — the only unit a thumb has. */
-const shortMm = (z: Zone): number => Math.min(z.w, z.h) / PX_PER_MM;
+const shortMm = (z: Zone, mm = PX_PER_MM): number => Math.min(z.w, z.h) / mm;
 
 describe('the layout is sized in MILLIMETRES, because a thumb is', () => {
   // THE BUG THIS REPLACES. The pads were fractions of the canvas — 15% wide and
@@ -81,11 +105,17 @@ describe('the layout is sized in MILLIMETRES, because a thumb is', () => {
     // About 9-10 mm is the minimum comfortable target and 12-15 mm is generous.
     // Anything past that is not easier to hit, it is just stealing screen.
     for (const vp of VIEWPORTS) {
+      // THE VIEWPORT'S OWN SCALE, which is the tablet half of this claim. A
+      // 21 mm gas pad laid out at the phone's 6 px/mm and then shown on a
+      // 5.2 px/mm iPad is 24 mm of glass, not 21 — the pad did not get bigger,
+      // the millimetre did. `pxPerMmFor` is what makes the mm in this test a
+      // real mm on both kinds of device.
+      const mm = pxPerMmFor(vp);
       for (const auto of [false, true]) {
         const z = zonesAt(vp, auto);
-        expect(smallestPadMm(z), `${vp.name} auto=${auto}`).toBeGreaterThanOrEqual(MIN_PAD_MM - 1e-9);
+        expect(smallestPadMm(z, mm), `${vp.name} auto=${auto}`).toBeGreaterThanOrEqual(MIN_PAD_MM - 1e-9);
         for (const q of z.filter((x) => !x.command)) {
-          expect(shortMm(q), `${vp.name} ${q.id} is huge`).toBeLessThanOrEqual(22);
+          expect(shortMm(q, mm), `${vp.name} ${q.id} is huge`).toBeLessThanOrEqual(22);
         }
       }
     }
@@ -172,7 +202,7 @@ describe('the layout owes each control something different', () => {
       const flip = find(z, 'flip');
       const gas = find(z, 'throttle');
       const strip = gas.y - (flip.y + flip.h);
-      expect(strip / PX_PER_MM, `${vp.name}`).toBeGreaterThan(1.5);
+      expect(strip / pxPerMmFor(vp), `${vp.name}`).toBeGreaterThan(1.5);
       // And the strip is dead: a thumb that drifts into it keeps the throttle.
       expect(slideZone(z, 'throttle', gas.x + 4, gas.y - strip / 2)).toBe('throttle');
     }
@@ -193,7 +223,7 @@ describe('the layout owes each control something different', () => {
     expect(z.filter((q) => q.command).map((q) => q.id).sort())
       .toEqual(['menu', 'overview', 'restart']);
     expect(openAt().filter((q) => q.command).map((q) => q.id).sort())
-      .toEqual(['auto', 'full', 'help', 'levels', 'menu', 'overview', 'restart', 'zoom']);
+      .toEqual(['auto', 'full', 'help', 'levels', 'look', 'menu', 'overview', 'restart', 'zoom']);
     // And the pads say which way they go, because a state you cannot see is a
     // state you press twice.
     expect(find(z, 'menu').label).toBe('more');
@@ -210,7 +240,7 @@ describe('the layout owes each control something different', () => {
     // the top-left, straight back into the band the bike rides through. This is
     // the test that would have caught that, and it is about the third pad rather
     // than about the constant.
-    for (const vp of VIEWPORTS.filter((v) => v.w > v.h)) {
+    for (const vp of PHONES.filter((v) => v.w > v.h)) {
       const z = zonesAt(vp);
       const ov = find(z, 'overview');
       const lean = find(z, 'leanR');
@@ -248,7 +278,7 @@ describe('the layout owes each control something different', () => {
     // the band ABOVE the pads, never below them. That is the whole of fix 1 —
     // the previous block sat at the top-left and, on a viewport too short for
     // two rows, spread into one row across half the width of the play band.
-    for (const vp of VIEWPORTS.filter((v) => v.w > v.h)) {
+    for (const vp of PHONES.filter((v) => v.w > v.h)) {
       const z = zonesAt(vp);
       const lean = find(z, 'leanR');
       const brake = find(z, 'brake');
@@ -350,10 +380,183 @@ describe('nothing is drawn on top of anything else', () => {
     // 310 px-tall landscape phone that is 39% of the glass and the band left for
     // the level is thinner than the pads are, which inverts what the screen is
     // for. 15 mm is still generous for a thumb and hands the level the rest.
-    for (const vp of [...VIEWPORTS, { name: 'land-short', w: 915, h: 310 }].filter((v) => v.w > v.h)) {
+    for (const vp of [...PHONES, { name: 'land-short', w: 915, h: 310 }].filter((v) => v.w > v.h)) {
       const z = zonesAt(vp);
       const band = find(z, 'leanL').y - HUD_BAND_PX;
       expect(band, `${vp.name}`).toBeGreaterThan(find(z, 'leanL').h);
+    }
+  });
+});
+
+describe('a TABLET is a different grip, not a bigger phone', () => {
+  // THE ARGUMENT, because every number below is it.
+  //
+  // A phone in landscape is 150 x 60 mm and two thumbs on the bottom corners.
+  // The hand wraps the corner, the whole of the glass is inside the thumb's
+  // arc, and the bottom corners are where the thumbs already are.
+  //
+  // A 13" iPad in landscape is 263 x 197 mm and weighs 680 g. Its bottom
+  // corners are a foot apart and nobody holds it by them — the slab cantilevers
+  // out of your hands — and this game wants gas, lean and flip held at once, so
+  // the hands cannot leave to press anything. What people do with a tablet is
+  // grip the two SIDE EDGES, fingers behind, thumbs forward. That is the grip
+  // this layout serves, and the flat-on-a-table grip comes to the same place:
+  // hands arrive at a flat tablet from its left and right, around the middle of
+  // the height, and find bottom-corner pads awkward for the same reason.
+  //
+  // THE BEFORE STATE, which is what this block is a fix for: a tablet got the
+  // phone layout, so on a 13" iPad the clusters were 1366 px apart in the
+  // bottom corners, and `restart / more / overview` — correctly in the cheap
+  // gutter on a phone — sat in the exact horizontal centre of the screen, which
+  // on a tablet is the middle of the picture and the line the bike is framed on.
+
+  const mmOf = (vp: { w: number; h: number }): number => pxPerMmFor(vp);
+
+  it('calls a tablet a tablet and a phone a phone, with nothing in between', () => {
+    for (const vp of PHONES) expect(gripFor(vp), vp.name).toBe('corner');
+    for (const vp of TABLETS) expect(gripFor(vp), vp.name).toBe('edge');
+    // THE THRESHOLD IS IN A GAP NOTHING LIVES IN, which is why one number does
+    // the job in both orientations. The widest phone hands the page 430 px on
+    // its short side (an iPhone Pro Max is 430 x 932); the smallest tablet
+    // hands it 744 (an iPad mini is 744 x 1133).
+    expect(gripFor({ w: 932, h: 430 })).toBe('corner');
+    expect(gripFor({ w: 430, h: 932 })).toBe('corner');
+    expect(gripFor({ w: 1133, h: 744 })).toBe('edge');
+    expect(TABLET_MIN_PX).toBeGreaterThan(430);
+    expect(TABLET_MIN_PX).toBeLessThan(744);
+  });
+
+  it('keeps a pad the same PHYSICAL size on a tablet as on a phone', () => {
+    // THE WHOLE POINT OF `PX_PER_MM`, and the thing a tablet pass is most
+    // tempted to break: the screen is twice the size, so make everything
+    // bigger. A thumb is not twice the size. A 21 x 15 mm gas pad is 21 x 15 mm
+    // on an iPad too — it just costs 3% of that screen instead of 19%.
+    const phone = find(zonesAt({ w: 915, h: 348 }), 'throttle');
+    for (const vp of TABLETS) {
+      const t = find(zonesAt(vp), 'throttle');
+      expect(t.w / mmOf(vp), `${vp.name} w`).toBeCloseTo(phone.w / PX_PER_MM, 6);
+      expect(t.h / mmOf(vp), `${vp.name} h`).toBeCloseTo(phone.h / PX_PER_MM, 6);
+      // And in PIXELS it is smaller than the phone's, which is the sentence
+      // "the millimetre got bigger, not the pad" said as a number: an iPad is
+      // 5.2 CSS px per mm against a phone's 6.
+      expect(t.w, `${vp.name}`).toBeLessThan(phone.w);
+    }
+    expect(TABLET_PX_PER_MM).toBeLessThan(PX_PER_MM);
+  });
+
+  it('lifts the thumb clusters OFF the bottom, to the grip line up the edge', () => {
+    for (const vp of TABLETS) {
+      const z = zonesAt(vp);
+      const mm = mmOf(vp);
+      for (const id of ['leanL', 'leanR', 'brake', 'throttle'] as const) {
+        const q = find(z, id);
+        // Well clear of the bottom: more than its own height of glass below it,
+        // which is exactly the test `thumbInsetPx` uses to decide there is no
+        // hand down there.
+        expect(vp.h - (q.y + q.h), `${vp.name} ${id}`).toBeGreaterThan(q.h);
+        // And still HARD AGAINST THE SIDE EDGE, which is the one thing both
+        // grips agree on: that is where the hand is in either of them.
+        expect(shortMm(q, mm), `${vp.name} ${id}`).toBeGreaterThanOrEqual(MIN_PAD_MM);
+      }
+      expect(find(z, 'leanL').x).toBeCloseTo(MM.edge * mm, 6);
+      expect(find(z, 'throttle').x + find(z, 'throttle').w).toBeCloseTo(vp.w - MM.edge * mm, 6);
+      // The grip line is where the constant says, not wherever the arithmetic
+      // drifted to.
+      const top0 = Math.max(HUD_BAND_PX, MM.edge * mm);
+      const bottom0 = vp.h - MM.edge * mm;
+      expect(find(z, 'leanL').y, `${vp.name}`).toBeCloseTo(top0 + (bottom0 - top0) * GRIP_Y, 6);
+    }
+  });
+
+  it('fits the whole control stack inside ONE THUMB REACH of the grip', () => {
+    // The reason the tablet layout does not simply spread to fill a screen that
+    // has room for anything. A hand gripping the middle of a 197 mm edge puts
+    // its thumb on the glass within about 45 mm; past that is a regrip, and a
+    // regrip in this game is a dead run. flip sits one dead strip above the
+    // cluster and the commands one clear strip below, and the three together
+    // have to come to less than the reach.
+    for (const vp of TABLETS) {
+      const z = zonesAt(vp);
+      const mm = mmOf(vp);
+      const top = Math.min(...z.map((q) => q.y));
+      const bot = Math.max(...z.map((q) => q.y + q.h));
+      expect((bot - top) / mm, `${vp.name}`).toBeLessThanOrEqual(MM.gripReach);
+    }
+  });
+
+  it('puts the commands UNDER THE LEFT HAND, never in the middle of the screen', () => {
+    // On a phone the strip between the clusters is the cheapest glass there is.
+    // On a tablet the same strip is 900 px wide and its centre is the middle of
+    // the picture — and 130 mm from either hand, which is a regrip rather than
+    // a reach. So they hang off the left cluster, against the edge the left
+    // hand is already holding. The right thumb never leaves the gas to press
+    // `overview`, which is the one command pressed during a run.
+    for (const vp of TABLETS) {
+      const z = zonesAt(vp);
+      const lean = find(z, 'leanL');
+      const gas = find(z, 'throttle');
+      for (const c of z.filter((q) => q.command)) {
+        // Below the cluster, by the same clear margin a phone keeps.
+        expect(c.y, `${vp.name} ${c.id}`).toBeGreaterThanOrEqual(lean.y + lean.h);
+        // Left-aligned with it, and nowhere near the middle or the right hand.
+        expect(c.x, `${vp.name} ${c.id}`).toBeGreaterThanOrEqual(lean.x - 1e-9);
+        expect(c.x + c.w, `${vp.name} ${c.id}`).toBeLessThan(vp.w * 0.5);
+        expect(c.x + c.w, `${vp.name} ${c.id}`).toBeLessThan(gas.x);
+      }
+      // The first row starts at the edge rather than centring on it — the hand
+      // is the datum, so a short last row centred under a full one would read
+      // as a mistake.
+      expect(find(z, 'restart').x).toBeCloseTo(lean.x, 6);
+    }
+  });
+
+  it('leaves the band the bike is framed in completely alone', () => {
+    // THE SCREENSHOT THAT MOVED `GRIP_Y` FROM 0.5 TO 0.6. At the middle of the
+    // edge the clusters landed exactly on the line the camera rests the bike on
+    // — the lean pads and the gas were sitting ON the road it was driving down.
+    // The camera puts the bike at 50% of the height on a tablet (`screenBiasFor`
+    // returns 0 there, same as a desktop), so 50% of the height is the line
+    // nothing may be on.
+    for (const vp of TABLETS) {
+      for (const menu of [false, true]) {
+        const z = zonesAt(vp, false, 'off', menu);
+        expect(hitZone(z, vp.w * 0.5, vp.h * 0.5), `${vp.name} menu=${menu}`).toBe(null);
+        for (const q of z) {
+          if (q.id === 'flip') continue;
+          expect(q.y, `${vp.name} ${q.id}`).toBeGreaterThan(vp.h * 0.5);
+        }
+      }
+    }
+  });
+
+  it('gives the tablet the SAME layout in portrait as in landscape', () => {
+    // A layout that rearranges itself on rotation is two layouts to learn, and
+    // a tablet is rotated far more often than a phone playing a game is. The
+    // phone cannot keep this promise — portrait there has no gutter, so the
+    // commands reflow to a corner — and the tablet can, because the grip does
+    // not change when the slab turns: the hands are still on the two side edges.
+    for (const [a, b] of [['ipad13-land', 'ipad13-port'], ['ipad11-land', 'ipad11-port']]) {
+      const la = TABLETS.find((v) => v.name === a)!;
+      const po = TABLETS.find((v) => v.name === b)!;
+      const za = zonesAt(la);
+      const zp = zonesAt(po);
+      expect(zp.map((q) => q.id)).toEqual(za.map((q) => q.id));
+      for (const q of za) {
+        const r = find(zp, q.id);
+        expect(r.w, `${a}->${b} ${q.id} w`).toBeCloseTo(q.w, 6);
+        expect(r.h, `${a}->${b} ${q.id} h`).toBeCloseTo(q.h, 6);
+        // Same distance in from the edge the hand is on.
+        const inA = q.x < la.w / 2 ? q.x : la.w - (q.x + q.w);
+        const inB = r.x < po.w / 2 ? r.x : po.w - (r.x + r.w);
+        expect(inB, `${a}->${b} ${q.id} x`).toBeCloseTo(inA, 6);
+      }
+    }
+  });
+
+  it('costs the level almost nothing, because the screen got bigger and the thumb did not', () => {
+    for (const vp of TABLETS) {
+      const covered = zonesAt(vp).reduce((n, q) => n + q.w * q.h, 0) / (vp.w * vp.h);
+      expect(covered, `${vp.name}`).toBeLessThan(0.06);
     }
   });
 });
@@ -373,8 +576,30 @@ describe('where the hands are, as a number the camera can use', () => {
     // Which is the whole point: the same hands on a taller screen cover less of
     // it, and the camera's bias should follow that rather than a constant.
     const short = thumbInsetPx(zonesAt({ w: 915, h: 348 }), 348) / 348;
-    const tall = thumbInsetPx(zonesAt({ w: 1180, h: 820 }), 820) / 820;
+    const tall = thumbInsetPx(zonesAt({ w: 915, h: 412 }), 412) / 412;
     expect(tall).toBeLessThan(short);
+  });
+
+  it('is ZERO on a tablet, because no hand is anywhere near the bottom', () => {
+    // THE CAMERA MUST NOT BE TOLD ABOUT A HAND THAT IS NOT THERE. Under the
+    // edge grip the clusters are lifted to the grip line, so the bottom of the
+    // glass is clear and the hands are two narrow strips at the far left and
+    // right of a screen whose middle the bike is framed in. The old
+    // `vpH - min(z.y)` would have answered ~450 px on a 13" iPad — "the bottom
+    // half is under a hand" — and `screenBiasFor` would have shoved the bike up
+    // under the HUD to dodge it.
+    for (const vp of TABLETS) {
+      expect(thumbInsetPx(zonesAt(vp), vp.h), vp.name).toBe(0);
+    }
+    // And it is still the real number on every phone, in both orientations and
+    // under a home indicator — that is the half of this that must not move.
+    for (const vp of PHONES) {
+      const z = zonesAt(vp);
+      expect(thumbInsetPx(z, vp.h), vp.name).toBeCloseTo(vp.h - find(z, 'leanL').y, 6);
+    }
+    const cover: Viewport = { w: 844, h: 390, bottom: 21 };
+    const zc = zonesAt(cover);
+    expect(thumbInsetPx(zc, 390)).toBeCloseTo(390 - find(zc, 'leanL').y, 6);
   });
 
   it('is zero when there are no pads at all', () => {
@@ -674,6 +899,110 @@ describe('the pinch, against a game where two fingers is the normal case', () =>
     expect(pinchScale(0, 100)).toBe(1);
     expect(pinchScale(100, 0)).toBe(1);
     expect(spread({ id: 0, x: 3, y: 4 }, { id: 1, x: 0, y: 0 })).toBe(5);
+  });
+
+  it('puts the customiser behind `more`, because a phone had NO way to it', () => {
+    // THE BUG THIS PAD FIXES, and it is worth stating as a fact rather than as
+    // a feature: the customiser was bound to `Y` and to a button on the
+    // leaderboard panel, and `body.touch #board { display: none }` hides that
+    // panel. So on a phone there was no way — not a hard way, NONE — to change
+    // the paint, the helmet or the engine, and no way to type a name either,
+    // because the name lives on that same screen.
+    //
+    // It is in the drawer rather than on permanent glass by the same test every
+    // other command here passes or fails: nobody presses `your bike` during a
+    // run.
+    for (const vp of VIEWPORTS) {
+      const shut = zonesAt(vp);
+      const open = openAt(vp);
+      expect(shut.some((z) => z.id === 'look'), `${vp.name} shut`).toBe(false);
+      const look = open.find((z) => z.id === 'look');
+      expect(look, `${vp.name} open`).toBeDefined();
+      expect(look?.command).toBe(true);
+      expect(look?.label).toBe('your bike');
+      // It says what it is in the player's words, it is a command so it
+      // contributes no sim bit, and a thumb cannot slide into it on its way
+      // somewhere else — a customiser that opened under a sliding thumb would
+      // eat a run.
+      expect(zoneMask(['look'], false)).toBe(0);
+      expect(slideZone(open, 'leanL', (look?.x ?? 0) + 2, (look?.y ?? 0) + 2)).toBe('leanL');
+    }
+  });
+
+  it('keeps the open drawer to ONE row, which is what keeps it on cheap glass', () => {
+    // THE INVARIANT A SIXTH DRAWER ITEM NEARLY BROKE. The drawer is placed in
+    // the one strip of a landscape phone that costs nothing — the bottom gutter
+    // on a wide one, the band above the clusters on a narrow one — and both of
+    // those are ONE PAD TALL. A second row does not make a slightly taller
+    // menu: on the 915 x 348 phone it climbs out of the gutter into the band
+    // the bike is framed in, and on the 736 x 280 phone it climbs up into the
+    // in-canvas HUD, which is the two-HUDs-on-top-of-each-other screenshot this
+    // whole file was rewritten from. Adding `your bike` put six 12 mm pads into
+    // 429 px of gutter that holds five, so the row shrinks instead of wrapping.
+    for (const vp of PHONES.filter((v) => v.w > v.h)) {
+      const open = openAt(vp);
+      const drawerIds: ZoneId[] = ['levels', 'look', 'full', 'auto', 'zoom', 'help'];
+      const rows = new Set(open.filter((z) => drawerIds.includes(z.id)).map((z) => z.y));
+      expect(rows.size, `${vp.name} drawer rows`).toBe(1);
+      // And it never buys that by going below a deliberate press. 8 mm is the
+      // floor for a command; a hold pad's floor is 9 and is a different number
+      // for a different reason (a thumb RESTS on those).
+      for (const z of open.filter((q) => drawerIds.includes(q.id))) {
+        expect(z.w / pxPerMmFor(vp), `${vp.name} ${z.id}`).toBeGreaterThanOrEqual(8 - 1e-9);
+      }
+    }
+  });
+
+  it('has a real pad behind every pad the legend advertises, and advertises every pad', () => {
+    // THE SAME BUG AS `A` FOR THE MONTAGE, IN THE OTHER CURRENCY. `keys.ts`
+    // exists because an advertised KEY that reaches nothing has now happened
+    // three times; its `pad` field is the same claim about a thumb, and until
+    // this test there was nothing keeping the two lists in step. It failed the
+    // day it was written: `touch.ts` had grown a `your bike` pad and `keys.ts`
+    // did not know, so `chrome.ts` — which skips a padless PLAY row on touch —
+    // left the newest pad off the one screen whose entire job is teaching the
+    // pads.
+    //
+    // Both directions, because the drift goes both ways: a legend row for a pad
+    // that does not exist, and a pad the legend never mentions.
+    const labels = new Set<string>();
+    for (const vp of VIEWPORTS) {
+      for (const menu of [false, true]) {
+        for (const overview of [false, true]) {
+          for (const auto of [false, true]) {
+            for (const fullscreen of ['none', 'off', 'on'] as const) {
+              for (const z of touchZones(vp, { autoThrottle: auto, fullscreen, menu, overview })) {
+                labels.add(z.label);
+              }
+            }
+          }
+        }
+      }
+    }
+    // Forwards: everything `keys.ts` says is a pad is a label some reachable
+    // state actually produces. The zoom pad prints its CURRENT value, so it is
+    // matched by prefix against `zoomLabel` rather than by a literal that would
+    // break the first time the format moved.
+    for (const c of [...DRIVE, ...PLAY]) {
+      if (!c.pad) continue;
+      const hit = labels.has(c.pad) || [...labels].some((l) => l.startsWith(c.pad + ' '));
+      expect(hit, `keys.ts advertises a "${c.pad}" pad that no layout produces`).toBe(true);
+    }
+    // Backwards: every COMMAND a thumb can press is either something `keys.ts`
+    // advertises or one of the touch-only commands that has no key to be in
+    // that list with. Hold pads are covered by the forward direction; this half
+    // is about the drawer, which is where a new pad actually gets added.
+    const touchOnly = new Set([
+      'more', 'close', 'ride', 'gas: auto', 'gas: held', 'full screen', 'exit full',
+    ]);
+    const advertised = new Set([...DRIVE, ...PLAY].map((c) => c.pad).filter(Boolean) as string[]);
+    for (const vp of VIEWPORTS) {
+      for (const z of openAt(vp).filter((q) => q.command)) {
+        if (touchOnly.has(z.label) || z.label.startsWith(zoomLabel(1).split(' ')[0] + ' ')) continue;
+        expect(advertised, `the ${z.label} pad is not in keys.ts, so the touch legend omits it`)
+          .toContain(z.label);
+      }
+    }
   });
 
   it('prints what it is doing, and the pad that undoes it is always there', () => {

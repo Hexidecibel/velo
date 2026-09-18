@@ -24,9 +24,24 @@ export interface AudioParams {
   // off the line, and throttle held in mid-air, which is a real technique and
   // the sound of it should be a real scream rather than silence.
 
-  /** Hz at a stopped wheel. Low and warm: you hear this on every restart. */
+  // WHAT THE TWO HZ NUMBERS MEAN, now that there are four engines under them:
+  // they are the REFERENCE motor's FIRING RATE — bangs per second, not the
+  // oscillator's frequency — and every other engine is a fixed ratio against
+  // it, computed from its cylinder count and its rev range in firing.ts. So
+  // these stay sliders that say what they do, and moving one moves the whole
+  // fleet together instead of pulling it apart. Which engine you are riding is
+  // an APPEARANCE axis and is not on this panel; see src/shared/appearance.ts.
+
+  /**
+   * Firing rate at a stopped wheel, for the reference engine (an inline four at
+   * a 1200 rpm idle, which is 40 bangs a second). You hear this on every
+   * restart, so it is tuned against a restart loop rather than against a play.
+   */
   engineIdleHz: number;
-  /** Hz at `spec.drive.maxWheelSpin`, where drive torque has tapered to zero. */
+  /**
+   * Firing rate at `spec.drive.maxWheelSpin`, where drive torque has tapered to
+   * zero — the reference engine's 10,000 rpm limiter, four bangs per two revs.
+   */
   engineRevHz: number;
   /**
    * Exponent on the normalised wheel spin before it maps to pitch. Below 1 it
@@ -35,11 +50,19 @@ export interface AudioParams {
    * makes pulling away sound like nothing at all.
    */
   engineCurve: number;
-  /** Engine level into the master bus. */
+  /** Engine level into the master bus. Each engine then trims itself off this. */
   engineLevel: number;
-  /** Detune between the two saw layers, in cents. The "synthetic" in the tone. */
-  engineDetune: number;
-  /** Level of the square sub an octave down. Body, not pitch. */
+  /**
+   * How far the two engine layers are separated, as a PERCENTAGE OF ONE ENGINE
+   * CYCLE. Cylinder-to-cylinder timing scatter, and the "synthetic" in the tone.
+   *
+   * A percentage of a cycle and not a detune in cents, which is what it was
+   * when the engine was two saws. A detune on a pulse train is a flam that
+   * wanders — see the note on `shift` in firing.ts. This one is a fixed offset
+   * and holds still.
+   */
+  engineSpread: number;
+  /** Level of the square sub under the firing rate. Body, not pitch. */
   engineSub: number;
 
   // --- impacts ---------------------------------------------------------------
@@ -88,7 +111,7 @@ export interface AudioParams {
 
   /** Milliseconds the last per-frame audio update cost on the MAIN thread. */
   updateMs: number;
-  /** Engine pitch actually in force, Hz. Handy while tuning by ear. */
+  /** Firing rate actually in force, Hz — bangs a second. Handy while tuning by ear. */
   engineHz: number;
 }
 
@@ -96,15 +119,17 @@ export const DEFAULT_AUDIO: AudioParams = {
   muted: 0,
   master: 0.55,
 
-  // 46 Hz idle is deliberately below where a laptop speaker reproduces much of
-  // it: on a small speaker it reads as a soft pulse rather than a drone, and on
-  // headphones it is a warm floor. The restart loop is the acceptance test for
-  // this number, not a single play.
-  engineIdleHz: 46,
-  engineRevHz: 320,
+  // 40 bangs a second is a 1200 rpm idle on an inline four, and it is
+  // deliberately down where a laptop speaker reproduces little of the
+  // fundamental: on a small speaker it reads as a soft pulse rather than a
+  // drone, and on headphones it is a warm floor. The restart loop is the
+  // acceptance test for this number, not a single play. 333 is a 10,000 rpm
+  // limiter — the road bike is the only one of the four allowed to go there.
+  engineIdleHz: 40,
+  engineRevHz: 333,
   engineCurve: 0.62,
   engineLevel: 0.5,
-  engineDetune: 14,
+  engineSpread: 1.5,
   engineSub: 0.35,
 
   impact: 0.9,

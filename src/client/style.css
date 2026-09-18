@@ -1107,15 +1107,213 @@ body:has(#panel.hidden) #look { margin-left: 0; }
 #look .lk-axis-note { display: block; color: #6b6390; font-size: 9px; line-height: 1.3; }
 #look .lk-opts { display: flex; flex-wrap: wrap; gap: 4px; }
 #look .lk-opt.on { color: var(--bg); background: var(--edge); border-color: var(--edge); }
+/* A DEVICE SETTING WEARING THE SAME SHAPE AS A COSMETIC, deliberately: one
+   shape to learn on this panel is better than two, and "sound" sits directly
+   under "engine" because it is the next question anybody reading that row has.
+   It is a different CLASS so that it can be counted separately — the harnesses
+   ask this panel how many cosmetics the game offers, and mute is not one. */
+#look .lk-set {
+  font: inherit;
+  font-size: 11px;
+  color: var(--dim);
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 1px 7px;
+  cursor: pointer;
+}
+#look .lk-set:hover { color: var(--ink); border-color: var(--edge); }
+#look .lk-set.on { color: var(--bg); background: var(--edge); border-color: var(--edge); }
+/* Marked as not-an-axis by the same rule the keyboard selection uses, so the
+   arrow keys walking the axes visibly step over it. */
+#look .lk-row-set .lk-axis { color: var(--dim); }
 #look .lk-foot { color: #6b6390; font-size: 9px; margin-top: 10px; line-height: 1.4; }
+
+/* --- the profile half of the customiser ----------------------------------- */
+/* The name, and the two pictures that are the whole argument for typing one.
+   Same drab surface, same borders, no animation — it is the customiser, not a
+   second app that happens to live inside it. */
+
+/* THE TOP HALF IS ONE COLUMN UNTIL THERE IS ROOM FOR TWO. A landscape phone is
+   348 px tall: stacked, the preview alone pushes the name below the fold and
+   the board row — the thing the name is FOR — is off the bottom of the screen
+   entirely. Side by side they are read together, which is the pairing this
+   whole screen rests on. The breakpoint is HEIGHT, because that is the scarce
+   dimension on every device this reflows for, and width is what a portrait
+   phone runs out of. */
+#look .lk-top { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 4px; }
+#look .lk-side { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1 1 auto; }
+@media (min-width: 560px) {
+  #look .lk-top { flex-direction: row; align-items: flex-start; }
+  #look .lk-shot { flex: 0 0 auto; margin: 0; }
+}
+/* THREE COLUMNS ON A LANDSCAPE PHONE, and this one is a screenshot's doing.
+   At 915 x 348 the two-column version put the preview, the name and the board
+   row across the whole first screenful and not one option chip — so the screen
+   that says "build your rider" opened on a form with a picture beside it. The
+   glass is wide and short, the name field does not need 600 px, and moving it
+   alongside the "what other people see" block buys back about 60 px of height,
+   which is two rows of chips: the bike and the engine, both visible without a
+   scroll. Height is the condition as well as width, because a tablet has room
+   to stack them and reads better for it. */
+@media (min-width: 860px) and (max-height: 520px) {
+  #look .lk-side { flex-direction: row; align-items: flex-start; gap: 10px; }
+  #look .lk-name { flex: 0 1 260px; align-content: flex-start; }
+  #look .lk-seen { flex: 1 1 340px; }
+}
+/* And every vertical margin above the chips is worth a fraction of a chip row
+   on a 348 px-tall screen, so they come in. The first screenful has to contain
+   something to PRESS. */
+@media (max-height: 460px) {
+  #look .lk-top { margin: 5px 0 2px; }
+  #look .lk-lead { margin: 2px 0 0; }
+  #look .lk-sub { margin: 2px 0 3px; }
+  #look .lk-row { padding: 2px 0 2px 6px; }
+}
+/* One line under the title, and only when the screen opened ITSELF: on a first
+   load and on a first finish something has to say why it is there. Opened with
+   Y it says nothing, because you know why it is there. */
+#look .lk-lead { color: var(--ink); font-size: 11px; line-height: 1.4; margin: 4px 0 0; }
+
+#look .lk-name { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+#look .lk-name-label {
+  flex: 1 0 100%;
+  color: var(--accent);
+  font-size: 10px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+#look .lk-name-input {
+  flex: 1 1 120px;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: #0f0d20;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 3px 6px;
+}
+#look .lk-name-input:focus { outline: none; border-color: var(--edge); }
+#look .lk-name-hint { flex: 1 0 100%; color: #6b6390; font-size: 9px; line-height: 1.35; }
+/* The nudge to claim, and it is a button rather than a sentence because the
+   thing it is warning about has a one-tap answer. */
+#look .lk-link { flex: 0 0 auto; color: var(--dim); }
+
+/* THIS IS WHAT OTHER PEOPLE SEE. The board row is the real avatar from the real
+   cache and the ghost is drawn at the alpha the game draws ghosts at, because
+   the claim being made is that these two pictures are what somebody else gets
+   — and a mock-up would make the one honest thing on the screen a lie. */
+#look .lk-seen {
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--edge);
+  border-radius: 2px;
+  padding: 5px 7px 6px;
+  background: #15122acc;
+}
+/* Anonymous is not a failure state and must not be painted as one: the same
+   block, the same two pictures, a dimmer rule. What changes is what it SAYS. */
+#look .lk-seen.anon { border-left-color: var(--line); }
+#look .lk-seen-title {
+  color: var(--accent);
+  font-size: 9px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+#look .lk-seen.anon .lk-seen-title { color: var(--dim); }
+#look .lk-seen-cols { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: flex-start; margin: 4px 0 2px; }
+#look .lk-seen-card { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+#look .lk-seen-cap { color: #6b6390; font-size: 9px; }
+#look .lk-seen-row {
+  display: grid;
+  grid-template-columns: 22px auto 1fr auto;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 5px;
+  border-left: 3px solid var(--accent);
+  background: #1a1633;
+  border-radius: 2px;
+}
+#look .lk-seen.anon .lk-seen-row { border-left-color: #2a2450; }
+#look .lk-seen-rank { color: var(--dim); text-align: right; font-size: 10px; }
+#look .lk-seen-name { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#look .lk-seen-name.none { color: #5b5482; font-style: italic; }
+#look .lk-seen-time { color: var(--ink); font-variant-numeric: tabular-nums; font-size: 11px; }
+#look .lk-seen.anon .lk-seen-time { color: var(--dim); }
+#look .lk-seen-ghost { display: block; border-radius: 2px; }
+#look .lk-seen-note { color: #6b6390; font-size: 9px; line-height: 1.4; margin-top: 3px; }
+
+/* THE WAY OUT IS ALWAYS ON THE GLASS, and it is sticky for one reason: on a
+   phone this panel scrolls, and a first-run screen whose only exit is at the
+   bottom of a scroll is a screen a child is stuck in. "Offered, and skippable
+   in one tap" has to survive the panel being taller than the viewport, which on
+   a 348 px-tall phone it always is. The same trap the about page has a note
+   about — is the way out still on screen after three hundred words — answered
+   here by never letting it leave.
+
+   It sticks to the bottom of `#look`, which is the scrollport, and carries the
+   panel's own background so the copy underneath scrolls behind it rather than
+   through it. */
+#look .lk-go {
+  display: flex;
+  justify-content: flex-end;
+  margin: 10px 0 0;
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  padding: 6px 0 2px;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+}
+#look .lk-go-btn {
+  font-size: 12px;
+  color: var(--ink);
+  border-color: var(--edge);
+  background: #1b2a44;
+  padding: 4px 14px;
+}
+#look .lk-go-btn:hover { background: #22375a; }
 
 /* Your own bike on the leaderboard panel, beside the way to change it. */
 #board .bd-mine { display: flex; align-items: center; gap: 6px; margin: 4px 0 6px; }
 #board .bd-edit { flex: 0 0 auto; }
 
-/* On a phone the customiser is reachable from the board panel's button rather
-   than from a key, so it has to fit the same way the chooser does. */
-body.touch #look { max-height: 80vh; margin-left: 0; }
+/* ON A PHONE THE CUSTOMISER IS REACHED BY THUMB — the `your bike` pad in the
+   command drawer — so it has to fit the way the chooser does, and it is the
+   screen a first-time player meets before anything else. Every number below is
+   about the 915 x 348 landscape viewport, which is what a phone with a URL bar
+   actually hands the page.
+
+   The desktop panel is full height and 700 px wide; here it is the whole glass
+   less a margin, it scrolls, and the pads underneath it are hidden by main.ts
+   exactly as they are for the results screen — a `gas` pad over a `save`
+   button is a trap rather than a panel. */
+/* 94vh, NOT 88. The panel is centred, so a 6 % margin top and bottom is 42 px
+   of a 348 px phone spent on nothing — and 42 px is a row of option chips. On a
+   screen whose whole job is to look like a toy, the chips are what it is for. */
+body.touch #look { max-height: 94vh; margin-left: 0; width: calc(100vw - 16px); }
+body.touch #look .lk-panel { padding: 7px 9px 9px; }
+/* A THUMB IS 9 MM AT THE ABSOLUTE MINIMUM, so every control on this panel grows
+   on touch — the option chips most of all, because there are thirty-four of
+   them and they are the whole toy. At the desktop's 1px/7px padding they are
+   about 5 mm tall, which is a control you press twice. */
+body.touch #look button { padding: 5px 10px; font-size: 12px; }
+body.touch #look .lk-close { padding: 3px 10px; }
+body.touch #look .lk-opts { gap: 5px; }
+body.touch #look .lk-set { padding: 5px 10px; font-size: 12px; }
+body.touch #look .lk-name-input { padding: 6px 8px; font-size: 13px; }
+body.touch #look .lk-go-btn { padding: 7px 18px; font-size: 13px; }
+/* The row label column is 120 px on a desktop, which on a 915 px-wide phone is
+   an eighth of the glass spent on the word "helmet". It goes above its options
+   instead, where it costs one line and no width. */
+body.touch #look .lk-row { grid-template-columns: 1fr; gap: 2px; }
+/* A SHORT SCREEN IS THE CASE, NOT THE EXCEPTION. At 348 px tall the panel is
+   going to scroll whatever is done to it, so the job is to make the first
+   screenful the right one: the bike, the name and the board row it lands on.
+   The preview gives up the height it does not need to make room for them —
+   and it does that in JS, in `previewSize`, because the canvas carries an
+   inline width and height (a canvas has to: the backing store is pixels) and
+   an inline style beats a stylesheet rule every time. */
 
 /* --- being the same player on two devices ---------------------------------- */
 /* Same drab surface as every other panel. The one exception is the QR itself,

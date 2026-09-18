@@ -41,7 +41,13 @@ import type { BikeColors, Pt } from './bikeart.ts';
 
 const SPEC = cloneSpec(DEFAULT_SPEC);
 
-/** Every legal appearance: 6 x 10 x 4 x 3 x 3 x 4. */
+/**
+ * Every legal appearance: 6 x 10 x 4 x 3 x 3 x 4.
+ *
+ * The `engine` axis is pinned rather than swept, and that is the assertion
+ * rather than a shortcut: an engine is a NOISE and draws nothing, so a sweep
+ * over it here would multiply the work by four and could not fail.
+ */
 const ALL: Appearance[] = [];
 for (const bike of BIKES) {
   for (const paint of PAINTS) {
@@ -50,7 +56,7 @@ for (const bike of BIKES) {
         for (const scarf of SCARVES) {
           for (const decal of DECALS) {
             ALL.push({
-              bike: bike.id, paint: paint.id, helmet: helmet.id,
+              bike: bike.id, engine: 'road', paint: paint.id, helmet: helmet.id,
               jacket: jacket.id, scarf: scarf.id, decal: decal.id,
             });
           }
@@ -305,7 +311,7 @@ describe('the contrast floor holds across the whole product', () => {
     const bad: string[] = [];
     for (const { id, palette } of DERIVED) {
       for (const paint of PAINTS) {
-        const app: Appearance = { bike: 'scrambler', paint: paint.id, helmet: 'visor', jacket: 'bomber', scarf: 'trail', decal: 'stripe' };
+        const app: Appearance = { bike: 'scrambler', engine: 'road', paint: paint.id, helmet: 'visor', jacket: 'bomber', scarf: 'trail', decal: 'stripe' };
         const faults = bikeFaults(resolveBikeColors(app, palette), palette);
         if (faults.length) bad.push(`${id} ${paint.id}: ${faults.join('; ')}`);
       }
@@ -319,7 +325,7 @@ describe('the contrast floor holds across the whole product', () => {
     let worstVisor = Infinity;
     for (const { id, palette } of SWEEP_PALETTES) {
       for (const paint of PAINTS) {
-        const app: Appearance = { bike: 'scrambler', paint: paint.id, helmet: 'visor', jacket: 'bomber', scarf: 'trail', decal: 'number' };
+        const app: Appearance = { bike: 'scrambler', engine: 'road', paint: paint.id, helmet: 'visor', jacket: 'bomber', scarf: 'trail', decal: 'number' };
         const c = colorsFor(app, id, palette);
         const worstHex = [palette.solid, palette.patchA, palette.patchB, palette.bandTop, palette.bandSide, palette.bandUnder]
           .reduce((m, x) => (lum(x) > lum(m) ? x : m), palette.solid);
@@ -340,7 +346,7 @@ describe('the contrast floor holds across the whole product', () => {
     // to undo it, so it is a law rather than a preference.
     for (const { id, palette } of SWEEP_PALETTES) {
       for (const paint of PAINTS) {
-        const app: Appearance = { bike: 'mono', paint: paint.id, helmet: 'bucket', jacket: 'vest', scarf: 'none', decal: 'checks' };
+        const app: Appearance = { bike: 'mono', engine: 'road', paint: paint.id, helmet: 'bucket', jacket: 'vest', scarf: 'none', decal: 'checks' };
         const c = colorsFor(app, id, palette);
         expect(lum(c.head), `${id}/${paint.id}`).toBeGreaterThanOrEqual(HEAD_MIN_LUM);
         for (const slot of LEVEL_SLOTS) {
@@ -361,7 +367,7 @@ describe('the contrast floor holds across the whole product', () => {
     // That only works while the outline is darker than the part it outlines.
     for (const { id, palette } of SWEEP_PALETTES) {
       for (const paint of PAINTS) {
-        const app: Appearance = { bike: 'cafe', paint: paint.id, helmet: 'goggles', jacket: 'racer', scarf: 'short', decal: 'none' };
+        const app: Appearance = { bike: 'cafe', engine: 'road', paint: paint.id, helmet: 'goggles', jacket: 'racer', scarf: 'short', decal: 'none' };
         const c = colorsFor(app, id, palette);
         for (const slot of LEVEL_SLOTS) {
           expect(contrast(c[slot], c.ink), `${id}/${paint.id} ${slot}`).toBeGreaterThanOrEqual(BIKE_MIN_CONTRAST);
@@ -374,7 +380,7 @@ describe('the contrast floor holds across the whole product', () => {
   it('bikeFaults actually refuses something', () => {
     // Guards every sweep above against passing because the predicate says yes
     // to everything.
-    const c = resolveBikeColors({ bike: 'scrambler', paint: 'ember', helmet: 'visor', jacket: 'bomber', scarf: 'trail', decal: 'none' }, CONCRETE);
+    const c = resolveBikeColors({ bike: 'scrambler', engine: 'road', paint: 'ember', helmet: 'visor', jacket: 'bomber', scarf: 'trail', decal: 'none' }, CONCRETE);
     expect(bikeFaults(c, CONCRETE)).toEqual([]);
     const grey: BikeColors = { ...c, frame: '#201c33' };
     expect(bikeFaults(grey, CONCRETE).join(' ')).toMatch(/frame/);
@@ -384,13 +390,13 @@ describe('the contrast floor holds across the whole product', () => {
 
   it('resolves deterministically, so two machines draw the same bike', () => {
     for (const paint of PAINTS) {
-      const app: Appearance = { bike: 'trials', paint: paint.id, helmet: 'halfshell', jacket: 'vest', scarf: 'trail', decal: 'stripe' };
+      const app: Appearance = { bike: 'trials', engine: 'road', paint: paint.id, helmet: 'halfshell', jacket: 'vest', scarf: 'trail', decal: 'stripe' };
       expect(resolveBikeColors(app, CONCRETE)).toEqual(resolveBikeColors(app, CONCRETE));
     }
   });
 
   it('the same livery differs between levels, which is the point of solving it per level', () => {
-    const app: Appearance = { bike: 'moto', paint: 'ice', helmet: 'visor', jacket: 'bomber', scarf: 'trail', decal: 'none' };
+    const app: Appearance = { bike: 'moto', engine: 'road', paint: 'ice', helmet: 'visor', jacket: 'bomber', scarf: 'trail', decal: 'none' };
     const a = resolveBikeColors(app, SHIPPED[0].palette);
     const b = resolveBikeColors(app, SHIPPED[SHIPPED.length - 1].palette);
     // The tyre and the ink come straight off the palette, so those must differ;
@@ -439,9 +445,9 @@ describe('the physics do not move', () => {
     expect(plateNumber('k3jf83nd8sl2mfk1')).toBe(plateNumber('k3jf83nd8sl2mfk1'));
     expect(Number(plateNumber('abcdefgh'))).toBeGreaterThanOrEqual(1);
     expect(Number(plateNumber('abcdefgh'))).toBeLessThanOrEqual(99);
-    const look = makeLook({ bike: 'moto', paint: 'acid', helmet: 'visor', jacket: 'bomber', scarf: 'none', decal: 'number' }, CONCRETE, 'abcdefgh');
+    const look = makeLook({ bike: 'moto', engine: 'road', paint: 'acid', helmet: 'visor', jacket: 'bomber', scarf: 'none', decal: 'number' }, CONCRETE, 'abcdefgh');
     expect(look.plate).toBe(plateNumber('abcdefgh'));
-    const plain = makeLook({ bike: 'moto', paint: 'acid', helmet: 'visor', jacket: 'bomber', scarf: 'none', decal: 'none' }, CONCRETE, 'abcdefgh');
+    const plain = makeLook({ bike: 'moto', engine: 'road', paint: 'acid', helmet: 'visor', jacket: 'bomber', scarf: 'none', decal: 'none' }, CONCRETE, 'abcdefgh');
     expect(plain.plate).toBe('');
   });
 });

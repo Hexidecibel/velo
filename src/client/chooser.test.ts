@@ -89,12 +89,15 @@ describe('levelNumber', () => {
 
 describe('difficultyBand', () => {
   it('separates the set rather than piling it into one word', () => {
-    // The real scores at both ends of the shipped set.
-    expect(difficultyBand(8)).toBe('gentle');
-    expect(difficultyBand(20)).toBe('steady');
-    expect(difficultyBand(35)).toBe('tricky');
-    expect(difficultyBand(43)).toBe('hard');
-    expect(difficultyBand(56)).toBe('brutal');
+    // Real scores from the shipped set under SCORE_REV 2, which spans 13-85.
+    // These moved when the composite did: the old sample (8/20/35/43/56) was
+    // drawn against a 8-56 scale and every one of those values now means
+    // something different. A band table and its scale are one thing.
+    expect(difficultyBand(13)).toBe('gentle'); // 02 the long climb
+    expect(difficultyBand(38)).toBe('steady'); // 15 feather
+    expect(difficultyBand(52)).toBe('tricky'); // 21 rollers
+    expect(difficultyBand(62)).toBe('hard'); // 23 pump
+    expect(difficultyBand(84)).toBe('brutal'); // 08 needle
   });
 
   it('is monotonic — a higher score never reads as easier', () => {
@@ -118,7 +121,7 @@ describe('buildItem', () => {
     expect(it0.spanY).toBe(20);
     expect(it0.number).toBe(5);
     expect(it0.rating?.score).toBe(40);
-    expect(it0.rating?.band).toBe('hard');
+    expect(it0.rating?.band).toBe('steady');
   });
 
   it('is uncompleted with no best, and says nothing about a time it does not have', () => {

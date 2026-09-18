@@ -28,11 +28,23 @@
 // a legal appearance is, and one copy is how that stays true.
 
 /** The axes. Adding one means adding it here, in `Appearance`, and in the art. */
-export type AppearanceKey = 'bike' | 'paint' | 'helmet' | 'jacket' | 'scarf' | 'decal';
+export type AppearanceKey = 'bike' | 'engine' | 'paint' | 'helmet' | 'jacket' | 'scarf' | 'decal';
 
 export interface Appearance {
   /** Which bike. Cosmetic silhouette only — same spec, same collision, always. */
   bike: string;
+  /**
+   * What it SOUNDS like. Same status as the paint and for the same reason: it
+   * is presentation, it is outside `BikeSpec`, and it cannot move a time.
+   *
+   * It is an appearance axis rather than an audio setting because it is a
+   * property of YOUR BIKE — it persists, travels and is claimed exactly like
+   * the livery — whereas the volume slider is a property of your speakers.
+   * The acoustics behind each id live in `client/audio/firing.ts`; this list is
+   * shared because the server validates against it, and shared code has no
+   * business importing a synthesiser.
+   */
+  engine: string;
   /** The colourway. Curated, never a free colour wheel — see bikeart.ts. */
   paint: string;
   /** Helmet style. Decorates the head circle; never enlarges it. */
@@ -75,6 +87,31 @@ export const BIKES: readonly AppearanceOption[] = [
   { id: 'bobber', label: 'bobber', note: 'fat and low — deep tank, solo saddle, stubby shotgun pipe' },
   { id: 'mono', label: 'monocoque', note: 'one slab body, disc wheels, a vent where the pipe would be' },
   { id: 'trials', label: 'trials', note: 'skeletal — barely any bodywork, a seat pad, a pipe tucked high' },
+];
+
+/**
+ * THE ENGINES.
+ *
+ * FOUR FIRING PATTERNS, and the firing pattern is the whole of the character —
+ * see `client/audio/firing.ts`, where each of these is a real crank angle and a
+ * real cylinder count rather than an adjective. They are synthesised like every
+ * other sound in the game, which is what lets the note follow the driven
+ * wheel's actual angular velocity instead of being a sample pitched up.
+ *
+ * `road` is first and therefore the default, because it is the one the game
+ * already sounded closest to and because a default nobody chose should never be
+ * the joke.
+ *
+ * ONLY YOUR OWN BIKE IS AUDIBLE. A ghost carries this field like every other,
+ * and nothing plays it: the end-of-level montage puts two dozen bikes on screen
+ * at once and two dozen engines would be unlistenable. Yours makes a noise,
+ * everybody else is a picture.
+ */
+export const ENGINES: readonly AppearanceOption[] = [
+  { id: 'road', label: 'inline four', note: 'even, smooth, revs to five figures — the shipped note' },
+  { id: 'dirt', label: 'two-stroke', note: 'fires every revolution, so twice as busy and twice as rude — brap' },
+  { id: 'vtwin', label: 'v-twin', note: 'shared crankpin, 315 then 405 degrees — the limp that goes potato-potato' },
+  { id: 'mower', label: 'lawnmower', note: 'one bang per two revolutions, governed, and the governor hunts' },
 ];
 
 /**
@@ -143,6 +180,7 @@ export const DECALS: readonly AppearanceOption[] = [
 
 export const APPEARANCE_AXES: readonly AppearanceAxis[] = [
   { key: 'bike', label: 'bike', note: 'six silhouettes, one set of physics', options: BIKES },
+  { key: 'engine', label: 'engine', note: 'sound only — nothing here touches the physics either', options: ENGINES },
   { key: 'paint', label: 'paint', note: 'lifted to clear the level it is ridden on', options: PAINTS },
   { key: 'helmet', label: 'helmet', note: 'drawn inside the death sphere, never around it', options: HELMETS },
   { key: 'jacket', label: 'jacket', note: '', options: JACKETS },
@@ -158,6 +196,7 @@ export const APPEARANCE_AXES: readonly AppearanceAxis[] = [
  */
 export const DEFAULT_APPEARANCE: Appearance = Object.freeze({
   bike: 'scrambler',
+  engine: 'road',
   paint: 'ember',
   helmet: 'visor',
   jacket: 'bomber',
@@ -167,6 +206,7 @@ export const DEFAULT_APPEARANCE: Appearance = Object.freeze({
 
 const AXIS_BY_KEY: Record<AppearanceKey, readonly AppearanceOption[]> = {
   bike: BIKES,
+  engine: ENGINES,
   paint: PAINTS,
   helmet: HELMETS,
   jacket: JACKETS,
@@ -174,7 +214,8 @@ const AXIS_BY_KEY: Record<AppearanceKey, readonly AppearanceOption[]> = {
   decal: DECALS,
 };
 
-export const APPEARANCE_KEYS: readonly AppearanceKey[] = ['bike', 'paint', 'helmet', 'jacket', 'scarf', 'decal'];
+export const APPEARANCE_KEYS: readonly AppearanceKey[] =
+  ['bike', 'engine', 'paint', 'helmet', 'jacket', 'scarf', 'decal'];
 
 /** Every legal id on one axis. */
 export function optionsFor(key: AppearanceKey): readonly AppearanceOption[] {
@@ -217,7 +258,10 @@ export function appearanceEqual(a: Appearance, b: Appearance): boolean {
 }
 
 export function cloneAppearance(a: Appearance): Appearance {
-  return { bike: a.bike, paint: a.paint, helmet: a.helmet, jacket: a.jacket, scarf: a.scarf, decal: a.decal };
+  return {
+    bike: a.bike, engine: a.engine, paint: a.paint, helmet: a.helmet,
+    jacket: a.jacket, scarf: a.scarf, decal: a.decal,
+  };
 }
 
 /** "café racer in ice" — one line for a ghost caption or a tooltip. */
@@ -261,6 +305,13 @@ export function appearanceFor(playerId: string): Appearance {
   const pick = (opts: readonly AppearanceOption[], n: number): string => opts[n % opts.length].id;
   return {
     bike: pick(BIKES, h & 0xff),
+    // Rolled like the rest, so "surprise me" surprises you with a noise too.
+    // The ONE place this derivation is overridden is a player who has never
+    // chosen anything at all — see `loadIdentity`, which pins their engine to
+    // the default. A livery you did not pick is how a board full of strangers
+    // looks like a board full of people; an engine you did not pick is just a
+    // lawnmower you cannot explain thirty seconds into your first game.
+    engine: pick(ENGINES, (g >>> 16) & 0xff),
     paint: pick(PAINTS, (h >>> 8) & 0xff),
     helmet: pick(HELMETS, (h >>> 16) & 0xff),
     jacket: pick(JACKETS, (h >>> 24) & 0xff),

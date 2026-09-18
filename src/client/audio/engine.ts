@@ -15,11 +15,26 @@
 // which is exactly when the sounds happen.
 //
 // Taste: Jet Set Radio Future. Synthetic and characterful, not a recording of a
-// motor. Two detuned saws and a square sub through a filter that opens with
-// LOAD rather than with revs, which is the part that makes it read as a machine
-// doing work rather than as a tone going up.
+// motor. Two detuned wave oscillators and a square sub through a filter that
+// opens with LOAD rather than with revs, which is the part that makes it read
+// as a machine doing work rather than as a tone going up.
+//
+// THE ENGINE IS A FIRING PATTERN, NOT A WAVEFORM, and that is the one thing in
+// this file worth understanding. `firing.ts` turns a cylinder count and a set
+// of crank angles into a `PeriodicWave` — one engine cycle is one period, and
+// each cylinder's exhaust pulse sits inside it at its own angle. Run that
+// oscillator at the CYCLE rate and every bang lands where it belongs, forever,
+// at the cost of one oscillator. A V-twin's 315/405 limp is therefore a
+// property of the wavetable rather than of any scheduling, which is why it
+// survives being paused, backgrounded, ducked and detuned.
+//
+// The wave is built lazily and cached per engine. It costs a few hundred
+// thousand float operations once, on a click in the customiser — never in a
+// frame that is riding.
 import type { Cue, Voices } from './model.ts';
 import { semitone } from './model.ts';
+import { engineFor, engineWave } from './firing.ts';
+import type { EngineSpec } from './firing.ts';
 
 /** Below this an AudioParam change is not worth a scheduling call. */
 const EPS_HZ = 0.5;
@@ -29,8 +44,16 @@ export interface Synth {
   readonly ctx: AudioContext;
   /** Continuous voices, once per rendered frame. */
   apply(v: Voices): void;
-  /** Tone shape from the panel: saw detune in cents, and the sub's level. */
-  setTimbre(detuneCents: number, sub: number): void;
+  /**
+   * Swap the firing pattern, and the layer offset baked into the second table.
+   * Idempotent, and free when nothing changed.
+   *
+   * IT BUILDS TWO WAVETABLES, so it is deliberately not something `apply()`
+   * does: called from a click in the customiser or from the gesture that opens
+   * the context, a millisecond is invisible; called from the frame loop it is a
+   * visible spike, and `bin/audiobench` was the thing that noticed.
+   */
+  setEngine(id: string, spread: number): void;
   /** One-shot. At most a handful a second. */
   fire(cue: Cue, p: { pickup: number; finish: number; death: number; impact: number; flip: number }): void;
   /** Master level, 0..1. Mute and the overview duck both come through here. */
@@ -103,6 +126,12 @@ export function createSynth(ctx: AudioContext): Synth {
   limiter.connect(ctx.destination);
 
   // --- engine ---------------------------------------------------------------
+  //
+  // Two of them, detuned either side of the fundamental, both carrying the same
+  // firing pattern. Two copies of a bang train drifting a few cents apart is
+  // what stops a synthesised motor sounding like a synthesiser: the pulses
+  // phase in and out against each other exactly the way two cylinders that are
+  // not perfectly matched do.
   const engA = osc(ctx, 'sawtooth', 60);
   const engB = osc(ctx, 'sawtooth', 60);
   const engSub = osc(ctx, 'square', 30);
@@ -176,11 +205,53 @@ export function createSynth(ctx: AudioContext): Synth {
   // Last applied value per continuous param, so an unchanged voice costs a
   // compare and not a scheduling call. Most frames change two of the nine.
   const last = {
-    engHz: -1, engGain: -1, engCut: -1, detune: -1, sub: -1,
+    engHz: -1, engSubHz: -1, engGain: -1, engCut: -1, engQ: -1, sub: -1,
     scrubGain: -1, scrubHz: -1,
     windGain: -1, windHz: -1,
     susGain: -1, susHz: -1,
   };
+
+  // Built on demand and kept. Four engines is four tables for the life of the
+  // page; building one is a few hundred thousand float ops, which is nothing
+  // once and unthinkable per frame.
+  const waves = new Map<string, PeriodicWave>();
+  let engineSpec: EngineSpec = engineFor(null);
+  /** The layer offset currently baked into engB's table, in thousandths of a cycle. */
+  let spreadMilli = -1;
+
+  function waveFor(e: EngineSpec, shift: number): PeriodicWave {
+    const key = `${e.id}:${Math.round(shift * 1000)}`;
+    const have = waves.get(key);
+    if (have) return have;
+    const w = engineWave(e, undefined, shift);
+    // `disableNormalization` because firing.ts has already peak-normalised the
+    // series itself. Normalising twice would be harmless; normalising somewhere
+    // that a test cannot see would not be, and that is the point — what the
+    // offline renderer writes to a WAV is what this plays.
+    const wave = ctx.createPeriodicWave(w.real, w.imag, { disableNormalization: true });
+    waves.set(key, wave);
+    return wave;
+  }
+
+  /**
+   * THE TWO LAYERS RUN AT THE SAME FREQUENCY and differ only by a fixed
+   * rotation of the pattern. That is the whole of the "two slightly mismatched
+   * cylinders" effect, and doing it in the TABLE rather than by detuning an
+   * oscillator is the only way to have it without the firing rhythm wandering —
+   * see the note on `shift` in firing.ts, which is a bug an offline render
+   * caught before anybody had to listen to it.
+   */
+  function applyEngine(e: EngineSpec, milli: number): void {
+    engineSpec = e;
+    spreadMilli = milli;
+    engA.setPeriodicWave(waveFor(e, 0));
+    engB.setPeriodicWave(waveFor(e, milli / 1000));
+  }
+
+  // NOT built here. The oscillators are sawtooths for exactly as long as it
+  // takes `createAudio` to call `setEngine` on the next line of the same
+  // synchronous block — building a table the caller is about to replace would
+  // be two milliseconds spent to be wrong.
 
   function follow(p: AudioParam, target: number, prev: number, t: number, tau: number, eps: number): number {
     if (prev >= 0 && Math.abs(target - prev) < eps) return prev;
@@ -215,34 +286,42 @@ export function createSynth(ctx: AudioContext): Synth {
   return {
     ctx,
 
-    setTimbre(detuneCents: number, sub: number): void {
-      const t = ctx.currentTime;
-      if (Math.abs(detuneCents - last.detune) >= 0.25) {
-        last.detune = detuneCents;
-        // Split either side of the fundamental rather than one saw sharp: a
-        // one-sided detune drags the perceived pitch with it, so the panel's
-        // detune slider would also be a tuning slider.
-        engA.detune.setTargetAtTime(-detuneCents / 2, t, 0.02);
-        engB.detune.setTargetAtTime(detuneCents / 2, t, 0.02);
-      }
-      if (Math.abs(sub - last.sub) >= EPS_GAIN) {
-        last.sub = sub;
-        engSubG.gain.setTargetAtTime(sub, t, 0.03);
-      }
+    setEngine(id: string, spread: number): void {
+      const next = engineFor(id);
+      const milli = Math.round(Math.max(0, Math.min(0.2, spread)) * 1000);
+      if (next === engineSpec && milli === spreadMilli) return;
+      applyEngine(next, milli);
     },
 
     apply(v: Voices): void {
       const t = ctx.currentTime;
-      // The detuned twin and the sub track the main oscillator exactly, so all
-      // three are rescheduled together or not at all.
-      if (last.engHz < 0 || Math.abs(v.engineHz - last.engHz) >= EPS_HZ) {
-        last.engHz = v.engineHz;
-        engA.frequency.setTargetAtTime(v.engineHz, t, 0.012);
-        engB.frequency.setTargetAtTime(v.engineHz, t, 0.012);
-        engSub.frequency.setTargetAtTime(v.engineHz * 0.5, t, 0.012);
+      // The oscillators run at the CYCLE rate, not the firing rate: one period
+      // of the wave is one full engine cycle with every bang inside it.
+      if (last.engHz < 0 || Math.abs(v.engineCycleHz - last.engHz) >= EPS_HZ * 0.25) {
+        last.engHz = v.engineCycleHz;
+        engA.frequency.setTargetAtTime(v.engineCycleHz, t, 0.012);
+        engB.frequency.setTargetAtTime(v.engineCycleHz, t, 0.012);
+      }
+      if (last.engSubHz < 0 || Math.abs(v.engineSubHz - last.engSubHz) >= EPS_HZ) {
+        last.engSubHz = v.engineSubHz;
+        engSub.frequency.setTargetAtTime(v.engineSubHz, t, 0.012);
+      }
+      // A wavetable rebuild, so it is gated on the value actually MOVING by a
+      // thousandth of a cycle. In play that is never: `setEngine` already put
+      // the right table in place off the frame loop, and this fires only while
+      // somebody drags the spread slider on the tuning panel. Every value it
+      // lands on is cached, so a drag pays once per stop.
+      const wantMilli = Math.round(v.engineSpread * 1000);
+      if (wantMilli !== spreadMilli) applyEngine(engineSpec, wantMilli);
+      if (Math.abs(v.engineSub - last.sub) >= EPS_GAIN) {
+        last.sub = v.engineSub;
+        engSubG.gain.setTargetAtTime(v.engineSub, t, 0.03);
       }
       last.engGain = follow(engGain.gain, v.engineGain, last.engGain, t, 0.03, EPS_GAIN);
       last.engCut = follow(engFilter.frequency, v.engineCutoffHz, last.engCut, t, 0.025, EPS_HZ * 6);
+      // Per engine and otherwise constant, so this is a compare on every frame
+      // but the one where somebody changed motor.
+      last.engQ = follow(engFilter.Q, v.engineQ, last.engQ, t, 0.05, 0.01);
       last.scrubGain = follow(scrubG.gain, v.scrubGain, last.scrubGain, t, 0.02, EPS_GAIN);
       last.scrubHz = follow(scrubF.frequency, v.scrubHz, last.scrubHz, t, 0.03, EPS_HZ * 8);
       last.windGain = follow(windG.gain, v.windGain, last.windGain, t, 0.05, EPS_GAIN);

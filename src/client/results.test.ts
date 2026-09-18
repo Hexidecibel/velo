@@ -245,7 +245,7 @@ describe('the compact board', () => {
     // person who rode everything.
     const painted: BoardEntry = {
       ...entry('pp', 'painted', 39 * SEC),
-      appearance: { bike: 'bobber', paint: 'acid', helmet: 'bucket', jacket: 'vest', scarf: 'none', decal: 'checks' },
+      appearance: { bike: 'bobber', engine: 'road', paint: 'acid', helmet: 'bucket', jacket: 'vest', scarf: 'none', decal: 'checks' },
     };
     const out = boardRows(board({ top: [painted, ...rows], total: 7, rank: 1, you: painted }), 'pp', 5);
     expect(out[0].appearance.bike).toBe('bobber');
@@ -259,6 +259,7 @@ describe('the actions', () => {
     canWatchRun: true,
     ghostName: 'krrl' as string | null,
     montageCount: null as number | null,
+    touch: false,
   };
 
   it('puts next level first and makes it the one and only primary', () => {
@@ -277,7 +278,7 @@ describe('the actions', () => {
   });
 
   it('always offers a way out, even on a one-level build with nothing banked', () => {
-    const acts = actionsFor({ nextLabel: null, canWatchRun: false, ghostName: null, montageCount: null });
+    const acts = actionsFor({ nextLabel: null, canWatchRun: false, ghostName: null, montageCount: null, touch: false });
     expect(acts.map((a) => a.id)).toEqual(['retry', 'board', 'levels', 'dismiss']);
   });
 
@@ -294,7 +295,8 @@ describe('the actions', () => {
     for (const a of [
       base,
       { ...base, ghostName: null },
-      { nextLabel: null, canWatchRun: false, ghostName: null, montageCount: null },
+      { nextLabel: null, canWatchRun: false, ghostName: null, montageCount: null, touch: false },
+      { ...base, touch: true },
     ]) {
       const acts = actionsFor(a);
       expect(JSON.stringify(acts)).not.toMatch(/tas/i);
@@ -329,6 +331,27 @@ describe('the actions', () => {
     expect(actionForKey('KeyF', actionsFor(base))).toBe(null);
   });
 
+  it('does not print a leaderboard button on the device that has no leaderboard', () => {
+    // THE SAME BUG AS THE MONTAGE BOUND TO `A`, and worse: an advertised
+    // control that reaches nothing, advertised on the one device where it is
+    // dead. `body.touch #board` is `display: none`, so on a phone this row was
+    // tappable, succeeded at everything it did — set the flag, persist it,
+    // refetch the board — and showed nothing. It also left `board = true` in
+    // storage, so that player's next DESKTOP session opened with a panel they
+    // never asked for.
+    expect(actionsFor(base).some((a) => a.id === 'board')).toBe(true);
+    expect(actionsFor({ ...base, touch: true }).some((a) => a.id === 'board')).toBe(false);
+    // And the key goes with it: `actionForKey` answers exactly what is printed,
+    // which is the property that stops this coming back as a live key for a
+    // button that is not there.
+    expect(actionForKey('KeyB', actionsFor({ ...base, touch: true }))).toBe(null);
+    // Everything else the panel offers is reachable by thumb and stays.
+    const touchActs = actionsFor({ ...base, touch: true, montageCount: 4 }).map((a) => a.id);
+    for (const id of ['next', 'retry', 'watchRun', 'montage', 'watchGhost', 'levels', 'dismiss']) {
+      expect(touchActs, id).toContain(id);
+    }
+  });
+
   it('names the ghost it offers, so "watch" is not a guess', () => {
     expect(actionsFor(base).find((a) => a.id === 'watchGhost')!.label).toBe("watch krrl's run");
   });
@@ -345,7 +368,7 @@ describe('the actions', () => {
     it('answers R whatever else is on the panel', () => {
       // R is the key this game is played with. It is the one binding the results
       // screen may not make conditional on anything.
-      for (const set of [acts, actionsFor({ nextLabel: null, canWatchRun: false, ghostName: null, montageCount: null })]) {
+      for (const set of [acts, actionsFor({ nextLabel: null, canWatchRun: false, ghostName: null, montageCount: null, touch: false })]) {
         expect(actionForKey('KeyR', set)).toBe('retry');
       }
     });
@@ -395,7 +418,7 @@ describe('the whole model', () => {
     tasTimeTicks: null as number | null,
     playerId: 'cc',
     rowLimit: 5,
-    actions: { nextLabel: null, canWatchRun: true, ghostName: null, montageCount: null },
+    actions: { nextLabel: null, canWatchRun: true, ghostName: null, montageCount: null, touch: false },
   };
 
   it('is complete with NO SERVER: the summary and the actions both survive it', () => {

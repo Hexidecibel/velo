@@ -148,7 +148,13 @@ describe('submit — the happy path', () => {
     const painted = await submit(
       good({
         playerId: 'bbbbbbbb2222',
-        appearance: { bike: 'bobber', paint: 'acid', helmet: 'bucket', jacket: 'vest', scarf: 'none', decal: 'checks' },
+        // Including the ENGINE, which is the axis most likely to look like it
+        // ought to be part of the bike: it changes what the machine sounds
+        // like, and it still may not reach the hash the server verifies on.
+        appearance: {
+          bike: 'bobber', engine: 'vtwin', paint: 'acid', helmet: 'bucket',
+          jacket: 'vest', scarf: 'none', decal: 'checks',
+        },
       }),
     );
     expect(painted.ok).toBe(true);
@@ -159,7 +165,8 @@ describe('submit — the happy path', () => {
     expect(painted.entry.specHash).toBe(plain.entry.specHash);
     expect(painted.entry.specHash).toBe(OFFICIAL_SPEC_HASH);
     expect(painted.entry.appearance).toEqual({
-      bike: 'bobber', paint: 'acid', helmet: 'bucket', jacket: 'vest', scarf: 'none', decal: 'checks',
+      bike: 'bobber', engine: 'vtwin', paint: 'acid', helmet: 'bucket',
+      jacket: 'vest', scarf: 'none', decal: 'checks',
     });
   });
 

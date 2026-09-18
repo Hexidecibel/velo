@@ -11,6 +11,7 @@ import { createRideModel } from './model.ts';
 import type { Cue, RideSample, Voices } from './model.ts';
 import { cloneAudio, DEFAULT_AUDIO } from './params.ts';
 import type { AudioParams } from './params.ts';
+import { ENGINE_SPECS, engineFor, fireHzAt } from './firing.ts';
 
 const FRAME = 1 / 60;
 
@@ -304,5 +305,165 @@ describe('frame independence', () => {
       expect(Number.isFinite(out.voices.engineHz)).toBe(true);
       expect(Number.isFinite(out.voices.engineGain)).toBe(true);
     }
+  });
+});
+
+// --- the four engines --------------------------------------------------------
+//
+// The acoustics of a firing pattern live in firing.test.ts, which asserts that
+// the bangs come out at the crank angles they were put at. THIS is the other
+// half: that the pattern is driven by the sim, that all four are driven the
+// same way, and that swapping one cannot change anything except the noise.
+
+describe('choosing an engine', () => {
+  /** Firing rate, settled, at a given wheel spin, on a given motor. */
+  function hzAt(id: string, spin: number, frames = 90): number {
+    const { model } = newModel();
+    model.setEngine(id);
+    return settle(model, (i) => sample({ tick: i * 4, driveSpin: spin, throttle: true }), frames)
+      .voices.engineHz;
+  }
+
+  it('leaves pitch tracking wheel spin monotonically on every one of them', () => {
+    // The thesis at the top of this file has to survive four motors. Whatever
+    // the cylinder count, opening the throttle must make the note go one way.
+    for (const e of ENGINE_SPECS) {
+      let prev = -1;
+      for (const spin of [0, 5, 10, 20, 30, 40, 55, 70, 80]) {
+        const hz = hzAt(e.id, spin);
+        expect(hz, `${e.id} at spin ${spin}`).toBeGreaterThan(prev);
+        prev = hz;
+      }
+    }
+  });
+
+  it('stops climbing at maxWheelSpin on every one of them', () => {
+    for (const e of ENGINE_SPECS) {
+      expect(hzAt(e.id, 400), e.id).toBeCloseTo(hzAt(e.id, 80), 1);
+    }
+  });
+
+  it('makes four measurably different noises at the same wheel speed', () => {
+    // Twenty bangs a second apart at full chat, minimum. Two motors that agree
+    // to within a rounding error at the same spin are one motor with two names.
+    const top = ENGINE_SPECS.map((e) => ({ id: e.id, hz: hzAt(e.id, 80) }));
+    for (let i = 0; i < top.length; i++) {
+      for (let j = i + 1; j < top.length; j++) {
+        expect(Math.abs(top[i].hz - top[j].hz), `${top[i].id} vs ${top[j].id}`).toBeGreaterThan(20);
+      }
+    }
+  });
+
+  it('puts them in the order the mechanism says: I4, two-stroke, V-twin, mower', () => {
+    // Bangs per second at full throttle and full spin. The two-stroke beats the
+    // V-twin despite having a quarter of the cylinders because it fires every
+    // revolution; the mower is last because it fires every OTHER revolution and
+    // is governed. None of this is a taste decision.
+    expect(hzAt('road', 80)).toBeGreaterThan(hzAt('dirt', 80));
+    expect(hzAt('dirt', 80)).toBeGreaterThan(hzAt('vtwin', 80));
+    expect(hzAt('vtwin', 80)).toBeGreaterThan(hzAt('mower', 80));
+  });
+
+  it('lands each engine on its own documented rev range', () => {
+    // The specs claim rpm figures. This is the check that those figures are
+    // what actually comes out rather than documentation that drifted.
+    for (const e of ENGINE_SPECS) {
+      expect(hzAt(e.id, 0), `${e.id} idle`).toBeCloseTo(fireHzAt(e, e.idleRpm), 0);
+      expect(hzAt(e.id, 80), `${e.id} redline`).toBeCloseTo(fireHzAt(e, e.redlineRpm), 0);
+    }
+  });
+
+  it('runs the oscillator at the CYCLE rate, which is what places the bangs', () => {
+    // The firing pattern is one period of a wave (see firing.ts). Get this
+    // divide wrong and a V-twin plays its limp at twice the rate it should.
+    for (const e of ENGINE_SPECS) {
+      const { model } = newModel();
+      model.setEngine(e.id);
+      const v = settle(model, (i) => sample({ tick: i * 4, driveSpin: 40, throttle: true }), 90).voices;
+      expect(v.engineCycleHz, e.id).toBeCloseTo(v.engineHz / e.fires.length, 6);
+      expect(v.engineSubHz, e.id).toBeCloseTo(v.engineHz * e.subMult, 6);
+    }
+  });
+
+  it('hunts on the lawnmower and nowhere else', () => {
+    // The governor chasing its setpoint. It is the funny part, and it is a real
+    // mechanism rather than a wobble bolted on, so it is asserted like one.
+    const spread = (id: string): number => {
+      const { model } = newModel();
+      model.setEngine(id);
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (let i = 0; i < 300; i++) {
+        const hz = model.update(sample({ tick: i * 4, driveSpin: 0, throttle: true }), FRAME).voices.engineHz;
+        if (i > 120) {
+          lo = Math.min(lo, hz);
+          hi = Math.max(hi, hz);
+        }
+      }
+      return (hi - lo) / ((hi + lo) / 2);
+    };
+    expect(spread('mower')).toBeGreaterThan(0.04);
+    for (const e of ENGINE_SPECS) {
+      if (e.id !== 'mower') expect(spread(e.id), e.id).toBeLessThan(1e-6);
+    }
+  });
+
+  it('falls back to the reference engine on an id it does not know', () => {
+    expect(hzAt('from-the-future', 40)).toBeCloseTo(hzAt(engineFor(null).id, 40), 6);
+  });
+
+  it('CANNOT change a single cue, however loud the engine gets', () => {
+    // The engine is presentation inside a subsystem that is already
+    // presentation. Landings, apples, the flower and death are events in the
+    // run, and a lawnmower must not miss one.
+    const run = (id: string): string => {
+      const { model } = newModel();
+      model.setEngine(id);
+      const out: string[] = [];
+      for (let i = 0; i < 40; i++) {
+        model.update(sample({ tick: i * 4, grounded: 0, wheelVy: [-9, -9], comp01: [0, 0], throttle: true }), FRAME);
+      }
+      for (let i = 40; i < 60; i++) {
+        const f = model.update(
+          sample({ tick: i * 4, grounded: 3, comp01: [0.8, 0.8], applesLeft: i < 45 ? 3 : 2, throttle: true }),
+          FRAME,
+        );
+        for (const c of f.cues) out.push(c.kind);
+      }
+      return out.join(',');
+    };
+    const road = run('road');
+    expect(road).toContain('land');
+    expect(road).toContain('apple');
+    for (const e of ENGINE_SPECS) expect(run(e.id), e.id).toBe(road);
+  });
+});
+
+describe('the picker preview', () => {
+  it('revs a stationary bike and then stops', () => {
+    // The customiser pauses the sim, so without this, choosing an engine
+    // changes an idle you have to take on faith.
+    const { model } = newModel();
+    model.setEngine('vtwin');
+    const still = settle(model, (i) => sample({ tick: i * 4 }), 60).voices.engineHz;
+    model.blip();
+    let peak = 0;
+    for (let i = 0; i < 40; i++) {
+      peak = Math.max(peak, model.update(sample({ tick: 240 }), FRAME).voices.engineHz);
+    }
+    expect(peak).toBeGreaterThan(still * 1.5);
+    const after = settle(model, () => sample({ tick: 240 }), 120).voices.engineHz;
+    expect(after).toBeCloseTo(still, 0);
+  });
+
+  it('is audible on a dead run, because that is what the panel is usually opened over', () => {
+    const { model } = newModel();
+    settle(model, (i) => sample({ tick: i * 4, dead: true }), 60);
+    model.blip();
+    let peak = 0;
+    for (let i = 0; i < 40; i++) {
+      peak = Math.max(peak, model.update(sample({ tick: 240, dead: true }), FRAME).voices.engineGain);
+    }
+    expect(peak).toBeGreaterThan(0.05);
   });
 });

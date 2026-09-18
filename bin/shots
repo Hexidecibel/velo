@@ -20,8 +20,18 @@
 #                                              # top. Presets: land-chrome,
 #                                              # land-full, land-small,
 #                                              # land-iphone, portrait,
-#                                              # portrait-narrow, tablet — or
+#                                              # portrait-narrow, tablet,
+#                                              # ipad11-land, ipad11-port,
+#                                              # ipad13-land, ipad13-port — or
 #                                              # SHOTS_PHONES=name:WxH,...
+#                                              # The four iPads are real devices
+#                                              # in CSS px and they are a
+#                                              # DIFFERENT GRIP, not a bigger
+#                                              # phone: the pads sit up the side
+#                                              # edges where a hand holding a
+#                                              # slab actually is. Portrait is in
+#                                              # the list because a tablet gets
+#                                              # held that way.
 #   SHOTS_MENU=1 SHOTS_PHONES=1 SHOTS_QUERY=touch=1 bin/shots 07-the-chimney
 #                                              # the same, with the command
 #                                              # drawer OPEN. Restart and `more`
@@ -40,6 +50,22 @@
 #                                              # px/m: do six silhouettes read
 #                                              # as six bikes? A comparison, not
 #                                              # an opinion.
+#   SHOTS_ABOUT=1 SHOTS_PHONES=1 SHOTS_QUERY=touch=1 bin/shots 01-first-light
+#                                              # the about page, two frames per
+#                                              # viewport: the top of it and the
+#                                              # bottom of the same scroll. It is
+#                                              # the one screen here that is pure
+#                                              # layout, so "does the size
+#                                              # comparison still read" and "is
+#                                              # the way out still on screen at
+#                                              # the end of three hundred words"
+#                                              # are questions about pictures and
+#                                              # nothing else. Opened through the
+#                                              # `about` button in the control
+#                                              # legend, which is the only way in
+#                                              # a player has.
+#                                              # On the desktop pass it is
+#                                              # SHOTS_CHROME=1 SHOTS_ONLY=about,about-end.
 #   SHOTS_CHROME=1 SHOTS_ONLY=chooser,hud-off bin/shots 07-the-chimney
 #                                              # the level chooser with its
 #                                              # thumbnails drawn, and the frame

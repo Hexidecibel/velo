@@ -448,6 +448,46 @@ describe('the framing is metres of world, not pixels per metre', () => {
     expect(metres(3440) / metres(1600)).toBeGreaterThan(1);
   });
 
+  it('needs NOTHING doing for a tablet, and this is the measurement that says so', () => {
+    // THE ONE THING A TABLET PASS SHOULD NOT TOUCH, written down so the next
+    // pass does not touch it either. The worry was the vertical lead: on a
+    // 348 px phone `maxLeadY` is 2.2 m against 9.0 m of visible height, which
+    // is 24% of the screen and IS the dominant framing term there. A tablet is
+    // the opposite problem, and the opposite problem turns out to be no problem:
+    //
+    //   1600 x 900  desktop      62.0 px/m   25.81 x 14.52 m   lead 15.1% of h
+    //   1366 x 1024 iPad 13"     57.3 px/m   23.84 x 17.87 m   lead 12.3%
+    //   1194 x 834  iPad 11"     53.6 px/m   22.29 x 15.57 m   lead 14.1%
+    //   1024 x 1366 iPad 13" P   49.6 px/m   20.65 x 27.54 m   lead  8.0%
+    //    915 x 348  phone        38.6 px/m   23.73 x  9.03 m   lead 24.4%
+    //
+    // Every tablet is BELOW the reference's own 15%, so the term the phone had
+    // to be defended from is quieter on a tablet than on the desktop the levels
+    // were authored at. Nothing to fix.
+    const frame = (w: number, h: number): [number, number] => {
+      const z = baseZoomFor(P, w, h);
+      return [w / z, h / z];
+    };
+    const lead = (w: number, h: number): number => P.maxLeadY / frame(w, h)[1];
+    const ref = lead(1600, 900);
+    expect(ref).toBeCloseTo(0.1515, 3);
+    for (const [w, h] of [[1180, 820], [1194, 834], [834, 1194], [1366, 1024], [1024, 1366]]) {
+      expect(lead(w, h), `${w}x${h}`).toBeLessThan(ref);
+    }
+    expect(lead(915, 348)).toBeGreaterThan(ref);
+    // And the horizontal framing a tablet gets is within a couple of metres of
+    // the desktop's in landscape, which is the other half of "leave it alone".
+    expect(frame(1366, 1024)[0]).toBeCloseTo(23.84, 2);
+    expect(frame(1194, 834)[0]).toBeCloseTo(22.29, 2);
+    // Portrait is the one that gives up horizontal world, and it gives it up to
+    // the SAME rule that makes a landscape phone work: the starved axis sets the
+    // zoom, and in portrait that is the width. Zooming out to fill the height
+    // would show an 834 px-wide window more world than an 834 px-wide window is
+    // owed, which is the rule's whole premise inverted.
+    expect(frame(834, 1194)[0]).toBeCloseTo(18.63, 2);
+    expect(baseZoomFor(P, 834, 1194)).toBeCloseTo(baseZoomFor(P, 834), 9);
+  });
+
   it('lets the READABILITY FLOOR win on a screen too narrow to satisfy', () => {
     // The floor outranks framing, and this is where that gets paid for: a
     // portrait phone would want 31 px/m and gets 38, so it sees LESS world than

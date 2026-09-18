@@ -13,6 +13,8 @@
 // by tracking a per-wheel extremum across the airborne window rather than by
 // sampling faster.
 import type { AudioParams } from './params.ts';
+import { engineFor, engineScales } from './firing.ts';
+import type { EngineSpec } from './firing.ts';
 
 /**
  * Everything audio reads from the sim, in one flat struct of numbers.
@@ -61,10 +63,38 @@ export interface RideSample {
 
 /** Continuous voices. Every field is applied to a long-lived node every frame. */
 export interface Voices {
+  /**
+   * THE FIRING RATE, Hz — bangs per second, not the oscillator's frequency.
+   *
+   * This is the number a listener actually perceives, and it is the one the HUD
+   * and the tests use, because it is the only pitch-like quantity that means
+   * the same thing across four engines. A V-twin at 15 bangs a second is a
+   * rhythm you can count; an inline four at 333 is a note. The oscillator runs
+   * at `engineCycleHz` below, which is this divided by the bangs in one cycle.
+   */
   engineHz: number;
+  /**
+   * What the two wave oscillators are actually set to: one full engine cycle,
+   * 720 degrees of crank for a four-stroke. The firing PATTERN lives inside one
+   * period of the wave (see firing.ts), so running the oscillator at the cycle
+   * rate is what puts each bang at its own crank angle for free.
+   */
+  engineCycleHz: number;
+  /** The square sub, Hz. A multiple of the firing rate, per engine. */
+  engineSubHz: number;
   engineGain: number;
   /** Lowpass cutoff, Hz. Tracks how hard the engine is PULLING, not how fast. */
   engineCutoffHz: number;
+  /** Filter resonance. The two-stroke's rasp and the mower's honk are here. */
+  engineQ: number;
+  /**
+   * Separation between the two engine layers, as a fraction of one cycle
+   * (turns). Applied by rotating the second layer's wavetable, NOT by detuning
+   * an oscillator — see firing.ts.
+   */
+  engineSpread: number;
+  /** Level of the square sub. Per engine, scaled by the panel. */
+  engineSub: number;
   scrubGain: number;
   scrubHz: number;
   windGain: number;
@@ -99,6 +129,34 @@ export interface RideModel {
   update(s: RideSample, dtSec: number): RideFrame;
   /** Forget everything. A level change, a replay start, a restart. */
   reset(): void;
+  /**
+   * Which motor. An unknown id falls back to the reference engine rather than
+   * going silent — see `engineFor`.
+   */
+  setEngine(id: string): void;
+  /** The engine currently selected. The HUD names it; the synth needs its wave. */
+  readonly engine: EngineSpec;
+  /**
+   * The layer offset the synth should bake into its second wavetable, in turns.
+   *
+   * Readable WITHOUT stepping the model, which is the whole reason it is here:
+   * building a wavetable costs a millisecond or two, and the synth needs this
+   * number at the moment it swaps engines rather than on the next rendered
+   * frame. Asking for it there keeps the build inside a click handler instead
+   * of inside the frame loop, where `bin/audiobench` could see it.
+   */
+  readonly spread: number;
+  /**
+   * A one-off rev, for the picker.
+   *
+   * The customiser PAUSES the sim, so without this, choosing an engine changes
+   * an idle you have to take on faith. It is done here rather than as a
+   * scheduled envelope in the synth for one reason: `apply()` runs every
+   * rendered frame and would overwrite anything the synth scheduled behind its
+   * back. A preview that fights the frame loop is a preview that works until
+   * somebody unpauses.
+   */
+  blip(): void;
 }
 
 function clamp01(v: number): number {
@@ -133,11 +191,19 @@ const MIN_AIR_SEC = 0.09;
 /** Pickup ladder, in semitones above the base. Pentatonic, so it cannot sour. */
 const PICKUP_STEPS = [0, 2, 4, 7, 9, 12, 14, 16];
 
+/** How long the picker's preview rev lasts. Long enough to hear the rhythm. */
+const BLIP_SEC = 0.9;
+
 export function createRideModel(params: () => AudioParams): RideModel {
   const voices: Voices = {
     engineHz: 0,
+    engineCycleHz: 0,
+    engineSubHz: 0,
     engineGain: 0,
     engineCutoffHz: 400,
+    engineQ: 3,
+    engineSpread: 0.01,
+    engineSub: 0.35,
     scrubGain: 0,
     scrubHz: 800,
     windGain: 0,
@@ -145,6 +211,13 @@ export function createRideModel(params: () => AudioParams): RideModel {
     susGain: 0,
     susHz: 120,
   };
+
+  let engine: EngineSpec = engineFor(null);
+  let scales = engineScales(engine);
+  /** Governor hunt phase, turns. Advanced by wall time; a lawnmower only. */
+  let huntPhase = 0;
+  /** Seconds left of the picker's preview rev. See `blip`. */
+  let blipSec = 0;
 
   let started = false;
   let prevTick = -1;
@@ -186,6 +259,25 @@ export function createRideModel(params: () => AudioParams): RideModel {
 
   return {
     reset,
+    get engine(): EngineSpec {
+      return engine;
+    },
+    get spread(): number {
+      return clamp((params().engineSpread / 100) * engine.spread, 0, 0.2);
+    },
+    setEngine(id: string): void {
+      const next = engineFor(id);
+      if (next === engine) return;
+      engine = next;
+      scales = engineScales(next);
+      // Not reset: the hunt is a free-running mechanism, and restarting its
+      // phase on every click makes flicking through the list sound like the
+      // mower is being switched on four times.
+      huntPhase = huntPhase % 1;
+    },
+    blip(): void {
+      blipSec = BLIP_SEC;
+    },
     update(s: RideSample, dtSecRaw: number): RideFrame {
       // A tab that was backgrounded, a breakpoint, a slow first frame, and —
       // seen in the wild on the first frame after a resize — a NaN out of a
@@ -215,7 +307,9 @@ export function createRideModel(params: () => AudioParams): RideModel {
         prevComp[1] = s.comp01[1];
         // The engine comes up from silence rather than snapping to idle. Same
         // reason: this is the sound of attempt fifty-one starting.
-        voices.engineHz = p.engineIdleHz;
+        voices.engineHz = p.engineIdleHz * scales.idle;
+        voices.engineCycleHz = voices.engineHz / engine.fires.length;
+        voices.engineSubHz = voices.engineHz * engine.subMult;
       }
 
       const over = s.dead || s.finished;
@@ -226,9 +320,41 @@ export function createRideModel(params: () => AudioParams): RideModel {
       // zero. `rev` is therefore 1 exactly where the bike stops being able to
       // push harder, which is the moment the sound should stop climbing.
       const maxSpin = Math.max(s.maxWheelSpin, 1e-3);
-      const rev = clamp01(Math.abs(s.driveSpin) / maxSpin);
-      const shaped = Math.pow(rev, Math.max(p.engineCurve, 0.05));
-      const targetHz = p.engineIdleHz + (p.engineRevHz - p.engineIdleHz) * shaped;
+      let rev = clamp01(Math.abs(s.driveSpin) / maxSpin);
+
+      // THE PICKER'S PREVIEW, folded in here rather than scheduled behind the
+      // frame loop's back. While it runs it simply IS the rev signal: a rise, a
+      // hold and a fall, with the throttle down, on a bike that is not moving.
+      let blipping = false;
+      if (blipSec > 0) {
+        blipSec = Math.max(0, blipSec - dt);
+        const u = 1 - blipSec / BLIP_SEC;
+        blipping = true;
+        rev = Math.max(rev, 0.06 + 0.74 * Math.sin(Math.PI * clamp01(u)));
+      }
+      const throttle = s.throttle || blipping;
+
+      // Each engine's idle and redline as a RATIO against the reference motor,
+      // so `engineIdleHz` and `engineRevHz` on the panel stay sliders that mean
+      // what they say and move the whole fleet together. A V-twin idling at 900
+      // rpm with one bang per revolution is 0.375 of the inline four's 1200 rpm
+      // at two bangs per revolution, and that ratio is arithmetic out of
+      // firing.ts rather than a number somebody typed here.
+      const idleHz = p.engineIdleHz * scales.idle;
+      const revHz = p.engineRevHz * scales.rev;
+      const shaped = Math.pow(rev, clamp(p.engineCurve * engine.curve, 0.05, 4));
+      let targetHz = idleHz + (revHz - idleHz) * shaped;
+
+      // The governor hunting. A real mechanism on a real lawnmower — the thing
+      // swings either side of its setpoint because it only knows it is wrong
+      // after it already is — and the single most recognisable noise a small
+      // four-stroke makes. Free-running on wall time, so it does not sync to
+      // anything and never sounds like a tremolo.
+      if (engine.huntHz > 0 && engine.huntDepth > 0) {
+        huntPhase += dt * engine.huntHz;
+        if (huntPhase > 1e6) huntPhase = huntPhase % 1;
+        targetHz *= 1 + engine.huntDepth * Math.sin(2 * Math.PI * huntPhase);
+      }
 
       // The taper. step.ts scales drive torque by (1 - fwd/maxWheelSpin), so
       // `pull` is literally the fraction of its torque the engine still has.
@@ -236,21 +362,31 @@ export function createRideModel(params: () => AudioParams): RideModel {
       // engine is screaming with nothing behind it. That distinction is the
       // single most informative thing the sound can tell you, and it is why
       // brightness tracks pull while pitch tracks spin.
-      const pull = s.throttle ? clamp01(1 - rev) : 0;
+      const pull = throttle ? clamp01(1 - rev) : 0;
 
-      let gain = p.engineLevel * (0.3 + 0.7 * (0.25 + 0.75 * shaped));
-      if (!s.throttle) gain *= 0.6;
+      let gain = p.engineLevel * engine.level * (0.3 + 0.7 * (0.25 + 0.75 * shaped));
+      if (!throttle) gain *= 0.6;
       gain *= 0.78 + 0.22 * pull;
-      if (over) gain = 0;
+      // A dead or finished run is silent — unless the customiser is previewing,
+      // which happens on a paused game that may well be sitting on a corpse.
+      if (over && !blipping) gain = 0;
 
       voices.engineHz = toward(voices.engineHz, targetHz, dt, 0.035);
-      voices.engineGain = toward(voices.engineGain, gain, dt, over ? 0.05 : 0.09);
+      // Derived from the SMOOTHED firing rate rather than smoothed separately,
+      // so the oscillators, the sub and the pattern can never drift apart. One
+      // divide is cheaper than two more smoothers anyway.
+      voices.engineCycleHz = voices.engineHz / engine.fires.length;
+      voices.engineSubHz = voices.engineHz * engine.subMult;
+      voices.engineGain = toward(voices.engineGain, gain, dt, over && !blipping ? 0.05 : 0.09);
       voices.engineCutoffHz = toward(
         voices.engineCutoffHz,
-        clamp(voices.engineHz * (2.4 + 5.5 * pull) + 160, 90, 9000),
+        clamp(voices.engineHz * (engine.cutBase + engine.cutLoad * pull) + engine.cutFloor, 90, 11000),
         dt,
         0.05,
       );
+      voices.engineQ = engine.q;
+      voices.engineSpread = clamp((p.engineSpread / 100) * engine.spread, 0, 0.2);
+      voices.engineSub = p.engineSub * engine.sub;
 
       // --- tyre scrub ------------------------------------------------------
       //

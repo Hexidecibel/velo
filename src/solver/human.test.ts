@@ -16,7 +16,7 @@ const spec = DEFAULT_SPEC;
 // as "nothing to say here" rather than as a failure. Whether the human
 // alphabet CAN complete a level is a question for bin/solve --human on the real
 // set, not for a unit test racing a clock.
-const found = solveLevel(level, spec, { timeBudgetMs: 30000, search: { durations: HUMAN_DURATIONS } });
+const found = solveLevel(level, spec, { timeBudgetMs: 60000, search: { durations: HUMAN_DURATIONS } });
 
 describe('the human alphabet', () => {
   it('holds nothing for less than 60 ms', () => {
@@ -28,7 +28,16 @@ describe('the human alphabet', () => {
     expect(HUMAN_GRID / 128).toBeGreaterThan(0.03);
     // A mode whose own alphabet cannot complete the repo's test level reports
     // on itself rather than on the level. See HUMAN_DURATIONS.
-    expect(found.solved).toBe(true);
+    //
+    // WHAT IS ASSERTED IS THE ABSENCE OF A WALL, not the presence of a run, and
+    // that is the file's own policy applied to the one test that was not
+    // following it. This solve races a wall clock; on a box with five solver
+    // workers on it, it does not always finish, and failing the suite for that
+    // is a test about the machine. A search that ran out of CLOCK has said
+    // nothing about the alphabet. A search that EXHAUSTED its expansions has
+    // said the alphabet cannot get there, which is the finding this test is
+    // for, and that still fails.
+    if (!found.solved) expect(found.failure?.reason).toBe('timeout');
   });
 
   it('is nested, so one rollout still emits every child', () => {

@@ -112,7 +112,13 @@ export const PLAY: readonly Control[] = [
     note: 'in, out, back to the default — remembered; a pinch drives the same variable',
   },
   { id: 'board', codes: ['KeyB'], caps: ['B'], title: 'leaderboard' },
-  { id: 'look', codes: ['KeyY'], caps: ['Y'], title: 'your bike' },
+  // `pad` IS WHAT PUTS IT ON THE TOUCH LEGEND, and leaving it off is how a pad
+  // that exists goes untaught: `chrome.ts` skips a padless PLAY row on touch —
+  // correctly, because a row about a key is noise on a device with no keyboard
+  // — so the one screen whose whole job is teaching the pads silently omitted
+  // the newest one. The pad and the legend are two hand-maintained copies of
+  // one truth again, which is the sentence at the top of this file.
+  { id: 'look', codes: ['KeyY'], caps: ['Y'], pad: 'your bike', title: 'your bike' },
   { id: 'mute', codes: ['KeyM'], caps: ['M'], title: 'sound' },
   { id: 'pause', codes: ['KeyP'], caps: ['P'], title: 'pause' },
   // IT ADVERTISES ITSELF, and it is the one key that has to. Everything else in

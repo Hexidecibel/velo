@@ -54,6 +54,24 @@ export interface Audio {
   update(sample: RideSample, dtSec: number): void;
   /** A level change or a replay starting: forget the run, kill every tail. */
   reset(): void;
+  /**
+   * Which motor YOUR bike has. An appearance axis, not a tuning parameter: it
+   * persists, travels and is claimed exactly like the paint (see
+   * `src/shared/appearance.ts`), and it can no more move a time than the paint
+   * can. Unknown ids fall back rather than going silent.
+   *
+   * There is exactly ONE of these in the game at a time, because there is
+   * exactly one audible bike. A ghost carries an engine id and nothing ever
+   * reads it.
+   */
+  setEngine(id: string): void;
+  /** The engine in force. For the HUD, and for bin/smoke to read back. */
+  readonly engine: string;
+  /**
+   * A one-off rev, for the picker. Starts the context if a gesture allows it,
+   * because the click that chose the engine IS one.
+   */
+  blip(): void;
 }
 
 interface AudioCtor {
@@ -114,6 +132,28 @@ export function createAudio(params: () => AudioParams): Audio {
       model.reset();
       synth?.panic();
     },
+    setEngine(id: string): void {
+      // Both halves, and neither may be skipped: the model owns the firing
+      // RATE and the voicing, the synth owns the wavetable that puts the bangs
+      // at their crank angles. The synth may not exist yet — no gesture — in
+      // which case `start()` picks the model's engine up when it builds.
+      model.setEngine(id);
+      try {
+        synth?.setEngine(id, model.spread);
+      } catch (e) {
+        fail(e);
+      }
+    },
+    get engine(): string {
+      return model.engine.id;
+    },
+    blip(): void {
+      // The click that chose an engine is a user gesture, so this is also the
+      // moment audio is allowed to exist for the first time.
+      start();
+      resumeIfWanted();
+      model.blip();
+    },
   };
 
   function fail(e: unknown): void {
@@ -135,6 +175,9 @@ export function createAudio(params: () => AudioParams): Audio {
     try {
       const ctx = new Ctor();
       synth = createSynth(ctx);
+      // The engine may have been chosen long before a gesture allowed a context
+      // to exist. The model is the one that has been remembering it.
+      synth.setEngine(model.engine.id, model.spread);
       pushMaster();
       ctx.addEventListener('statechange', syncState);
       resumeIfWanted();
@@ -224,7 +267,6 @@ export function createAudio(params: () => AudioParams): Audio {
     try {
       const p = params();
       const frame = model.update(sample, dtSec);
-      synth.setTimbre(p.engineDetune, p.engineSub);
       synth.apply(frame.voices);
       for (const cue of frame.cues) {
         synth.fire(cue, p);

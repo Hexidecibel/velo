@@ -33,6 +33,8 @@ import { createRideModel } from './model.ts';
 import { cloneAudio, DEFAULT_AUDIO } from './params.ts';
 
 const SIM_DIR = fileURLToPath(new URL('../../sim/', import.meta.url));
+const CLIENT_DIR = fileURLToPath(new URL('../', import.meta.url));
+const clientSrc = (name: string): string => readFileSync(join(CLIENT_DIR, name), 'utf8');
 
 /** A busy input stream: every bit, and enough air time to land from. */
 function script(n: number): number[] {
@@ -132,5 +134,57 @@ describe('muting cannot change a run', () => {
     // And the run was not so dull that the assertion above was vacuous: a
     // silent run past a silent model proves nothing.
     expect(cues).toBeGreaterThan(0);
+  });
+});
+
+// GHOSTS ARE SILENT, AND THIS IS WHERE THAT IS ENFORCED RATHER THAN HOPED.
+//
+// An `Appearance` now carries an engine, and an appearance travels with every
+// replay — so the tempting thing, and the obviously wrong thing, is for a ghost
+// to sound like its owner. The end-of-level montage puts up to twenty-four
+// bikes on screen riding at once (see MONTAGE_CAP, which was measured rather
+// than guessed). Twenty-four engines would not be atmosphere, it would be a
+// wall of noise on top of the one screen in the game that is supposed to be a
+// reward. Your bike makes a noise. Everybody else is a picture.
+//
+// That is a property of the WIRING, not of any function, so it is checked the
+// way isolation.test.ts checks its own: by reading the source.
+describe('only the player makes a noise', () => {
+  const GHOSTLY = ['ghost.ts', 'montage.ts', 'recorder.ts'];
+
+  it('has no audio reference at all in the files that own other bikes', () => {
+    const offenders: string[] = [];
+    for (const f of GHOSTLY) {
+      const text = clientSrc(f);
+      // Anti-vacuity: these files are meant to be substantial, and a rename or
+      // a deletion must fail this test rather than quietly satisfy it.
+      expect(text.length, f).toBeGreaterThan(2000);
+      for (const m of text.matchAll(/\baudio\b/gi)) offenders.push(`${f}: "${m[0]}"`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('builds exactly one audio engine and feeds it exactly one bike', () => {
+    const main = clientSrc('main.ts');
+    // One context, one model, one synth — there is no second one for a ghost to
+    // be given even by accident.
+    expect(main.match(/createAudio\(/g)?.length).toBe(1);
+    // One sampler call, and the sim it samples is the PLAYER's. A ghost owns
+    // its own `Sim` (see ghost.ts), so a second call here with a ghost's world
+    // is the shape the mistake would take.
+    expect(main.match(/sampleRide\(/g)?.length).toBe(1);
+    expect(main).toContain('audio.update(sampleRide(sim.world, sim.state, spec, appliedMask), dtSec)');
+    expect(main.match(/audio\.update\(/g)?.length).toBe(1);
+  });
+
+  it('only ever tells the synth about the LOCAL player\'s engine', () => {
+    // `resolveAppearance` hands out other people's liveries all over this file
+    // — for board rows, ghost captions and montage riders — and every one of
+    // those now carries an engine id. The one thing that must never happen is
+    // one of them reaching `setEngine`.
+    const main = clientSrc('main.ts');
+    const calls = [...main.matchAll(/audio\.setEngine\(([^)]*)\)/g)].map((m) => m[1].trim());
+    expect(calls.length).toBeGreaterThan(0);
+    for (const arg of calls) expect(arg).toBe('identity.appearance.engine');
   });
 });

@@ -150,10 +150,16 @@ export function submitMessage(s: SubmitState): SubmitMessage {
         detail: '',
       };
     case 'needs-name':
+      // THE FIX HAS TO NAME A THING THAT EXISTS ON THE DEVICE READING IT. "Press
+      // B" was true on a desktop and useless on a phone, where there is no B and
+      // the leaderboard panel it opens is `display: none` — so the one screen
+      // that could fix this was unreachable by the reader of the sentence
+      // telling them to fix it. The profile screen is reached by `Y` and by the
+      // `your bike` pad in the command drawer, which is both devices.
       return {
         tone: 'warn',
         text: 'not posted yet: you have not picked a name',
-        fix: 'Press B and type one. The run is banked — it posts the moment you do.',
+        fix: 'Open "your bike" — Y, or the pad behind `more` — and type one. The run is banked; it posts the moment you do.',
         detail: '',
       };
     case 'no-server':
@@ -383,6 +389,24 @@ export interface ActionInput {
    * who wants Enter never learns it is there.
    */
   montageCount: number | null;
+  /**
+   * Is this a touch device? ONE ACTION DEPENDS ON IT, and it is not a style
+   * question.
+   *
+   * `body.touch #board { display: none }` is unconditional, so on a phone the
+   * leaderboard panel does not exist — while this list was printing a tappable
+   * `leaderboard` row on every finish regardless. Pressing it set the flag,
+   * persisted it and refetched the board, all of which succeeded, and NOTHING
+   * APPEARED. That is the same bug as the montage bound to `A`: an advertised
+   * control that reaches nothing. It was worse than that one, because it was
+   * advertised on the device where it is dead — and because the persisted flag
+   * then opened the board uninvited on that player's next desktop session.
+   *
+   * So the action is not printed on touch. The information it was offering is
+   * not lost: this panel already prints the standing, the rows around you and a
+   * `watch` per row, which is the board in the moment it matters.
+   */
+  touch: boolean;
 }
 
 /**
@@ -413,7 +437,10 @@ export function actionsFor(a: ActionInput): ResultAction[] {
     });
   }
   if (a.ghostName) out.push({ id: 'watchGhost', key: 'G', label: `watch ${a.ghostName}'s run`, primary: false });
-  out.push({ id: 'board', key: 'B', label: 'leaderboard', primary: false });
+  // NOT ON TOUCH — see `ActionInput.touch`. The panel it opens is `display:
+  // none` there, so this row was a button that did nothing, on the one device
+  // it was drawn for.
+  if (!a.touch) out.push({ id: 'board', key: 'B', label: 'leaderboard', primary: false });
   out.push({ id: 'levels', key: 'L', label: 'level select', primary: false });
   out.push({ id: 'dismiss', key: 'Esc', label: 'close', primary: false });
   return out;
@@ -438,7 +465,12 @@ export function actionForKey(code: string, actions: ResultAction[]): ActionId | 
     case 'KeyF':
       return by('montage');
     case 'KeyB':
-      return 'board';
+      // `by`, not a bare 'board'. The rule this function is named for is
+      // "answers exactly the keys it prints", and `board` is the one action
+      // that is now conditional — it is not printed on touch, because the panel
+      // it opens is hidden there. A live key for a button that is not on the
+      // screen is the same class of bug from the other direction.
+      return by('board');
     case 'KeyL':
       return by('levels');
     default:

@@ -35,6 +35,17 @@ const H = Number(process.env.BENCH_H || 900);
 const FRAMES = Number(process.env.BENCH_FRAMES || 1600);
 /** Passes per condition. Interleaved, so a busy box biases both equally. */
 const PASSES = Number(process.env.BENCH_PASSES || 3);
+/**
+ * Which engines to measure, comma separated, or empty for whatever the browser
+ * profile happens to have chosen.
+ *
+ * The engine is the one sound in the game that runs CONTINUOUSLY, so it is the
+ * one whose cost is always being paid — and the four differ in firing rate by
+ * an order of magnitude, which is the thing that could plausibly change the
+ * per-frame scheduling load. `BENCH_ENGINES=road,dirt,vtwin,mower` answers that
+ * directly rather than by argument.
+ */
+const ENGINES = (process.env.BENCH_ENGINES || '').split(',').map((s) => s.trim()).filter(Boolean);
 
 const f = (ms) => `${ms.toFixed(3).padStart(7)}`;
 const over = (m) => m.overPct.toFixed(1);
@@ -95,6 +106,11 @@ try {
     if (state !== 'running') throw new Error(`audio never reached 'running' (${state})`);
     await ev(cdp, '(window.velo.overview.skipIntro(), true)');
 
+    for (const engine of ENGINES.length ? ENGINES : [null]) {
+    if (engine) {
+      const got = await ev(cdp, `JSON.stringify(window.velo.setAppearance('engine', ${JSON.stringify(engine)}))`);
+      if (JSON.parse(got).engine !== engine) throw new Error(`could not select engine ${engine}`);
+    }
     const loud = [];
     const quiet = [];
     // INTERLEAVED. A box that gets busy halfway through a sweep would
@@ -107,7 +123,8 @@ try {
 
     const L = merge(loud);
     const Q = merge(quiet);
-    console.log(`==> ${level}  (${W}x${H}, ${FRAMES} input frames x ${PASSES} passes each way)`);
+    const tag = engine ? `${level} [${engine}]` : level;
+    console.log(`==> ${tag}  (${W}x${H}, ${FRAMES} input frames x ${PASSES} passes each way)`);
     console.log(`    audio update      ${f(L.aMean)} mean  ${f(L.aP50)} p50  ${f(L.aP95)} p95  ${f(L.aMax)} max   over ${L.n} frames`);
     console.log(`    frame time loud   ${f(L.fMean)} mean  ${f(L.fP50)} p50  ${f(L.fP95)} p95  ${f(L.fMax)} max`);
     console.log(`    frame time muted  ${f(Q.fMean)} mean  ${f(Q.fP50)} p50  ${f(Q.fP95)} p95  ${f(Q.fMax)} max   (context SUSPENDED)`);
@@ -120,6 +137,7 @@ try {
     // above is the number with any precision in it.
     console.log(`    over 16.7 ms      ${over(L)}% loud / ${over(Q)}% muted`);
     await ev(cdp, '(window.velo.setMuted(false), true)');
+    }
   }
 
   cdp.close();

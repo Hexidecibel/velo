@@ -42,10 +42,12 @@ interface Args {
   order?: number[] | 'greedy';
   /** Search with a rider's hands rather than a solver's. See src/solver/human.ts. */
   human: boolean;
-  /** Jitter trials for the human slip test. */
+  /** Human-sized fumbles behind the slip axis. Always measured, --human or not. */
   humanTrials: number;
   /** Timing error per boundary, input frames. 4 is 31 ms. */
   humanSigma: number;
+  /** Solve a second time with nearest-apple-first forced and report the spread. */
+  tension: boolean;
 }
 
 function die(msg: string): never {
@@ -66,6 +68,7 @@ function parseArgs(argv: string[]): Args {
     rev: SIM_REV, linear: 0,
     optimise: false, gateTime: 0, boundVref: 0,
     human: false, humanTrials: 100, humanSigma: 4,
+    tension: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const s = argv[i];
@@ -83,8 +86,12 @@ function parseArgs(argv: string[]): Args {
     else if (s === '--linear') a.linear = num(argv[++i], '--linear');
     else if (s === '--optimise' || s === '--optimize') a.optimise = true;
     else if (s === '--human') a.human = true;
-    else if (s === '--human-trials') a.humanTrials = Math.round(num(argv[++i], '--human-trials'));
-    else if (s === '--human-sigma') a.humanSigma = num(argv[++i], '--human-sigma');
+    else if (s === '--tension') a.tension = true;
+    // The slip test is no longer behind --human — it is the score's primary
+    // axis — so it has its own names. The --human-* spellings stay because they
+    // are what the README and the shell history say.
+    else if (s === '--slip-trials' || s === '--human-trials') a.humanTrials = Math.round(num(argv[++i], s));
+    else if (s === '--slip-sigma' || s === '--human-sigma') a.humanSigma = num(argv[++i], s);
     else if (s === '--gate-time') a.gateTime = num(argv[++i], '--gate-time');
     else if (s === '--bound-vref') a.boundVref = num(argv[++i], '--bound-vref');
     else if (s === '--order') {
@@ -101,7 +108,7 @@ function parseArgs(argv: string[]): Args {
     else if (s.startsWith('-')) die(`unknown option ${s}`);
     else a.files.push(s);
   }
-  if (a.files.length === 0) die('usage: bin/solve <level.json> [more.json ...] [--save <dir|file>] [--jobs N] [--time SECONDS] [--optimise [--gate-time SECONDS] [--order greedy|i,j,k]]');
+  if (a.files.length === 0) die('usage: bin/solve <level.json> [more.json ...] [--save <dir|file>] [--jobs N] [--time SECONDS] [--optimise [--gate-time SECONDS] [--tension] [--order greedy|i,j,k]]');
   if (!a.optimise && (a.gateTime > 0 || a.order !== undefined)) {
     // Silently ignoring these would be the worst of the three options: --order
     // without --optimise is a plausible thing to type for a route experiment
@@ -146,6 +153,7 @@ const jobOf = (file: string): Job => ({
   human: args.human,
   humanTrials: args.humanTrials,
   humanSigma: args.humanSigma,
+  tension: args.tension,
 });
 
 function pct(v: number): string {
@@ -168,27 +176,42 @@ function report(file: string, o: Outcome, tail = ''): void {
         + o.rounds.length + ' round' + (o.rounds.length === 1 ? '' : 's'));
     }
     if (o.forcedOrder) console.log('    order forced    ' + o.forcedOrder.join(' -> '));
-    if (o.slip) {
-      console.log('    human slip      ' + pct(o.slip.lethal) + ' of ' + o.slip.trials
-        + ' human-sized fumbles are fatal, ' + pct(o.slip.finished) + ' still finish'
-        + '  (' + o.slip.burst + ' inputs, sigma ' + (o.slip.sigmaFrames * (1000 / 128)).toFixed(0) + ' ms)');
-    }
+    console.log('    par             ' + (o.par ?? 0).toFixed(2) + ' s'
+      + (o.parMode === 'optimised'
+        ? '  (optimised — a target)'
+        : '  (one satisficing pass — an upper bound, not a target)'));
     console.log('    apple order     ' + (o.appleOrder.length ? o.appleOrder.join(' -> ') : '(none)'));
+    if (o.tension) {
+      const t = o.tension;
+      console.log('    route tension   ' + (t.greedySeconds === null
+        ? 'nearest-first cannot do this level at all'
+        : t.searchedSeconds.toFixed(2) + ' s searched vs ' + t.greedySeconds.toFixed(2) + ' s nearest-first — '
+          + t.spreadSeconds.toFixed(2) + ' s apart')
+        + (t.real ? '  (a finding: over the ' : '  (noise: under the ') + t.noiseFloorSeconds + ' s floor)');
+    }
     const d = o.difficulty;
     if (d) {
       console.log('    difficulty      ' + d.score.toFixed(0) + '/100'
-        + '   precision ' + d.precision.toFixed(2)
+        + '   slip ' + d.slip.toFixed(2)
         + '  clearance ' + d.clearance.toFixed(2)
-        + '  effort ' + d.effort.toFixed(2)
-        + '  lethality ' + d.lethality.toFixed(2));
-      console.log('    slip test       ' + pct(d.tolerance.lethal) + ' of one-frame slips are fatal, '
-        + pct(d.tolerance.finished) + ' still finish  (' + d.tolerance.trials + ' trials)');
+        + '   [on the ' + d.measuredOn + ' line, scoreRev ' + d.scoreRev + ']');
+      console.log('    human slip      ' + pct(d.humanSlip.lethal) + ' of ' + d.humanSlip.trials
+        + ' human-sized fumbles are fatal, ' + pct(d.humanSlip.finished) + ' still finish'
+        + '  (' + d.humanSlip.burst + ' inputs, sigma ' + (d.humanSlip.sigmaFrames * (1000 / 128)).toFixed(0) + ' ms)');
       console.log('    head clearance  ' + d.line.minHeadClearance.toFixed(3) + ' m at ('
         + d.line.atX.toFixed(1) + ', ' + d.line.atY.toFixed(1) + ')');
+      console.log('    diagnostics     nudge ' + d.nudge.toFixed(2)
+        + '  effort ' + d.effort.toFixed(2)
+        + '  lethality ' + d.lethality.toFixed(2)
+        + '   (none of these are in the score — they measure the search)');
       console.log('    the line        ' + pct(d.line.airFraction) + ' airborne, peak '
         + d.line.maxSpeed.toFixed(1) + ' m/s, ' + d.line.flips + ' flips, ' + d.routeMetres.toFixed(0) + ' m of route');
     }
   } else {
+    console.log('    unrated         ' + (o.unrated ?? 'unsolved')
+      + (o.unrated === 'zero-apples'
+        ? ' — no apples, so the search is one leg steered by distance-to-flower. See bin/solve.'
+        : ''));
     console.log('    stopped at      ' + (o.failure ?? 'unknown'));
   }
   console.log('    search          ' + o.expansions.toLocaleString('en-US') + ' expansions, '
@@ -323,7 +346,7 @@ if (outcomes.length > 1) {
     const d = o.difficulty;
     console.log('    ' + (o.solved ? 'ok  ' : 'FAIL')
       + ' ' + (d ? String(Math.round(d.score)).padStart(3) : '  -') + '/100'
-      + '  ' + (o.solved ? o.seconds.toFixed(1).padStart(6) + ' s' : '     — ')
+      + '  par ' + (o.par === null ? '     — ' : o.par.toFixed(1).padStart(6) + ' s')
       + '  ' + (o.wallMs / 1000).toFixed(0).padStart(4) + ' s search'
       + '  ' + file);
   }
@@ -333,9 +356,29 @@ if (outcomes.length > 1) {
 if (args.json !== undefined) {
   const payload = outcomes.map(({ file, o }) => ({
     file, name: o.name, simRev: CHOICE.rev, linear: CHOICE.rev >= 5 ? CHOICE.linear : undefined, solved: o.solved, seconds: o.seconds, frames: o.frames,
-    appleOrder: o.appleOrder, apples: o.apples, difficulty: o.difficulty, routeMetres: o.routeMetres,
+    appleOrder: o.appleOrder, apples: o.apples, routeMetres: o.routeMetres,
+    // `precision` rides along as an alias for `nudge` and is the only
+    // back-compat shim in here. The level editor reads this payload over HTTP
+    // (src/client/editor/solve.ts) and renders `d.precision` directly, so
+    // dropping the name would crash the editor's report rather than change a
+    // number. It is the same value under the old name and it should go the day
+    // that file reads `slip` and `nudge`.
+    difficulty: o.difficulty === null ? null : { ...o.difficulty, precision: o.difficulty.nudge },
     optimised: args.optimise, gateSeconds: o.gateSeconds, rounds: o.rounds, forcedOrder: o.forcedOrder,
-    human: args.human, slip: o.slip,
+    par: o.par, parMode: o.parMode, tension: o.tension, unrated: o.unrated,
+    // The mode every stored row has to carry. A number that does not say how it
+    // was measured cannot be compared to another number.
+    mode: {
+      line: o.parMode,
+      hands: args.human ? 'human' : 'solver',
+      budgetSeconds: args.time,
+      slipTrials: args.humanTrials,
+      slipSigmaMs: Number((args.humanSigma * (1000 / 128)).toFixed(1)),
+      nudgeTrials: args.trials,
+      seed: args.seed,
+      effort: args.effort,
+    },
+    human: args.human,
     expansions: o.expansions, simFrames: o.simFrames, deaths: o.deaths, wallMs: o.wallMs,
     segments: o.segments, retried: o.retried, failure: o.failure, verified: o.verified,
   }));

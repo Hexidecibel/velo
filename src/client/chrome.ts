@@ -115,6 +115,8 @@ export function createLevelBar(
 import { DEV, DRIVE, PLAY } from './keys.ts';
 import type { Control, DevActionId } from './keys.ts';
 import { poseImg } from './legendart.ts';
+import { createAbout } from './about.ts';
+import type { About } from './about.ts';
 import type { Palette } from './art/palette.ts';
 import type { BikeLook } from './art/bikeart.ts';
 
@@ -151,6 +153,14 @@ export interface Legend {
   setOpen(on: boolean): void;
   /** The livery or the level palette moved; redraw every picture. */
   refresh(): void;
+  /**
+   * The about page, which hangs off this card's `about` button.
+   *
+   * Exposed rather than hidden because the legend is the only thing that knows
+   * it exists, and `bin/shots` has to be able to open it — through the same
+   * button a thumb goes through, which is the shots file's own rule.
+   */
+  readonly about: About;
 }
 
 function cap(text: string): HTMLElement {
@@ -250,6 +260,33 @@ export function createLegend(root: HTMLElement, opts: LegendOpts): Legend {
   devBtn.textContent = 'dev';
   devBtn.title = 'the tuning panel, the collision overlay, replays, the editor';
   devBtn.addEventListener('click', () => setDev(!dev));
+  // THE WAY IN TO THE ABOUT PAGE, and it is in the header for the same reason
+  // `browse  C` is in the level bar: the only place a player is already looking
+  // for "what is this". It is not behind the dev switch and it is not hidden on
+  // a phone — it is the one thing in this header that is for the player rather
+  // than for whoever is building the game.
+  //
+  // The page itself is built here and now rather than on first click. It costs
+  // one hidden element and its stylesheet, and building it lazily would mean
+  // this button spending the first frame after a click unstyled — the styles
+  // for the button live with the page, in about.ts, so that a rename in
+  // style.css can never quietly make this invisible.
+  const about = createAbout({
+    touch,
+    palette: opts.palette,
+    look: opts.look,
+    // Closing it puts the keyboard back on the button that opened it, which is
+    // the only element on the page that is guaranteed to still be there and to
+    // still make sense — the legend can have been collapsed underneath it in
+    // the meantime, but the card is rebuilt, not replaced, so this node is.
+    returnFocus: () => (aboutBtn.isConnected ? aboutBtn : null),
+  });
+  const aboutBtn = document.createElement('button');
+  aboutBtn.className = 'lg-about';
+  aboutBtn.type = 'button';
+  aboutBtn.textContent = 'about';
+  aboutBtn.title = 'where this came from, and what is ours';
+  aboutBtn.addEventListener('click', () => about.setOpen(true));
   const close = document.createElement('button');
   close.className = 'lg-close';
   close.type = 'button';
@@ -257,7 +294,7 @@ export function createLegend(root: HTMLElement, opts: LegendOpts): Legend {
   close.title = 'close (? reopens)';
   close.setAttribute('aria-label', 'close the controls');
   close.addEventListener('click', () => setOpen(false, true));
-  head.append(title, devBtn, close);
+  head.append(title, aboutBtn, devBtn, close);
 
   // THE HERO. Two bikes, the same bike, facing opposite ways.
   const hero = document.createElement('div');
@@ -379,6 +416,10 @@ export function createLegend(root: HTMLElement, opts: LegendOpts): Legend {
     setOpen: (on: boolean) => setOpen(on),
     refresh: () => {
       if (open) paint();
+      // Unconditionally, unlike the card: the about page is its own overlay and
+      // can be up with the legend collapsed underneath it. It no-ops when shut.
+      about.refresh();
     },
+    about,
   };
 }

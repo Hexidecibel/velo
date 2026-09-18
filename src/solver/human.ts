@@ -24,12 +24,23 @@
 //   accuracy; the grid is what makes "no sub-30 ms window" true of the TIMING
 //   and not only of the duration.
 //
-//   EXECUTION ERROR. The run it finds is then ridden badly on purpose:
-//   `measureHumanSlip` jitters every input boundary by a draw from a human-
-//   sized timing distribution and asks how often the level still gets
-//   finished. That number is what a difficulty score should be calibrated
-//   against — not "how hard was this to find" but "how often does somebody who
-//   knows the line actually get down it".
+//   EXECUTION ERROR, AND IT IS NOW THE SCORE. `measureHumanSlip` rides a line
+//   badly on purpose — one input boundary and the few after it fumbled by a
+//   human-sized timing error — and asks whether that kills. It was written as a
+//   yardstick to calibrate difficulty against and it turned out to BE the
+//   difficulty measure: it is the primary axis of the composite in
+//   difficulty.ts, weighted 0.65, and it runs on every solve whether or not the
+//   SEARCH was constrained by the rest of this file. The thing it replaced
+//   asked the same question with a one-frame nudge — 7.8 ms — and sat at
+//   0.00-0.20 for nearly every level in the set. Not "how hard was this to
+//   find" but "how often does somebody who knows the line actually get down
+//   it", which is the question a player is asking.
+//
+//   THE RATE LIMIT AND THE SLIP TEST ARE NOW SEPARATE. Constraining the
+//   alphabet is what --human still does and it is expensive, because it makes
+//   the search worse at finding anything. Riding the answer badly is cheap —
+//   a hundred re-simulations of a line already in hand — so it is not behind a
+//   flag, and the cheap completability gate can afford it.
 //
 // WHAT THIS IS NOT. It is not a model of a player. Nothing here reads a level,
 // learns it, chooses a route the way a person would, or gets better with
@@ -68,7 +79,12 @@ export interface HumanSlip {
   /** Jitter trials actually run. */
   trials: number;
   /**
-   * Fraction of bursts that KILL inside the horizon. This is the measure.
+   * Fraction of bursts that KILL inside the horizon.
+   *
+   * THIS IS THE MEASURE, and since scoreRev 2 it is the primary axis of the
+   * difficulty composite. Read it against `sigmaFrames` and `burst`: it is a
+   * probability conditional on a particular size of mistake, and the size is
+   * reported beside it so the number can be argued with.
    */
   lethal: number;
   /** Fraction where the whole run still finished. Reported, not weighted. */

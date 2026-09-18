@@ -1125,10 +1125,18 @@ already near.
 CSS's own `mm` unit cannot be used for this: absolute CSS units are pinned to
 the CSS pixel at exactly 96 per inch, which is a fiction on a phone. The real
 figure is set by the device-pixel-ratio the platform picks and is only knowable
-statistically — ~6.3 CSS px/mm on Android, 5.56 on an iPhone 15 Pro, 6.38 on an
-SE — so `PX_PER_MM` is **6.0**, the middle of the phone range. A pad specified at
-12 mm therefore lands between 10.9 and 12.6 mm on real hardware, inside the
-comfortable band at both ends.
+statistically — 6.30 CSS px/mm on Android (`densityDpi / 160`), 6.04 on an @3x
+iPhone, 6.42 on an @2x SE — so `PX_PER_MM` is **6.0**, the middle of the phone
+range. A pad specified at 12 mm therefore lands between 11.4 and 12.6 mm on real
+hardware, inside the comfortable band at both ends.
+
+**A tablet is a different number**, and `TABLET_PX_PER_MM` is **5.2**: every
+iPad ships a 264 ppi panel at @2x, which is 132 CSS px per inch, and a Surface
+Pro (5.26) and a 10" Android tablet (5.79) sit in the same place. Left at 6.0 a
+21 mm gas pad would be 24 mm of an iPad's glass — not a pad you would miss, but
+it makes every millimetre in the table 15% off, which starts to matter the
+moment the layout places things by *reach* rather than by corner. See
+[A tablet is a different grip](#a-tablet-is-a-different-grip-not-a-bigger-phone).
 
 | Zone | Size | Where, and what it is owed |
 | --- | --- | --- |
@@ -1238,6 +1246,124 @@ critical, and both thumbs are already busy. No double-tap and no swipe: a
 gesture that fails does so *silently*, and this game punishes a missed input
 inside a tenth of a second.
 
+### A tablet is a different grip, not a bigger phone
+
+Everything above is a phone, and everything above follows from one physical
+fact: **a phone in landscape is two thumbs on the bottom corners.** It is 150 mm
+across and 60 mm tall, the hand wraps the corner, the whole of the glass is
+inside the arc a thumb sweeps, and the bottom corners are where the thumbs
+already are with no reach at all.
+
+None of that survives the slab. **A 13" iPad in landscape is 263 x 197 mm and
+weighs 680 g**, its bottom corners are a foot apart, and nobody holds it by them
+— the thing cantilevers out of your hands. This game wants gas, lean and flip
+held *at the same time*, so the hands cannot leave to press anything either.
+What people actually do with a tablet is grip the **two side edges**, fingers
+behind and thumbs forward onto the glass.
+
+The other tablet grip is no grip at all — the thing flat on a table or a lap,
+driven with index fingers — and the happy part is that the **same answer serves
+both**: hands come to a flat tablet from its left and right, land near the side
+edges around the middle of the height, and find bottom-corner pads awkward for
+exactly the reason a held tablet does. The grip that could *not* be served by
+the same layout is the phone's, and the phone has its own.
+
+So a screen whose **shorter side is 700 CSS px or more** gets the edge grip.
+That is a threshold in pixels rather than millimetres on purpose — the
+millimetre scale is the thing the test decides, so asking "how many mm across is
+it" first would be circular — and the gap it sits in is enormous: the widest
+phone hands the page 430 px on its short side (an iPhone Pro Max is 430 x 932),
+the smallest tablet 744 (an iPad mini is 744 x 1133). It is the *short* side so
+that rotating a device never changes what kind of device it is.
+
+What moves, and what deliberately does not:
+
+| | Phone (corner grip) | Tablet (edge grip) |
+| --- | --- | --- |
+| **Pad sizes** | 21 x 15 mm gas, 15 x 15 mm lean… | **exactly the same millimetres** — 3% of an iPad's glass instead of 19% of a phone's |
+| **Clusters** | hard against the bottom corners | hard against the **side edges**, lifted to the grip line |
+| **Grip line** | the bottom of the glass | `GRIP_Y` = **0.6** of the way down the edge |
+| **flip** | above the right cluster, 3 mm dead strip | *unchanged relationship*, moved with it |
+| **Commands** | the **bottom gutter** between the clusters | **under the left cluster**, against the same edge |
+| **Drawer** | up into the gutter, or one wide row above | down into the clear glass below the commands |
+| **Portrait** | reflows — there is no gutter to be in | **identical to landscape** |
+| **Camera** | bias derived from `thumbInsetPx` | *nothing* — `thumbInsetPx` is 0, so dead centre |
+
+**`GRIP_Y` is a fraction in a file of millimetres, and that is not an
+inconsistency.** A *pad* is a thumb, and a thumb is 15 mm on every device ever
+made — sizing one as a fraction of a canvas is the bug this whole chapter is
+about. *Where the hand grips* is not a thumb; it is a property of the slab, and
+you hold a tablet at the place it balances, which is three-fifths of the way
+down a 160 mm edge and three-fifths of the way down a 197 mm one alike.
+
+It is **0.6 and not 0.5** for two reasons that happen to agree. The hand one:
+you do not hold a landscape tablet at its exact middle — the fingers hook the
+back below the centre of mass and the slab leans into the palms. The picture
+one, and this is the one a screenshot decided: at 0.5 the pads landed exactly in
+the horizontal band the bike is framed in, because the camera rests it at 50% of
+the height, so the lean pads and the gas sat **on the road the bike was driving
+down**. It is the same sentence the phone layout is built from — *the bottom is
+for hands and the middle is for the game* — with "the bottom" meaning "below the
+game" rather than "the last 15 mm of glass".
+
+Everything the thumb has to reach during a run fits inside **one 45 mm reach of
+the grip**: flip one dead strip above the cluster (11 + 3 mm), the cluster
+itself (15 mm), and the commands one clear 5 mm margin below (9 mm) — 43 mm of a
+45 mm budget, asserted in `touch.test.ts`. The drawer opens past that, which is
+allowed: nothing in it is pressed during a run.
+
+**The commands could not stay in the gutter.** On a phone the strip between the
+two clusters is the cheapest glass on the screen. On a 13" iPad the *same strip*
+is 900 px wide and its centre is the middle of the picture — the shot this pass
+started from has `restart / more / overview` sitting on the lower floor of the
+chimney next to an apple — and it is 130 mm from either hand, which is a regrip
+rather than a reach. Under the left cluster, the left thumb drops onto them
+without letting go of anything and the **right thumb never leaves the gas** to
+press `overview`, which is the one command pressed mid-run.
+
+**Portrait is a real tablet orientation** in a way it barely is for phone
+gaming, and the tablet layout is *identical* in it — the grip does not change
+when the slab turns, because the hands are still on the two side edges. The
+phone cannot keep that promise (portrait there has no gutter, so the commands
+reflow to a corner) and the tablet can.
+
+#### The camera needed nothing, and that is a measurement
+
+The worry going in was the vertical lead. On a 348 px landscape phone
+`maxLeadY` is 2.2 m against 9.0 m of visible height — 24% of the screen, and the
+dominant framing term there. A tall tablet is the opposite problem, and the
+opposite problem turns out to be no problem:
+
+| | zoom | world visible | `maxLeadY` as % of height |
+| --- | --- | --- | --- |
+| 1600 x 900 desktop (reference) | 62.0 px/m | 25.81 x 14.52 m | 15.1% |
+| 1366 x 1024 iPad Pro 13" | 57.3 px/m | 23.84 x 17.87 m | 12.3% |
+| 1194 x 834 iPad Pro 11" | 53.6 px/m | 22.29 x 15.57 m | 14.1% |
+| 1024 x 1366 iPad Pro 13" portrait | 49.6 px/m | 20.65 x 27.54 m | 8.0% |
+| 915 x 348 landscape phone | 38.6 px/m | 23.73 x 9.03 m | 24.4% |
+
+Every tablet is *below* the reference's own 15%, so the term the phone had to be
+defended from is quieter on a tablet than on the desktop the levels were
+authored at. The bike rests at 50% on a tablet with 7.7–8.9 m of world above and
+below it, against the desktop's 7.26 — `screenBiasFor` already returned 0 there
+and still does. **Nothing in `camera.ts` changed.**
+
+The one camera-adjacent thing that *did* change is `thumbInsetPx`, which now
+only counts a hold pad that is actually **against the bottom** of the glass — a
+pad with more than its own height of screen below it makes no bottom band. Under
+the edge grip the hands are two narrow strips at the far left and right of a
+screen whose middle the bike is framed in, so the honest answer is zero. The old
+`vpH - min(z.y)` would have reported ~450 px on a 13" iPad — "the bottom half is
+under a hand" — and the camera would have shoved the bike up under the HUD to
+dodge a thumb that was nowhere near it.
+
+Portrait gives up horizontal world (18.6 m on an 11" against the desktop's 25.8)
+and that is left alone deliberately: it is the *same rule* that makes a landscape
+phone work — [the starved axis sets the zoom](#both-dimensions-and-the-limiting-one-wins)
+— and in portrait the starved axis is the width. Zooming out to fill the height
+would show an 834 px-wide window more world than an 834 px-wide window is owed,
+which is that rule's premise inverted.
+
 ### Auto-throttle, as an option
 
 A two-button scheme was floated early and argued down for the keyboard. On a
@@ -1264,10 +1390,13 @@ the auto bit is withheld until the first touch since the last restart.
 
 ### What the camera does about hands, and where the bike rests
 
-**Thumbs occlude the screen.** In landscape, hands cover the bottom corners,
-which is exactly where a grounded bike sits when the camera centres it — so the
-one thing the readability rule says must always be legible would be under a
-thumb. `screenBiasY` pushes the bike up the frame, and the ground it is about to
+**Thumbs occlude the screen** — on a *phone*. In landscape, hands cover the
+bottom corners, which is exactly where a grounded bike sits when the camera
+centres it, so the one thing the readability rule says must always be legible
+would be under a thumb. (On a tablet they do not: the pads are up the side edges
+and `thumbInsetPx` is 0, so everything below is asking for nothing and the bike
+sits dead centre — see
+[A tablet is a different grip](#a-tablet-is-a-different-grip-not-a-bigger-phone).) `screenBiasY` pushes the bike up the frame, and the ground it is about to
 hit comes up with it. It is a **presentation offset only**: it moves the
 published view and never the follow, so the safe-box guarantee still holds
 against the play framing, and the two together are clamped so they can never put
@@ -1569,6 +1698,48 @@ and the arithmetic did not.
 `SHOTS_OVERVIEW=1` presses the pad the way a thumb does and waits out the blend,
 because every part of that — the framing, the banner, whether a frozen game looks
 frozen — is a picture.
+
+### Everything that holds the sim goes through one register
+
+There are now more things that cover the game than the overview: the armed start
+line, the about page, and a first-run profile screen after them. Every one of
+them needs the same guarantee — **no tick may advance while it is up** — and
+"two freezes would be two ways to lose a tick" scales badly past two.
+
+So there is one gate in `step()`, above every line that can move anything, and it
+asks one question of a register of **named predicates** (`hold.ts`). A true
+answer returns before `sim.advance`, before `recorder.capture` and before
+`ghost.advance`, so no tick runs, the clock does not move, the input stream gains
+no frame, and the ghost waits where it is. A run held for a minute banks a
+byte-identical replay to one never held at all — asserted in `hold.test.ts`
+against the real sim and the real recorder, including the case a second private
+freeze would get wrong: **two sources holding at overlapping times**, where one
+releasing must not start the sim underneath the screen that is still up.
+
+**A predicate, not a lock.** A holder is asked every input frame rather than
+pushing and popping a counter, and that is the difference that matters: a counter
+has to be balanced, and the failure of an unbalanced one is a permanently frozen
+game with nothing on screen to say why. If the panel is shut, the panel is not
+holding anything, and there is no second piece of state that could disagree.
+`window.velo.hold.by` names whatever is holding, so a frozen game is a question
+with an answer.
+
+The **about page** is wired that way and nothing in `about.ts` had to change for
+it: `hold.add('about', () => legend?.about.open ?? false)`. It needed it — the
+page is a full-screen overlay that pauses nothing by itself. Opening it
+dispatches a window `blur`, which is the door `input.ts` already uses for
+alt-tab, so a held throttle drops; the bike then coasts and falls while you read,
+and opening it mid-run on a ledge means coming back to a corpse. It gets no
+`TIME STOPPED` banner, unlike the overview, because the page is covering the
+screen and nothing reads as crashed. `bin/smoke` opens it **through the button a
+thumb goes through** and asserts not one tick and not one recorded frame moved
+across the best part of a second, then that the sim resumes on Escape.
+
+The armed start line is deliberately **not** in the register. `armed.release()`
+consumes the input mask it is given, and it has to sit below `step()`'s dead-run
+branch so a finished run still banks its replay — a gate at a different place
+answering a different question ("has this run started" rather than "may anything
+move at all"). Folding it in would move it, and moving it is the bug.
 
 ### All of the desktop chrome goes, including the level bar
 
@@ -2330,9 +2501,13 @@ recording of a motor.
 
 ### The engine is bound to wheel spin, not to ground speed
 
-This is the whole bet, and it is one line of the mapping. Pitch follows the
-**driven wheel's angular velocity**, normalised against `spec.drive.maxWheelSpin`
-— the spin at which `step.ts` has tapered drive torque to zero.
+This is the whole bet, and it is one line of the mapping. The **firing rate**
+follows the **driven wheel's angular velocity**, normalised against
+`spec.drive.maxWheelSpin` — the spin at which `step.ts` has tapered drive torque
+to zero. It rises because the wheel is genuinely spinning faster, not because a
+sample got pitched up, and that holds on all four engines: `model.test.ts`
+sweeps every one of them and asserts the note climbs monotonically with spin and
+stops climbing exactly where the torque does.
 
 Spin and ground speed agree while the tyre grips and diverge exactly where it is
 interesting:
@@ -2353,10 +2528,68 @@ so that fraction is literally how much torque the engine still has; it drives
 the lowpass cutoff. At max wheelspin the engine is at full pitch with the filter
 closing — screaming with nothing behind it, which is what wheelspin *is*.
 
-Two detuned saws and a square sub an octave down, split either side of the
-fundamental so the detune slider is not also a tuning slider, through one
-lowpass with a slow wobble on its cutoff. The wobble is why the idle reads as a
-machine running rather than as a test tone.
+### Four engines, and the character is the FIRING PATTERN
+
+You choose one. It lives on the bike panel with the paint and the helmet, it is
+part of `Appearance` and therefore **outside `BikeSpec`**, and
+`appearance.test.ts` asserts on its own line that changing your exhaust note
+leaves `specHash` bit-identical — because the one thing worse than no engine
+picker is a picker that stops your times counting.
+
+What separates them is **when the cylinders fire**, not what the oscillator is
+set to. Each one is a real mechanism:
+
+| | cylinders | fires per cycle | firing intervals | idle → limiter | what that is |
+| --- | --- | --- | --- | --- | --- |
+| **inline four** (default) | 4, four-stroke | 4 per 720° | 180/180/180/180 | 1200 → 10,000 rpm, **40 → 333 bangs/s** | Perfectly even, so every harmonic that is not a multiple of four cancels and it reads as a *pitch* rather than a series of events. That is why it can rev to five figures without sounding silly. |
+| **two-stroke** | 1, two-stroke | 1 per 360° | 360 | 1800 → 9500 rpm, **30 → 158 bangs/s** | Fires **every** revolution instead of every other, so at the same crank speed it is twice as busy as the lawnmower below. That is what "brap" actually is. A powerband curve holds the note down and then lets it go. |
+| **v-twin** | 2, four-stroke, shared crankpin | 2 per 720° | **315 then 405** | 900 → 5500 rpm, **15 → 92 bangs/s** | Two rods on one pin 45° apart cannot fire evenly. The 90° deficit is the entire potato-potato. At idle the cycle runs at 7.5 Hz and you hear two separate, unevenly spaced bangs. |
+| **lawnmower** | 1, four-stroke, governed | 1 per 720° | 720 | 1800 → 3600 rpm, **15 → 30 bangs/s** | One bang per two revolutions and a governed ceiling, so it is flat out almost immediately and still managing thirty bangs a second at full noise. The governor **hunts** at 3.4 Hz, which is the funny part and is a real mechanism rather than a wobble bolted on. |
+
+**One engine cycle is one period of a waveform.** Put the exhaust pulses at their
+crank angles inside that period, hand it to WebAudio as a `PeriodicWave`, and run
+the oscillator at the *cycle* rate: every bang lands where it belongs, forever,
+for the cost of one oscillator and no per-pulse scheduling at all. The
+coefficients come out analytically (a pulse at phase φ contributes
+`a·P(n)·e^{-2πinφ}` to harmonic *n*), so building a motor is a few thousand trig
+calls, done once and cached. A V-twin's limp is therefore a property of the
+wavetable — it survives being paused, backgrounded, ducked and muted, because
+there is no clock for it to drift against.
+
+It is all asserted in plain node, which is the only way any of this could be
+checked without ears: `firing.test.ts` **reconstructs the wave from the same
+Fourier series WebAudio is handed and reads the bang angles back out of it**, and
+separately shows that an even twin cancels its odd harmonics exactly while the
+shared-crankpin one cannot — the energy in those odd harmonics *is* the limp.
+
+**The two engine layers are offset, not detuned,** and that distinction was a
+real bug, caught by an offline WAV render before anybody had to hear it. A
+detune on a pulse train is not a chorus: at the inline four's 10 Hz idle cycle,
+ten cents is the second layer's bangs sliding all the way round the first
+layer's over about half a minute, so the firing rhythm slowly turns into a
+different engine and back. They now run at exactly the same frequency and are
+separated by a fixed fraction of a cycle — cylinder-to-cylinder scatter, which
+is what it was always pretending to be, and it cannot drift because there is
+nothing for it to drift against.
+
+The **output trims are measured, not guessed**: the same offline render put the
+four ten decibels apart at full throttle, because peak-normalising a wavetable
+equalises exactly the wrong thing — a lawnmower banging fifteen times a second
+has far less energy in it than an inline four banging three hundred. They now
+sit within about two dB, with the small engines deliberately a shade down.
+
+**Only your own bike makes a noise.** An appearance travels with every replay, so
+a ghost carries an engine id — and nothing reads it. The end-of-level montage
+puts up to twenty-four bikes on screen riding at once, and twenty-four engines
+would not be atmosphere. `audio.test.ts` enforces that by reading the source:
+`ghost.ts`, `montage.ts` and `recorder.ts` may not contain the word *audio*,
+`main.ts` may build exactly one audio engine and make exactly one `sampleRide`
+call, and every `audio.setEngine` call in it must be passing
+`identity.appearance.engine`.
+
+Under all four: a square sub below the firing rate, and one lowpass with a slow
+wobble on its cutoff. The wobble is why an idle reads as a machine running
+rather than as a test tone.
 
 ### Everything else
 
@@ -2470,6 +2703,27 @@ Nothing here was expensive enough to be worth cutting. The most expensive single
 sound is the death cue, which schedules six envelopes across four voices in one
 call — and it is still well under a tenth of a millisecond, and it happens once
 per run by definition.
+
+**The engine is the one sound that runs continuously,** so it is the one whose
+cost is always being paid, and the four differ in firing rate by an order of
+magnitude. `BENCH_ENGINES=road,dirt,vtwin,mower bin/audiobench` measures each in
+turn; on this box at a load average of 30 (so read the percentiles, not the
+means) every one of them came in at **0.000 ms p50 and 0.100 ms p95** of audio
+update, indistinguishable from each other and from the figures above. It should
+be: a firing pattern is a wavetable, and a wavetable oscillator costs the same
+whatever is in the table. The frequency of the bangs is not a frequency of
+anything the main thread does.
+
+What an engine DOES cost is the moment you change one, because two wavetables
+have to be built: **about 2 ms**, on a click, never in a frame. That is down
+from thirty — the first implementation reconstructed each table with a `cos` and
+a `sin` per sample per harmonic, which is a hundred and sixty thousand trig
+calls, and stepping the angle by a fixed rotation instead is fifteen times
+faster. The harmonic count is sized against the filter rather than against taste
+for the same reason: the lowpass in front of the engine can never pass more than
+113 harmonics of the cycle on the worst engine at its worst moment, so 160 is
+the table and anything above that would be synthesised in order to be thrown
+away. `firing.test.ts` computes that bound rather than trusting the paragraph.
 
 ## The camera
 

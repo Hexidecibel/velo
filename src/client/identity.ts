@@ -29,7 +29,7 @@
 // and makes a real signup later a CLAIM on an existing id rather than a rewrite
 // of every row.
 
-import { appearanceFor, cloneAppearance, parseAppearance } from '@/shared/appearance.ts';
+import { DEFAULT_APPEARANCE, appearanceFor, cloneAppearance, parseAppearance } from '@/shared/appearance.ts';
 import type { Appearance } from '@/shared/appearance.ts';
 
 const ID_KEY = 'velo.playerId';
@@ -146,7 +146,19 @@ export function loadIdentity(): Identity {
   return {
     playerId: id,
     name: cleanName(read(NAME_KEY) ?? ''),
-    appearance: chosen ? parseAppearance(chosen) : appearanceFor(id),
+    // THE ONE AXIS THE DERIVATION DOES NOT GET TO PICK IS THE ENGINE.
+    //
+    // Deriving a livery from the playerId is what makes a board of people who
+    // have never opened the customiser a board of DIFFERENT people — the whole
+    // argument is about how everybody else looks. The engine is the opposite
+    // case in every respect: nobody else ever hears it (ghosts are silent), so
+    // spreading it buys nothing at all, and the downside is specific and bad —
+    // one player in four boots the game for the first time riding a lawnmower
+    // they did not choose and cannot explain. It is still rolled by
+    // `appearanceFor` for "surprise me", where a die roll is the point.
+    appearance: chosen
+      ? parseAppearance(chosen)
+      : { ...appearanceFor(id), engine: DEFAULT_APPEARANCE.engine },
     chosenLook: chosen !== null,
   };
 }

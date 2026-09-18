@@ -379,7 +379,7 @@ const OVERVIEW_GROUPS: Group<OverviewParams>[] = [
 const AUDIO_GROUPS: Group<AudioParams>[] = [
   {
     title: 'Sound',
-    why: 'Everything is synthesised — oscillators and one buffer of noise, no samples, no files — so every one of these is a real continuous parameter rather than a choice between two recordings. The engine is the one that matters: its pitch is bound to WHEEL ANGULAR VELOCITY, not to ground speed, which is why wheelspin and mid-air throttle sound like something is happening. Tune it by ear against a RESTART LOOP rather than a single play: the launch is the sound you will hear hundreds of times in a session, and anything sharp there is hated by attempt fifty.',
+    why: 'Everything is synthesised — oscillators and one buffer of noise, no samples, no files — so every one of these is a real continuous parameter rather than a choice between two recordings. The engine is the one that matters: its FIRING RATE is bound to WHEEL ANGULAR VELOCITY, not to ground speed, which is why wheelspin and mid-air throttle sound like something is happening. Which of the four motors you are riding is not here — it is an appearance axis, chosen on the bike panel, because it belongs to your bike and not to your speakers. The two Hz numbers below are the reference motor (the inline four) and every other one is a fixed ratio against it, so moving them moves the whole fleet together. Tune it by ear against a RESTART LOOP rather than a single play: the launch is the sound you will hear hundreds of times in a session, and anything sharp there is hated by attempt fifty.',
     fields: [
       {
         label: 'MUTE (0/1)', min: 0, max: 1, step: 1,
@@ -410,13 +410,13 @@ const AUDIO_GROUPS: Group<AudioParams>[] = [
         get: (a) => a.engineLevel, set: (a, v) => { a.engineLevel = v; },
       },
       {
-        label: 'engine detune (cents)', min: 0, max: 60, step: 1,
-        hint: 'Between the two saw layers, split either side of the fundamental so this is not also a tuning slider. The "synthetic" in the tone — 0 is a clean single saw and reads as a test signal.',
-        get: (a) => a.engineDetune, set: (a, v) => { a.engineDetune = v; },
+        label: 'engine layer spread (% of a cycle)', min: 0, max: 12, step: 0.2,
+        hint: 'Cylinder-to-cylinder timing scatter: how far the second engine layer is rotated from the first, as a percentage of one engine cycle. It is NOT a detune — two pulse trains at slightly different frequencies produce a flam that wanders all the way round the firing pattern over half a minute, which turns the engine into a different engine and back. Each motor has its own rag factor on top of this, so a lawnmower is sloppier than an inline four at the same setting. 0 is one clean layer and reads as a test signal.',
+        get: (a) => a.engineSpread, set: (a, v) => { a.engineSpread = v; },
       },
       {
         label: 'engine sub', min: 0, max: 1, step: 0.01,
-        hint: 'Square wave an octave down. Body, not pitch. On a laptop speaker most of this is inaudible and it costs nothing to leave in for headphones.',
+        hint: 'Square wave under the firing rate — an octave down on the road bike, at the firing rate itself on the ones that bang slowly enough to need the help. Body, not pitch. On a laptop speaker most of this is inaudible and it costs nothing to leave in for headphones.',
         get: (a) => a.engineSub, set: (a, v) => { a.engineSub = v; },
       },
       {

@@ -134,6 +134,79 @@ try {
   const boot = await evalIn(cdp, `!!(window.velo && window.velo.sim)`);
   if (boot !== true) throw new Error('page loaded but window.velo never appeared — the bundle did not run');
 
+  // --- the first-run profile offer ------------------------------------------
+  //
+  // THIS PROFILE IS FRESH, so this navigation IS a first run — which makes this
+  // the one place in the repo where the first-run path can be checked at all.
+  // Everything about it is a claim about the built page rather than about a
+  // function: that it appears without being asked for, that it is the customiser
+  // rather than a form (thirty-odd option chips, a live preview), that the name
+  // is ONE FIELD inside it, and that ONE TAP on a real button gets out of it.
+  //
+  // IT IS DISMISSED HERE AND THE REST OF THIS FILE DEPENDS ON THAT, twice over:
+  // the panel holds the sim (so every drive below would measure a frozen game),
+  // and it borrows the middle of the glass from the control legend, which the
+  // phone section further down asserts is open on a first run.
+  const intro = await evalIn(cdp, `
+    (() => {
+      const root = document.getElementById('look');
+      const up = !root.classList.contains('hidden');
+      const go = root.querySelector('.lk-go-btn');
+      const before = {
+        up,
+        held: window.velo.hold.held,
+        by: window.velo.hold.by,
+        title: (root.querySelector('.lk-title') || {}).textContent || '',
+        options: root.querySelectorAll('.lk-opt').length,
+        nameField: root.querySelectorAll('.lk-name-input').length,
+        seen: root.querySelectorAll('.lk-seen').length,
+        // NOTHING IS GATED BEHIND THE NAME, and this is the assertion that says
+        // so. Every option chip is enabled with no name typed: the incentive is
+        // "keep it and be seen in it", never "unlock it", and a disabled chip
+        // here would be the first thing in this game that withheld something.
+        disabled: root.querySelectorAll('.lk-opt[disabled]').length,
+        skip: !!go,
+        // AND THE NAME FIELD DOES NOT HAVE THE FOCUS. A cursor blinking in a
+        // box is a form, and on a phone it raises the software keyboard over
+        // the whole screen — which is the tollbooth this design refuses, built
+        // out of a focus call instead of out of a <form>.
+        focused: document.activeElement === root.querySelector('.lk-name-input'),
+      };
+      // Out through the button a thumb presses, not through a hook.
+      if (go) go.click();
+      return { before, after: {
+        up: !root.classList.contains('hidden'),
+        // BY NAME, NOT BY the boolean. The opening peek is up on a first load
+        // too — that is the overview's own hold, it is correct, and it lets go
+        // on the first input. What this block is about is the PROFILE letting
+        // go.
+        by: window.velo.hold.by,
+        legend: window.velo.legend.open,
+      } };
+    })()
+  `);
+  console.log('    first run: ' + JSON.stringify(intro));
+  if (!intro.before.up) throw new Error('a fresh profile was not offered the rider screen on its first load');
+  if (!intro.before.by.includes('profile')) {
+    throw new Error(`the profile screen did not hold the sim (${JSON.stringify(intro.before.by)})`);
+  }
+  if (intro.before.options < 20) {
+    throw new Error(`the first-run screen offered ${intro.before.options} choices — it is meant to be the customiser, not a form`);
+  }
+  if (intro.before.disabled !== 0) {
+    throw new Error(`${intro.before.disabled} cosmetic(s) were gated behind naming yourself — nothing here may ever be`);
+  }
+  if (intro.before.nameField !== 1) throw new Error('the first-run screen had no name field');
+  if (intro.before.seen !== 1) throw new Error('the first-run screen did not show what other people see');
+  if (intro.before.focused) throw new Error('the first-run screen put a cursor in the name box — that is a form');
+  if (!intro.before.skip) throw new Error('the first-run screen had no one-tap way out');
+  if (intro.after.up) throw new Error('the one-tap way out did not close the first-run screen');
+  if (intro.after.by.includes('profile')) {
+    throw new Error(`the profile screen was still holding the sim after it closed (${JSON.stringify(intro.after.by)})`);
+  }
+  // And the legend gets the screen back: who you are, then how you ride.
+  if (!intro.after.legend) throw new Error('closing the first-run screen did not hand the legend back');
+
   // --- audio starts, on a REAL gesture -------------------------------------
   //
   // Before the gesture the game must be silent and complaint-free: no context,
@@ -768,10 +841,30 @@ try {
         text: (panel.textContent || '').slice(0, 400),
       };
 
-      // Escape closes it, instantly and with nothing to wait through.
+      // THE FIRST FINISH ASKS ABOUT THE NAME ONCE, and this is that moment:
+      // this profile skipped the first-run offer above, so there is now a real
+      // time, banked and unposted, and a board row with nothing on it. It opens
+      // OVER the results panel rather than instead of it — the time is the
+      // whole reason it is asking — so both are up, and one tap on its own
+      // button gives the results screen back.
+      const look = document.getElementById('look');
+      const ask = {
+        up: !look.classList.contains('hidden'),
+        mode: (look.querySelector('.lk-title') || {}).textContent || '',
+        resultsStillUp: !shut(),
+        // The time it is asking about is ON the row it would post to. Nothing
+        // is invented: the row prints the run that just happened.
+        seenTime: (look.querySelector('.lk-seen-time') || {}).textContent || '',
+        held: window.velo.hold.by,
+      };
+      const back = look.querySelector('.lk-go-btn');
+      if (back) back.click();
+      ask.closed = look.classList.contains('hidden');
+
+      // Escape closes the results, instantly and with nothing to wait through.
       window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', bubbles: true }));
       const dismissed = { hidden: shut(), model: !!window.velo.results };
-      return { death, finish, dismissed };
+      return { death, finish, ask, dismissed };
     })()
   `);
   console.log('    results: ' + JSON.stringify({ ...rs, finish: { ...rs.finish, text: undefined } }));
@@ -787,6 +880,20 @@ try {
   if (!rs.finish.actions.includes('next:Enter') || !rs.finish.actions.includes('retry:R')) {
     throw new Error(`the panel did not offer next-on-Enter and retry-on-R (${rs.finish.actions})`);
   }
+  // THE FIRST-FINISH RE-ASK. Offered once, ever, at the one moment the answer
+  // is worth anything: there is a time on the screen, it is banked and not
+  // posted, and the board row it would sit on is drawn with nothing in the name
+  // column. It must not replace the results screen, and it must let go in one
+  // tap — anybody who does not want it has already said so once.
+  if (!rs.ask.up) throw new Error('the first finish by an unnamed player did not ask about a name');
+  if (!rs.ask.resultsStillUp) throw new Error('the name re-ask closed the results screen it is asking about');
+  if (!rs.ask.held.includes('profile')) {
+    throw new Error(`the re-ask did not hold the sim (${JSON.stringify(rs.ask.held)})`);
+  }
+  if (rs.ask.seenTime !== rs.finish.time + 's') {
+    throw new Error(`the re-ask showed "${rs.ask.seenTime}" on the board row, not the ${rs.finish.time}s just ridden`);
+  }
+  if (!rs.ask.closed) throw new Error('the name re-ask would not close in one tap');
   if (!rs.dismissed.hidden || rs.dismissed.model) throw new Error('Escape did not dismiss the results panel');
   // `montage:F`, not `montage:A`. KeyA is LEAN LEFT under WASD and input.ts
   // returns on a sim-bound key before any command dispatch runs, so the montage
@@ -848,6 +955,10 @@ try {
       await raf();
       const hashBefore = window.velo.specHash();
       window.velo.setAppearance('helmet', 'bucket');
+      // THE EXHAUST NOTE IS AN APPEARANCE AXIS TOO, and it is the one most
+      // likely to look like it ought to be part of the bike. Changing it must
+      // reach the synth and must NOT reach the hash.
+      const revved = window.velo.setAppearance('engine', 'vtwin');
       await raf();
       const hashAfter = window.velo.specHash();
       window.velo.closeLook();
@@ -856,6 +967,8 @@ try {
         startedAs: before.bike,
         bike: picked.bike,
         paint: painted.paint,
+        engine: revved.engine,
+        heard: window.velo.audio.engine,
         hashBefore,
         hashAfter,
         closed: !document.getElementById('look').classList.contains('hidden') === false,
@@ -870,6 +983,11 @@ try {
   if (look.opened.rows < 5) throw new Error(`the customiser offered ${look.opened.rows} axes`);
   if (look.opened.options < 20) throw new Error(`the customiser offered ${look.opened.options} options`);
   if (look.bike !== 'bobber' || look.paint !== 'acid') throw new Error('picking an option did not stick');
+  if (look.engine !== 'vtwin') throw new Error('picking an engine did not stick');
+  // The picker and the synth have to agree, or the game sounds like a bike you
+  // did not choose. The unit tests cover the firing patterns; only this covers
+  // the wire between the appearance and the audio engine in the built page.
+  if (look.heard !== 'vtwin') throw new Error(`the synth is on '${look.heard}' after picking 'vtwin'`);
   // THE ONE THAT MATTERS. Repainting the bike must leave the spec hash
   // bit-identical, or the server refuses the next run with "this bike is not
   // the shipped one" — the refusal that has already confused this user twice.
@@ -877,6 +995,79 @@ try {
     throw new Error(`changing the bike moved specHash (${look.hashBefore} -> ${look.hashAfter})`);
   }
   if (!look.closed) throw new Error('the customiser did not close');
+
+  // --- the about page holds the sim -----------------------------------------
+  //
+  // SAME CLAIM AS THE OVERVIEW'S AND THE ARMED LINE'S, and here for the same
+  // reason both of those are: the gate lives in main.ts's frame loop and no
+  // unit test reaches a frame loop. `hold.test.ts` proves the register and the
+  // replay identity against the real sim and the real recorder; what only this
+  // can prove is that the real button, on the real page, actually registers.
+  //
+  // The page is a full-screen overlay that does not pause anything by itself —
+  // opening it dispatches a window `blur`, which drops a held throttle, and
+  // that is all. Without the hold the bike keeps coasting and falling while you
+  // read, so opening it mid-run on a ledge means coming back to a corpse.
+  const about = await evalIn(cdp, `
+    (async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      window.velo.overview.skipIntro();
+      window.velo.restart(false);
+      // The legend's open state is REMEMBERED in localStorage, and the phone
+      // section below asserts it is open on a first run. Put it back exactly as
+      // it was found, or this block silently rewrites the state a later one is
+      // testing — which is precisely the failure it caused when it did not.
+      const legendWas = window.velo.legend.open;
+      window.velo.legend.setOpen(true);
+      const btn = document.querySelector('.lg-about');
+      if (!btn) {
+        window.velo.legend.setOpen(legendWas);
+        return { error: 'no about button in the legend header' };
+      }
+      // Get the run actually moving first, or "it did not move" means nothing.
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowUp', bubbles: true }));
+      await sleep(500);
+      const before = { tick: window.velo.sim.state.tick, frames: window.velo.recordedFrames };
+      // Through the button a thumb goes through, not through a hook.
+      btn.click();
+      await sleep(800);
+      const during = {
+        open: window.velo.about.open,
+        by: window.velo.hold.by,
+        tick: window.velo.sim.state.tick,
+        frames: window.velo.recordedFrames,
+      };
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', bubbles: true }));
+      await sleep(600);
+      const after = {
+        open: window.velo.about.open,
+        held: window.velo.hold.held,
+        tick: window.velo.sim.state.tick,
+        frames: window.velo.recordedFrames,
+      };
+      window.dispatchEvent(new KeyboardEvent('keyup', { code: 'ArrowUp', bubbles: true }));
+      window.velo.legend.setOpen(legendWas);
+      return { before, during, after, legendWas };
+    })()
+  `);
+  console.log('    about hold: ' + JSON.stringify(about));
+  if (about.error) throw new Error(about.error);
+  if (about.before.tick <= 0) throw new Error('the run never started, so the freeze proves nothing');
+  if (!about.during.open) throw new Error('the about button did not open the page');
+  if (!about.during.by.includes('about')) {
+    throw new Error(`the about page did not register as holding the sim (${JSON.stringify(about.during.by)})`);
+  }
+  // THE WHOLE POINT. Not "it slowed down": not one tick, and not one frame in
+  // the input stream, for the best part of a second of wall clock.
+  if (about.during.tick !== about.before.tick) {
+    throw new Error(`the clock ran while the about page was up (${about.before.tick} -> ${about.during.tick})`);
+  }
+  if (about.during.frames !== about.before.frames) {
+    throw new Error(`the recorder grew while the about page was up (${about.before.frames} -> ${about.during.frames})`);
+  }
+  if (about.after.open) throw new Error('Escape did not close the about page');
+  if (about.after.held) throw new Error('the sim was still held after the about page closed');
+  if (about.after.tick <= about.during.tick) throw new Error('the sim did not resume after the about page closed');
 
   // --- the claim code -------------------------------------------------------
   //
@@ -900,6 +1091,47 @@ try {
     throw new Error('the claim panel did not print the typable code');
   }
 
+  // AND THE GAME BOOTS WHEN THE LINK IS ACTUALLY FOLLOWED, which is a separate
+  // claim from "the panel opens" and is the one that was false.
+  //
+  // Scanning that QR navigates to `?claim=<id>`, and on that URL — and ONLY on
+  // that URL — the boot path answered the link. The function that answers it
+  // reads `loop` and `touch`, both `const`s declared far below where it used to
+  // run, so it hit their temporal dead zone: a ReferenceError thrown out of the
+  // module's top level, no `window.velo`, no canvas, no game. Every other load
+  // was fine, because with no `?claim=` the function returns one line in. So
+  // the feature was dead in exactly the case it exists for, on the device it
+  // exists for, and no test in the repo could see it — a unit test has no
+  // module boot and the rest of this file never visits that URL.
+  // SOMEBODY ELSE'S id — the pilot posted to the server further up. A link to
+  // this device's OWN id is answered by doing nothing, which would make the
+  // check below pass for the wrong reason.
+  const claimBoot = JSON.parse(await evalIn(cdp, `JSON.stringify({ mine: window.velo.appearance.playerId })`));
+  await cdp.send('Page.navigate', { url: `${url}?level=test01&claim=smokepilot01` });
+  await cdp.waitFor('Page.loadEventFired', 15000);
+  await new Promise((r) => setTimeout(r, 1200));
+  const booted = JSON.parse(await evalIn(cdp, `
+    (() => JSON.stringify({
+      velo: !!(window.velo && window.velo.sim),
+      canvas: document.getElementById('view').width > 0,
+      // The link is OFFERED, never applied silently: adopting an id replaces
+      // who this device is, and a URL doing that without a question is not
+      // something anybody expects from a link they scanned off a screen.
+      asked: !document.getElementById('claim').classList.contains('hidden'),
+      // Same device, same id, until the question is answered.
+      still: window.velo.appearance.playerId,
+    }))()
+  `));
+  console.log('    claim link boot: ' + JSON.stringify(booted));
+  if (!booted.velo || !booted.canvas) {
+    throw new Error('following a claim link stopped the game from booting at all');
+  }
+  if (!booted.asked) throw new Error('a claim link did not ask whether to adopt the id');
+  if (booted.still !== claimBoot.mine || booted.still === 'smokepilot01') {
+    throw new Error('a claim link changed the player before being answered');
+  }
+  await evalIn(cdp, `(() => { window.velo.closeClaim(); return 1; })()`);
+
   // --- the touch controls come up on a coarse pointer -----------------------
   //
   // The layout and the bitmask are unit-tested in plain node; what cannot be
@@ -907,6 +1139,15 @@ try {
   // that `?touch=1` turns it on, that every pad is actually in the DOM, and
   // that the body class which hides the desktop chrome is applied. All four are
   // the kind of thing that breaks silently in a bundle and not in a test.
+  //
+  // EMULATED AS A PHONE RATHER THAN SHOT AT WHATEVER SIZE THE WINDOW IS, and
+  // that is not tidiness: the layout now picks its GRIP from the shorter side
+  // of the glass, and this harness's window is 1280 x 800, which is a tablet.
+  // Every claim in this block ("thumbs cover the bottom corners") is a claim
+  // about the corner grip, so the viewport has to be one.
+  await cdp.send('Emulation.setDeviceMetricsOverride', {
+    width: 915, height: 348, deviceScaleFactor: 2, mobile: true,
+  });
   await cdp.send('Page.navigate', { url: url + '?level=01-first-light&touch=1' });
   await cdp.waitFor('Page.loadEventFired', 15000);
   await new Promise((r) => setTimeout(r, 1500));
@@ -950,6 +1191,63 @@ try {
   // saw, and zooming in made that worse. The framing is derived from the
   // viewport for everybody now, and the manual bias starts at 1.
   if (tc.zoomBias !== 1) throw new Error(`the touch camera moved the manual zoom bias (${tc.zoomBias})`);
+
+  // --- and the same overlay on a TABLET is a different grip ------------------
+  //
+  // A tablet is not a big phone. An iPad Pro 11" hands the page 1194 x 834 CSS
+  // px, its bottom corners are 230 mm apart, and nobody holds a 500 g slab by
+  // them — the hands are on the two SIDE EDGES, so the clusters are lifted to
+  // the grip line up the middle of those edges and the commands hang off the
+  // left one. Two things about that are wiring rather than arithmetic and so
+  // cannot be unit-tested: that a REAL resize re-places the pads into the edge
+  // grip at all, and that the camera is then told there is NO hand at the
+  // bottom of the glass. The second is the one that would fail quietly — a
+  // stale inset would shove the bike up under the HUD to dodge a thumb that is
+  // 450 px away from where the camera thinks it is.
+  await cdp.send('Emulation.setDeviceMetricsOverride', {
+    width: 1194, height: 834, deviceScaleFactor: 2, mobile: true,
+  });
+  await new Promise((r) => setTimeout(r, 1200));
+  const tab = await evalIn(cdp, `
+    (() => {
+      const root = document.getElementById('touch');
+      const box = (sel) => {
+        const e = root.querySelector('.tc-' + sel);
+        const r = e.getBoundingClientRect();
+        return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
+      };
+      return {
+        gas: box('throttle'), lean: box('leanL'), restart: box('restart'),
+        thumbInsetPx: Math.round(window.velo.cam.params.thumbInsetPx),
+        h: window.innerHeight, w: window.innerWidth,
+      };
+    })()
+  `);
+  console.log('    tablet: ' + JSON.stringify(tab));
+  // Lifted off the bottom by more than a pad, which is the whole reflow.
+  if (!(tab.h - (tab.gas.y + tab.gas.h) > tab.gas.h)) {
+    throw new Error(`the tablet pads are still on the bottom edge (${JSON.stringify(tab.gas)})`);
+  }
+  // Still hard against the side edges, which is the one thing both grips agree
+  // on, and the same PHYSICAL size — an iPad is 5.2 CSS px/mm against a phone's
+  // 6, so the pad is smaller in pixels and the same in millimetres.
+  if (tab.lean.x > 25 || tab.w - (tab.gas.x + tab.gas.w) > 25) {
+    throw new Error('the tablet pads came off the side edges');
+  }
+  if (!(tab.gas.w < 126 && tab.gas.w > 100)) {
+    throw new Error(`the tablet gas pad is not one phone-sized thumb (${tab.gas.w} px)`);
+  }
+  // The commands are under the left hand, not in the middle of the picture.
+  if (!(tab.restart.y >= tab.lean.y + tab.lean.h) || tab.restart.x + tab.restart.w > tab.w * 0.5) {
+    throw new Error(`the tablet commands are not under the left cluster (${JSON.stringify(tab.restart)})`);
+  }
+  // AND THE CAMERA IS TOLD THE BOTTOM IS CLEAR. Zero here is correct and a
+  // non-zero is the bug: there is no hand down there to dodge.
+  if (tab.thumbInsetPx !== 0) {
+    throw new Error(`the camera thinks a thumb covers ${tab.thumbInsetPx} px of a tablet's bottom edge`);
+  }
+  await cdp.send('Emulation.clearDeviceMetricsOverride');
+  await new Promise((r) => setTimeout(r, 800));
 
   // --- the framing follows the viewport ------------------------------------
   //
@@ -1121,6 +1419,198 @@ try {
   }
   await evalIn(cdp, `(() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', bubbles: true })); return 1; })()`);
   await new Promise((r) => setTimeout(r, 300));
+
+  // --- `your bike`, which is the ONLY way to the customiser on a phone -------
+  //
+  // THE BUG THIS BLOCK EXISTS FOR, stated as the fact it was: the customiser
+  // was bound to `Y` and to a button on the leaderboard panel, and
+  // `body.touch #board` is `display: none`. So on a phone there was no route —
+  // not a hard one, NONE — to the paint, the helmet, the four engine notes or
+  // the name. Every unit test passed the whole time, because a missing pad is
+  // not a wrong number; it is a thing that is not in the document.
+  //
+  // It is checked HERE, through a real finger on a real pad in a real phone
+  // viewport, for the same reason the overview pad is: this is the only place
+  // in the repo where "can a thumb reach it" is a question that can be asked.
+  await evalIn(cdp, `(() => { window.velo.overview.skipIntro(); window.velo.restart(false); return 1; })()`);
+  await tapPad('tc-throttle');
+  await new Promise((r) => setTimeout(r, 500));
+  const lkBefore = JSON.parse(await evalIn(cdp, `JSON.stringify({
+    tick: window.velo.sim.state.tick, frames: window.velo.recordedFrames,
+  })`));
+  await tapPad('tc-menu');
+  if (!(await padSeen('tc-look'))) throw new Error('there is no `your bike` pad in the command drawer');
+  await tapPad('tc-look');
+  const lkOpen = JSON.parse(await evalIn(cdp, `
+    (() => {
+      const root = document.getElementById('look');
+      return JSON.stringify({
+        up: !root.classList.contains('hidden'),
+        by: window.velo.hold.by,
+        tick: window.velo.sim.state.tick,
+        frames: window.velo.recordedFrames,
+        options: root.querySelectorAll('.lk-opt').length,
+        // The engine row is the reason this gap mattered most: four exhaust
+        // notes shipped and a phone could not reach one of them.
+        engines: [...root.querySelectorAll('.lk-opt')].map((b) => b.textContent).filter((t) =>
+          ['inline four', 'two-stroke', 'v-twin', 'lawnmower'].includes(t)).length,
+        nameField: root.querySelectorAll('.lk-name-input').length,
+        seen: root.querySelectorAll('.lk-seen').length,
+        // SOUND, which a phone had no way to turn off at all: setMuted had two
+        // callers and both were the keyboard, on a game that ships four engine
+        // notes. It is on this panel rather than on a pad because the panel
+        // already owns the engine axis and a row here costs no glass.
+        soundRow: root.querySelectorAll('.lk-set').length,
+        // The pads are hidden underneath it, exactly as they are under the
+        // results screen and the legend: a gas pad sitting over the save
+        // button is a trap rather than a panel.
+        padsHidden: document.getElementById('touch').classList.contains('tc-away'),
+        drawerShut: !document.querySelector('.tc-levels') ||
+          document.querySelector('.tc-levels').getBoundingClientRect().width === 0,
+      });
+    })()
+  `));
+  await new Promise((r) => setTimeout(r, 900));
+  // THE SIM HOLD, and it is the same claim the overview pad and the about page
+  // make: not one tick and not one frame of input for the best part of a second
+  // of wall clock. This screen opens ITSELF on a first run and on a first
+  // finish, so a missed hold here is a bike coasting off a ledge while a child
+  // picks a helmet — on the run the server is about to be asked to verify.
+  const lkHeld = JSON.parse(await evalIn(cdp, `JSON.stringify({
+    tick: window.velo.sim.state.tick, frames: window.velo.recordedFrames,
+  })`));
+  // AND THE NAME IS TYPED INTO THE PANEL, through the real field and the real
+  // button. It is HOSTILE on purpose: this is a new sink for a string a person
+  // typed, on a screen that draws it into a mock leaderboard row, and a stored
+  // XSS through a display name was closed in this client once already.
+  // `cleanName` is hygiene and not sanitisation — it passes `<` and `>` through,
+  // because a name is text — so the safety has to be at the sink, and the only
+  // proof of a sink is the rendered DOM.
+  // MUTE, THROUGH THE ROW A THUMB PRESSES. The only proof that a phone can now
+  // silence the game is that the button exists in the document and that
+  // pressing it reaches the same `setMuted` the M key does.
+  const lkMute = JSON.parse(await evalIn(cdp, `
+    (() => {
+      const btns = [...document.querySelectorAll('#look .lk-set')];
+      const before = window.velo.audio.muted;
+      const off = btns.find((b) => b.textContent === 'off');
+      if (off) off.click();
+      const quiet = window.velo.audio.muted;
+      const on = [...document.querySelectorAll('#look .lk-set')].find((b) => b.textContent === 'on');
+      if (on) on.click();
+      return JSON.stringify({ buttons: btns.map((b) => b.textContent), before, quiet,
+        loud: window.velo.audio.muted });
+    })()
+  `));
+  console.log('    sound row: ' + JSON.stringify(lkMute));
+  if (lkMute.buttons.join('/') !== 'on/off') throw new Error(`the sound row printed ${lkMute.buttons}`);
+  if (lkMute.quiet !== true) throw new Error('the customiser could not mute the game');
+  if (lkMute.loud !== false) throw new Error('the customiser could not turn the sound back on');
+
+  const HOSTILE_OWN = 'Thumb<img src=x>Rider';
+  const lkNamed = JSON.parse(await evalIn(cdp, `
+    (() => {
+      const root = document.getElementById('look');
+      const input = root.querySelector('.lk-name-input');
+      input.value = ${JSON.stringify(HOSTILE_OWN)};
+      root.querySelector('.lk-name-save').click();
+      const cell = root.querySelector('.lk-seen-name');
+      return JSON.stringify({
+        stored: window.velo.playerName,
+        shownAsText: cell ? cell.textContent : '',
+        // The avatars are <img> the panel drew itself as data: URLs. Anything
+        // else with a src came out of the name.
+        injected: [...root.querySelectorAll('img')]
+          .filter((e) => !(e.getAttribute('src') || '').startsWith('data:')).length
+          + root.querySelectorAll('script, iframe, svg, object').length,
+        elementsInCell: cell ? cell.childElementCount : -1,
+      });
+    })()
+  `));
+  // Out through the button a thumb presses.
+  await evalIn(cdp, `(() => { document.querySelector('#look .lk-go-btn').click(); return 1; })()`);
+  await new Promise((r) => setTimeout(r, 500));
+  const lkAfter = JSON.parse(await evalIn(cdp, `JSON.stringify({
+    up: !document.getElementById('look').classList.contains('hidden'),
+    held: window.velo.hold.held, tick: window.velo.sim.state.tick,
+    padsHidden: document.getElementById('touch').classList.contains('tc-away'),
+  })`));
+  console.log('    your-bike pad: ' + JSON.stringify({ open: lkOpen, named: lkNamed, after: lkAfter }));
+  if (!lkOpen.up) throw new Error('the `your bike` pad did not open the customiser');
+  if (!lkOpen.by.includes('profile')) {
+    throw new Error(`the customiser did not hold the sim (${JSON.stringify(lkOpen.by)})`);
+  }
+  if (lkBefore.tick <= 0) throw new Error('the run never started, so the freeze proves nothing');
+  if (lkOpen.options < 20) throw new Error(`the phone reached ${lkOpen.options} options`);
+  if (lkOpen.engines !== 4) throw new Error(`the phone reached ${lkOpen.engines} of the four engines`);
+  if (lkOpen.nameField !== 1 || lkOpen.seen !== 1) {
+    throw new Error('the profile half of the screen is not on a phone');
+  }
+  if (lkOpen.soundRow !== 2) throw new Error(`the phone reached ${lkOpen.soundRow} sound controls, wanted 2`);
+  if (!lkOpen.padsHidden) throw new Error('the thumb pads were live underneath the customiser');
+  if (!lkOpen.drawerShut) throw new Error('the command drawer stayed open behind the customiser');
+  if (lkHeld.tick !== lkOpen.tick) {
+    throw new Error(`the clock ran while the customiser was up (${lkOpen.tick} -> ${lkHeld.tick})`);
+  }
+  if (lkHeld.frames !== lkOpen.frames) throw new Error('the recorder grew while the customiser was up');
+  if (lkNamed.stored !== HOSTILE_OWN) {
+    throw new Error(`the name typed into the panel did not reach the identity (${lkNamed.stored})`);
+  }
+  if (lkNamed.shownAsText !== HOSTILE_OWN) {
+    throw new Error(`the panel did not draw the name back as text (${lkNamed.shownAsText})`);
+  }
+  if (lkNamed.injected !== 0 || lkNamed.elementsInCell !== 0) {
+    throw new Error(`a display name created ${lkNamed.injected} element(s) in the profile screen — stored XSS`);
+  }
+  if (lkAfter.up) throw new Error('the customiser would not close from its own button');
+  if (lkAfter.held) throw new Error('the sim was still held after the customiser closed');
+  if (lkAfter.padsHidden) throw new Error('closing the customiser left a phone with no controls');
+  if (!(lkAfter.tick > lkHeld.tick)) throw new Error('the sim did not resume after the customiser closed');
+
+  // --- and the results panel does not advertise a panel that is not there ---
+  //
+  // `body.touch #board` is `display: none`, and the results screen was printing
+  // a tappable `leaderboard` row on every finish anyway — a button that set the
+  // flag, persisted it, refetched the board and showed nothing. Checked on the
+  // MODEL in the real bundle rather than on `actionsFor` alone, because the
+  // thing that was wrong was the call site not passing a touch flag at all.
+  const boardBtn = JSON.parse(await evalIn(cdp, `
+    (async () => {
+      const decode = (str) => {
+        const out = [];
+        for (const part of str.split(',')) {
+          const star = part.indexOf('*');
+          const mask = Number(star < 0 ? part : part.slice(0, star));
+          const n = Number(star < 0 ? 1 : part.slice(star + 1));
+          for (let i = 0; i < n; i++) out.push(mask);
+        }
+        return out;
+      };
+      // A REAL FINISH ON THE PHONE VIEWPORT, because the bug was not in
+      // actionsFor — it was the call site never passing a touch flag, and only
+      // a real model built by the real page can see that.
+      window.velo.restart(false);
+      await window.velo.scriptRun(decode(${JSON.stringify(fixture.inputs)}));
+      const m = window.velo.results;
+      const got = {
+        finished: window.velo.sim.state.finished,
+        model: m ? m.actions.map((a) => a.id) : null,
+        printed: [...document.querySelectorAll('#results .rs-act-label')].map((e) => e.textContent),
+      };
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', bubbles: true }));
+      return JSON.stringify(got);
+    })()
+  `));
+  console.log('    results on touch: ' + JSON.stringify(boardBtn));
+  if (!boardBtn.finished || !boardBtn.model) {
+    throw new Error('the fixture run did not finish on the phone viewport — the check proves nothing');
+  }
+  if (boardBtn.model.includes('board')) {
+    throw new Error('the results panel offered the leaderboard on a device where it is display:none');
+  }
+  if (boardBtn.printed.some((t) => (t || '').includes('leaderboard'))) {
+    throw new Error('the results panel printed a leaderboard button on a phone');
+  }
 
   // --- the overview pad, which is the phone's TAB key -----------------------
   //

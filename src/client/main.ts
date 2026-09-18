@@ -21,6 +21,7 @@ import type { GhostDraw, Pose } from './render.ts';
 import { createCamera, cloneCamera, DEFAULT_CAMERA } from './camera.ts';
 import { cloneOverview, createOverview, DEFAULT_OVERVIEW, overviewFrame } from './overview.ts';
 import { createArmed } from './armed.ts';
+import { createSimHold } from './hold.ts';
 import { createPanel } from './panel.ts';
 import { BOOT_PRESET, PRESETS } from './presets.ts';
 import { createAttemptLog, createRecorder, MIN_BANKED_FRAMES, verify } from './recorder.ts';
@@ -49,6 +50,7 @@ import {
 import { createBoardUi } from './boardui.ts';
 import { createResultsUi } from './resultsui.ts';
 import { createLookUi } from './lookui.ts';
+import type { LookMode } from './lookui.ts';
 import { createClaimUi } from './claimui.ts';
 import { CLAIM_PARAM, claimCode, parseClaim } from '@/shared/claim.ts';
 import { actionForKey, buildResults } from './results.ts';
@@ -58,8 +60,8 @@ import { createLiveTune } from './livetune.ts';
 import { renderArt } from './artrender.ts';
 import { makeLook } from './art/bikeart.ts';
 import type { BikeLook } from './art/bikeart.ts';
-import { appearanceFor, appearanceLabel, DEFAULT_APPEARANCE, parseAppearance, resolveAppearance } from '@/shared/appearance.ts';
-import type { AppearanceKey } from '@/shared/appearance.ts';
+import { appearanceFor, appearanceLabel, DEFAULT_APPEARANCE, labelFor, parseAppearance, resolveAppearance } from '@/shared/appearance.ts';
+import type { Appearance, AppearanceKey } from '@/shared/appearance.ts';
 import { bakeLevel, bakeSignature } from './art/bake.ts';
 import type { BakedLevel } from './art/bake.ts';
 import { cloneArt, DEFAULT_ART } from './art/params.ts';
@@ -333,11 +335,29 @@ const cam = createCamera(cloneCamera(DEFAULT_CAMERA));
 // visibly eases out — on the one screen the whole derivation exists for.
 cam.setViewport(canvas.clientWidth, canvas.clientHeight);
 cam.snap({ x: level.start.x, y: level.start.y, vx: 0, vy: 0 });
+/**
+ * EVERY REASON THE SIM MIGHT BE HELD, IN ONE REGISTER.
+ *
+ * `step()` asks this once, above every line that can move anything, and a true
+ * answer returns before `sim.advance`, before `recorder.capture` and before
+ * `ghost.advance` — so no tick runs, the clock does not move, the input stream
+ * gains no frame and the ghost waits where it is. A run held for a minute banks
+ * a byte-identical replay to one never held at all.
+ *
+ * It is a register rather than a second `||` because there are now two sources
+ * and a third is queued, and separate answers to "is the sim running" are how
+ * two of them end up disagreeing. See hold.ts, which carries the argument and
+ * the proof; the sources themselves are wired at the bottom of this file, next
+ * to the things they are about.
+ */
+const hold = createSimHold();
+
 // Hold-to-overview, and the start-of-level peek. It owns the freeze: while
 // `overview.frozen` is true, `step()` returns before touching the sim, so no
 // tick advances, no input frame is recorded and the clock does not move.
 const overview = createOverview(cloneOverview(DEFAULT_OVERVIEW));
 overview.startIntro();
+hold.add('overview', () => overview.frozen);
 // THE ARMED START LINE. A restart and a level load set the run up and freeze it
 // until the first sim input, so the clock, the recorder and the GHOST all leave
 // the line together with the player instead of ahead of them. It is the same
@@ -403,6 +423,32 @@ const artParams = cloneArt(DEFAULT_ART);
 const audioParams = cloneAudio(DEFAULT_AUDIO);
 audioParams.muted = loadFlag('mute', false) ? 1 : 0;
 const audio = createAudio(() => audioParams);
+
+/**
+ * THE ONE PLACE A CHOSEN APPEARANCE IS WRITTEN.
+ *
+ * Every route into it — the picker, the dice, the reset button, adopting
+ * somebody else's identity across devices, and the hook bin/smoke drives — goes
+ * through here, because an appearance now has a side effect. It used to be
+ * three lines of cache invalidation that a new call site could plausibly get
+ * away with forgetting; with a motor attached to it, forgetting means your bike
+ * looks like a lawnmower and sounds like an inline four.
+ *
+ * AND IT IS THE ONLY CALLER OF `audio.setEngine`, with the local player's own
+ * appearance, which is how ghost silence is enforced rather than hoped for:
+ * there is no second path by which any other bike's engine could reach the
+ * synth. `audio.test.ts` asserts that by reading this file.
+ */
+function applyAppearance(next: Appearance): void {
+  identity.appearance = setAppearance(next);
+  identity.chosenLook = true;
+  myLookCache = null;
+  audio.setEngine(identity.appearance.engine);
+}
+// The engine chosen on a previous visit, or the default for somebody who has
+// never chosen. Safe before any gesture: the model remembers it and the synth
+// picks it up when a context is finally allowed to exist.
+audio.setEngine(identity.appearance.engine);
 let baked: BakedLevel | null = null;
 let bakeMs = 0;
 const bootTime = performance.now();
@@ -771,6 +817,25 @@ function finishRun(): void {
   // one that decides that — not this line — so that "what gets posted" lives in
   // one place beside the reasons it might not.
   submitRunIfPossible(r);
+
+  // ASK ONCE MORE, ON THE FIRST FINISH, IF THEY SKIPPED.
+  //
+  // This is where the motivation actually is. At the first load there is
+  // nothing to attach a name to and the honest answer to "why would I" is "you
+  // would not, yet"; here there is a TIME, it is banked and unposted, and the
+  // board row it would sit on is the thing the panel draws. It opens OVER the
+  // results screen rather than instead of it — `openLook('finish')` is the one
+  // mode that does not close it — so dismissing this reveals the time again,
+  // and nothing is between the player and `next level` but one tap.
+  //
+  // ONCE, EVER, and the flag is written when it is SHOWN. A prompt that came
+  // back on every finish until it was answered would be the tollbooth this
+  // design refuses, delivered late instead of early. Everything it offers stays
+  // one pad away forever afterwards.
+  if (r.finished && !hasName(identity) && !loadFlag(PROFILE_ASKED_AT_FINISH, false)) {
+    saveFlag(PROFILE_ASKED_AT_FINISH, true);
+    openLook('finish');
+  }
 }
 
 function startPlayback(): void {
@@ -1254,6 +1319,9 @@ function syncResults(): void {
       canWatchRun: lastReplay !== null,
       ghostName: ghostEntry?.name ?? null,
       montageCount: montageCount(),
+      // The leaderboard row comes off on touch, because the panel it opens is
+      // hidden there. See `ActionInput.touch`.
+      touch: touch.enabled,
     },
   });
   resultsUi.update(resultsModel, levelP());
@@ -1521,7 +1589,9 @@ function step(): void {
   // Any input at all cancels the opening peek. A deliberate TAB hold is not
   // cancelled by driving — that is what `hold` outranking `intro` is for.
   if (overview.mode === 'intro' && input.mask() !== 0) overview.skipIntro();
-  if (overview.frozen) return;
+  // ONE QUESTION, whatever is covering the screen — the overview, the about
+  // page, and whatever the fourth one turns out to be. See hold.ts.
+  if (hold.held) return;
 
   // THE MONTAGE, ONE FRAME FOR ONE FRAME, and above every branch below so that
   // it keeps riding after the winning line has crossed the finish. The failures
@@ -1802,7 +1872,12 @@ function draw(alpha: number, dtMs: number): void {
   // reading audio has is held constant for as long as TAB is down, and a
   // engine note held dead flat for a second is the one case where being
   // perfectly faithful to the state sounds like a bug.
-  audio.setDuck(1 - overview.blend * 0.85);
+  // Ducked under anything holding the sim, because holding it means every
+  // reading audio has is frozen, and an engine note held dead flat for as long
+  // as a panel is up is the one case where being perfectly faithful to the
+  // state sounds like a bug. The overview fades with its own blend so releasing
+  // TAB is instant; the about page is a hard cover and gets a flat duck.
+  audio.setDuck(Math.min(1 - overview.blend * 0.85, legend?.about.open ? 0.15 : 1));
   audio.update(sampleRide(sim.world, sim.state, spec, appliedMask), dtSec);
 
   updateHud();
@@ -1840,7 +1915,11 @@ function audioLine(): string {
     case 'suspended':
       return '<span class="warn">suspended</span> (tab hidden)';
     case 'running':
-      return `on, ${audioParams.engineHz.toFixed(0)} Hz, ${audio.lastMs.toFixed(2)} ms/frame — M mutes`;
+      // Bangs a second rather than a frequency, because that is what the number
+      // now is and because it is the one figure that means the same thing on
+      // all four engines. See Voices.engineHz.
+      return `on, ${labelFor('engine', audio.engine)}, ${audioParams.engineHz.toFixed(0)}/s, `
+        + `${audio.lastMs.toFixed(2)} ms/frame — M mutes`;
     default:
       return 'off';
   }
@@ -1850,7 +1929,9 @@ function setMuted(on: boolean): void {
   audio.setMuted(on);
   saveFlag('mute', on);
   panel.sync();
-  toast(on ? 'sound off' : 'sound on', 'M');
+  // The LABEL on the toast is a key, and on a phone there is no key. It says
+  // where the control actually is on the device reading it.
+  toast(on ? 'sound off' : 'sound on', touch.enabled ? 'your bike' : 'M');
 }
 
 /** The two things that are warnings rather than telemetry. See hudmode.ts. */
@@ -2090,6 +2171,25 @@ legend = createLegend(legendRoot, {
   onOpen: (on) => syncLegendPads(on),
 });
 
+/**
+ * THE ABOUT PAGE HOLDS THE SIM, through the same register the overview uses.
+ *
+ * It is a full-screen overlay and it does not pause anything by itself — the
+ * only thing it does to the game is dispatch a window `blur`, which is the door
+ * `input.ts` already uses for alt-tab, so a held throttle drops. That is not
+ * enough: the bike still coasts, still falls and still dies while you read.
+ * Open it mid-run on a ledge and you come back to a corpse.
+ *
+ * A PREDICATE ON THE PAGE'S OWN STATE, read late, and nothing about.ts had to
+ * change for it. There is no second flag here that could disagree with whether
+ * the page is up — if it is shut, it is not holding anything, which is the
+ * whole reason hold.ts asks questions rather than counting locks.
+ *
+ * No TIME STOPPED banner, unlike the overview: the page is covering the screen,
+ * so nothing reads as crashed.
+ */
+hold.add('about', () => legend?.about.open ?? false);
+
 function syncLegendPads(open: boolean): void {
   if (touch.enabled) touch.setHidden(open || results !== null);
 }
@@ -2274,8 +2374,7 @@ function adoptRemoteIdentity(playerId: string): void {
     // posted under their id in somebody else's livery would put the wrong bike
     // on their rows the moment it finished a level.
     if (r.value.appearance) {
-      identity.appearance = setAppearance(parseAppearance(r.value.appearance));
-      identity.chosenLook = true;
+      applyAppearance(parseAppearance(r.value.appearance));
     }
     onIdentityChanged();
     renderClaim();
@@ -2352,8 +2451,20 @@ function closeClaim(): void {
  * and a URL doing that without a question is exactly the behaviour nobody
  * expects from a link — especially one that arrived by being scanned off
  * somebody else's screen.
+ *
+ * A FUNCTION, CALLED FROM THE BOOT SECTION AT THE BOTTOM, AND IT USED TO BE AN
+ * IIFE RIGHT HERE. That crashed the entire bundle on exactly the URLs it exists
+ * for: `openClaim` reads `loop` and `touch`, both of which are `const`s declared
+ * two hundred lines further down, so running it at this point in the module hit
+ * their temporal dead zone — `ReferenceError: Cannot access 'loop' before
+ * initialization`, thrown out of the module's top level, so `window.velo` never
+ * appeared and NOTHING loaded. Every ordinary load was fine because
+ * `parseClaim` returns null and the function stops one line in; the one path
+ * that reached the rest of it was a scanned QR code, which is the whole feature
+ * and the phone half of it at that. Verified in Chrome against the built
+ * bundle, not deduced.
  */
-(function offerClaimFromUrl(): void {
+function offerClaimFromUrl(): void {
   const id = parseClaim(location.href);
   if (!id) return;
   if (id === identity.playerId) {
@@ -2369,7 +2480,7 @@ function closeClaim(): void {
     }
   });
   openClaim('adopt');
-})();
+}
 
 // --- the customiser ---------------------------------------------------------
 //
@@ -2379,16 +2490,41 @@ function closeClaim(): void {
 // time would be the third time this user has been told their bike is not the
 // shipped one.
 //
-// It PAUSES THE GAME while it is up, exactly as the chooser does and for the
-// same reason: it is a menu, the preview is a live render, and a bike leaning
-// against a wall underneath an open panel is not a state anybody wants.
-let pausedBeforeLook = false;
+// IT IS ALSO THE PROFILE SCREEN, and that is the whole first-run design — see
+// the header of lookui.ts, which carries the argument. A form before the first
+// ride is the worst thing to put in front of somebody who has just clicked a
+// link; "build your rider" is a toy with the name as one field inside it, and
+// one tap gets out of it. It is offered ONCE on a first load and asked ONCE
+// more on a first finish, because that is when there is a time to put a name on.
+//
+// IT HOLDS THE SIM rather than pausing the loop, and the change is deliberate.
+// `loop.paused = true` stops the frame loop, which stops the RENDERER too — the
+// game behind the panel becomes a still, which is fine for a menu you opened
+// mid-run and wrong for the first thing a player ever sees: the level should be
+// alive behind the toy. `hold` gives the stronger guarantee anyway (no tick, no
+// recorded frame, no ghost step — a run held for a minute banks a byte-identical
+// replay) and it gives it through the one register every other screen answers.
+// See hold.ts, hold.test.ts and the profile block in bin/smoke.
+let lookMode: LookMode = 'plain';
+/**
+ * The legend's state before an intro took the screen, so it can be put back.
+ *
+ * On a first run BOTH of these want the middle of a phone's glass — the legend
+ * because a phone has no keyboard to fumble the flip out of, this because it is
+ * the welcome — and two modals stacked on each other is not a welcome. So the
+ * profile goes first (who are you), the legend follows when it closes (how do
+ * you ride), and neither has to know about the other beyond this one flag.
+ */
+let legendBeforeIntro = false;
 
 const lookUi = createLookUi(lookRoot, {
   onPick: (key: AppearanceKey, id: string) => {
-    identity.appearance = setAppearance({ ...identity.appearance, [key]: id });
-    identity.chosenLook = true;
-    myLookCache = null;
+    applyAppearance({ ...identity.appearance, [key]: id });
+    // A picture previews itself; a noise does not. The customiser PAUSES the
+    // sim, so choosing an engine would otherwise change an idle you have to
+    // take on faith — and the whole character of these four is in how they
+    // behave when they are revved, which a stationary bike never does.
+    if (key === 'engine') audio.blip();
     renderLook();
     syncBoardUi();
     if (results) syncResults();
@@ -2398,21 +2534,61 @@ const lookUi = createLookUi(lookRoot, {
     // that gives a player who has never chosen a livery of their own, so the
     // die roll produces a bike that already exists on somebody's board row
     // rather than a nineteenth thing.
-    identity.appearance = setAppearance(appearanceFor(`${identity.playerId}:${Date.now()}`));
-    identity.chosenLook = true;
-    myLookCache = null;
+    applyAppearance(appearanceFor(`${identity.playerId}:${Date.now()}`));
+    audio.blip();
     renderLook();
     syncBoardUi();
   },
   onReset: () => {
-    identity.appearance = setAppearance(DEFAULT_APPEARANCE);
-    identity.chosenLook = true;
-    myLookCache = null;
+    applyAppearance(DEFAULT_APPEARANCE);
+    audio.blip();
     renderLook();
     syncBoardUi();
   },
+  // The name, typed into the toy rather than into a form in front of it. It
+  // goes through the SAME function the leaderboard panel's field goes through,
+  // which is what makes a run banked for want of a name post the moment one
+  // exists — from either screen, with one copy of that rule.
+  onName: (raw: string) => {
+    onNameChosen(raw);
+    renderLook();
+  },
+  // "just ride", "not now", and the ✕. One tap, asks nothing, and never
+  // discards anything: whatever was picked is already stored.
+  onSkip: () => closeLook(),
+  onLinkDevice: () => openClaim('mine'),
+  // THE SAME MUTE THE `M` KEY CALLS, and there is deliberately only one — the
+  // flag, the toast and the panel checkbox all move together because they all
+  // move through here. It is on the customiser rather than on a pad because a
+  // phone had NO mute at all (setMuted had two callers and both were the
+  // keyboard), the drawer has one slot left and this is not what it is for, and
+  // this panel already owns the engine axis: somebody deciding what their bike
+  // sounds like is exactly the person who wants to know how to turn it off.
+  onMute: (on: boolean) => {
+    setMuted(on);
+    renderLook();
+  },
   onClose: () => closeLook(),
 });
+
+/**
+ * Where the player stands, for the row the profile screen shows them.
+ *
+ * REAL NUMBERS OR NONE, and this is the function that keeps that true. The
+ * time is the run that just finished when there is one on screen, and this
+ * browser's local best otherwise; the rank comes off the human board when one
+ * has been fetched. Every one of them is nullable and the panel prints a dash,
+ * because the whole point of that row is that it is a picture of the real
+ * board — an invented rank would make the one honest thing on the screen a lie.
+ */
+function lookStanding(): { rank: number | null; total: number; timeTicks: number | null } {
+  const mine = humanBoard?.you ?? null;
+  return {
+    rank: humanBoard?.rank ?? null,
+    total: humanBoard?.total ?? 0,
+    timeTicks: results?.replay.timeTicks ?? mine?.timeTicks ?? bests[level.simHash] ?? null,
+  };
+}
 
 function renderLook(): void {
   lookUi.show({
@@ -2420,27 +2596,103 @@ function renderLook(): void {
     palette: levelP(),
     playerId: identity.playerId,
     levelName: level.name,
+    mode: lookMode,
+    name: identity.name,
+    standing: lookStanding(),
+    touch: touch.enabled,
+    muted: audio.muted,
   });
 }
 
-function openLook(): void {
-  if (lookUi.visible) return;
-  closeResults();
+/**
+ * Open the customiser, in whichever of its three jobs it is doing.
+ *
+ * `finish` DOES NOT CLOSE THE RESULTS SCREEN, and that is the one difference
+ * between the modes here: the results panel is the thing underneath, the time is
+ * the reason this is being asked at all, and shutting the panel that shows that
+ * time to ask about it would be absurd. Closing this reveals it again.
+ */
+function openLook(mode: LookMode = 'plain'): void {
+  if (lookUi.visible) {
+    // Already up — an intro or a finish re-ask must not downgrade it to plain.
+    if (mode !== 'plain') {
+      lookMode = mode;
+      renderLook();
+    }
+    return;
+  }
+  lookMode = mode;
+  if (mode !== 'finish') closeResults();
   closeChooser();
-  pausedBeforeLook = loop.paused;
-  loop.paused = true;
+  // ONLY ON TOUCH, because only on touch is the legend a MODAL. On a desktop it
+  // is a card in the bottom-left corner that nothing is fighting for; on a
+  // phone it is the middle of the glass, which is where this is too, and two
+  // modals stacked on a first run is not a welcome. Closing something that was
+  // not in the way would be a flicker for nothing.
+  if (mode === 'intro' && touch.enabled) {
+    legendBeforeIntro = legend?.open ?? false;
+    setLegendOpen(false);
+  }
   touch.setHidden(true);
   renderLook();
 }
 
 function closeLook(): void {
   if (!lookUi.visible) return;
+  const wasIntro = lookMode === 'intro';
   lookUi.hide();
-  loop.paused = pausedBeforeLook;
+  lookMode = 'plain';
+  // THE LEGEND GETS THE SCREEN BACK. On a first run it was open — a phone has
+  // no keyboard to discover the flip on — and the intro borrowed the middle of
+  // the glass from it. Handing it back here is what makes the first minute
+  // read as one sequence rather than as two panels fighting.
+  if (wasIntro && legendBeforeIntro) {
+    legendBeforeIntro = false;
+    setLegendOpen(true);
+    return;
+  }
   // Through the legend rather than straight at the pads: the control legend
   // hides them too, and a panel closing on top of an open legend must not put a
   // `gas` pad back under its close button.
   syncLegendPads(legend?.open ?? false);
+}
+
+/**
+ * THE PROFILE SCREEN HOLDS THE SIM, through the same register the overview, the
+ * armed line and the about page answer.
+ *
+ * It is registered here, next to the thing it is about, and read LATE — the
+ * predicate is the panel's own visibility, so there is no second flag that could
+ * disagree with whether the panel is up. A run held while somebody picks a
+ * helmet banks a byte-identical replay to one never held at all: no tick, no
+ * frame in the input stream, no ghost step. hold.test.ts asserts the register
+ * and the replay identity; bin/smoke asserts that THIS panel, opened by the
+ * real pad in the real bundle, actually lands in it.
+ */
+hold.add('profile', () => lookUi.visible);
+
+// --- the first-run offer -----------------------------------------------------
+//
+// OFFERED, NEVER IMPOSED, AND EXACTLY ONCE. The flag is written when it is
+// SHOWN rather than when it is answered, because "answered" would mean asking
+// again on every reload until somebody filled the form in — which is the
+// tollbooth this design exists to avoid, wearing a delay.
+//
+// The test for a first-timer is deliberately BOTH halves: no name AND no chosen
+// look. Somebody who has picked a bike but no name has already met this screen,
+// and somebody with a name has certainly met it.
+const PROFILE_OFFERED = 'profileOffered';
+/** Asked once more on a first finish, when there is a time to attach. */
+const PROFILE_ASKED_AT_FINISH = 'profileAskedAtFinish';
+
+function offerProfileOnFirstRun(): void {
+  if (loadFlag(PROFILE_OFFERED, false)) return;
+  saveFlag(PROFILE_OFFERED, true);
+  if (hasName(identity) || identity.chosenLook) return;
+  // Not over a claim link: somebody arriving by QR is answering a different
+  // question about who they are, and two identity panels at once is neither.
+  if (claimUi.visible) return;
+  openLook('intro');
 }
 
 // The end-of-level screen. Every row it draws comes off the HUMAN board, and
@@ -2624,6 +2876,13 @@ const touch = createTouch(
     // it has been closed, because a permanent chip on a phone is a chip in a
     // thumb's way.
     onHelp: () => setLegendOpen(!(legend?.open ?? false)),
+    // THE `your bike` PAD, AND IT IS THE ONLY WAY TO THE CUSTOMISER ON A PHONE.
+    // It was bound to `Y` and to a button on the leaderboard panel, and
+    // `body.touch #board` is `display: none` — so until this pad existed, a
+    // phone could not repaint the bike, change the helmet, pick one of the four
+    // engines, or type a name. The screen it opens is the profile screen too,
+    // which is why the gap mattered twice over.
+    onLook: () => openLook(),
     onNote: (msg) => toast(msg, 'controls'),
     // Persisted when the fingers come off and not before: a pinch fires this
     // path on every pointermove, and writing localStorage sixty times a second
@@ -2662,6 +2921,13 @@ applyZoom(storedZoom);
 // why the pads are hidden underneath it rather than left live. Closing it is
 // remembered, and the `controls` pad in the drawer is the way back.
 syncLegendPads(legend?.open ?? false);
+// AND THE FIRST-RUN OFFER GOES AFTER IT, because on a first run BOTH of these
+// want the middle of a phone's glass and only one of them may have it. The
+// profile takes it first and hands it to the legend on the way out — who you
+// are, then how you ride — and `openLook('intro')` is the thing that borrows
+// it, so the ordering lives in one place rather than in two panels' defaults.
+// It is down here rather than beside the customiser because it needs `touch`,
+// which is created in this section.
 // ONE mask, assembled in one place. See `Input.addSource`.
 input.addSource(() => touch.mask());
 if (touch.enabled) {
@@ -2971,6 +3237,28 @@ window.addEventListener('pointerdown', () => {
 // turned it off does not get one frame of telemetry on every reload.
 hud.classList.toggle('compact', !hudVisible);
 
+// --- who is this, asked exactly once, at the last possible moment -----------
+//
+// A SCANNED QR FIRST, AND THE FIRST-RUN OFFER SECOND. Both are about who this
+// device is, both want the screen, and they ask opposite questions — "are you
+// this existing player?" and "who would you like to be?" — so the order between
+// them is the whole of the interaction: a claim link is answered, and
+// `offerProfileOnFirstRun` stands down while one is on screen.
+//
+// AND THEY ARE DOWN HERE, BELOW EVERY `const` THEY TOUCH, WHICH IS THE POINT.
+// The claim offer used to be an IIFE beside its own definition, and it crashed
+// the entire bundle on exactly the URLs it exists for: `openClaim` reads `loop`
+// and `touch`, both declared further down the module, so running it up there hit
+// their temporal dead zone and threw out of the module's top level — no
+// `window.velo`, no game, nothing on screen. Every ordinary load was fine,
+// because `parseClaim` returns null and the function stops one line in; the only
+// path that reached the rest of it was a scanned QR code, which is the whole
+// feature and the phone half of it at that. Verified in Chrome against the
+// built bundle rather than deduced, and it is the reason both of these are
+// called from the boot section instead of from where they are written.
+offerClaimFromUrl();
+offerProfileOnFirstRun();
+
 loop.start();
 syncBoardUi();
 refreshBoard();
@@ -3006,6 +3294,17 @@ interface VeloWindow extends Window {
    * frame the run starts — which is the property worth asserting.
    */
   armed,
+  /**
+   * WHAT IS HOLDING THE SIM, for bin/smoke and for devtools. `by` names them,
+   * so a frozen game is a question with an answer rather than a bug report.
+   */
+  get hold() {
+    return { held: hold.held, by: [...hold.by] };
+  },
+  /** The about page, for bin/smoke: it proves the hold through the real button. */
+  get about() {
+    return { open: legend?.about.open ?? false };
+  },
   /** Frames in the CURRENT recording. bin/smoke uses it to prove the freeze. */
   get recordedFrames() {
     return recorder.frames;
@@ -3051,19 +3350,32 @@ interface VeloWindow extends Window {
     return { ...identity.appearance, chosen: identity.chosenLook, playerId: identity.playerId };
   },
   setAppearance(key: string, id: string) {
-    identity.appearance = setAppearance({ ...identity.appearance, [key]: id });
-    identity.chosenLook = true;
-    myLookCache = null;
+    applyAppearance({ ...identity.appearance, [key]: id });
     if (lookUi.visible) renderLook();
     syncBoardUi();
     return { ...identity.appearance };
   },
-  openLook() {
-    openLook();
+  /**
+   * The customiser, which is the profile screen — for bin/smoke and bin/shots.
+   *
+   * It takes the MODE so the harness can photograph and assert the first-run
+   * state without having to clear localStorage and reload, and reports what is
+   * actually in the document: the option chips, the axis rows, the preview
+   * canvas, and the two things the profile half exists for — the name field and
+   * the "this is what other people see" block.
+   */
+  openLook(mode?: string) {
+    openLook(mode === 'intro' || mode === 'finish' ? mode : 'plain');
     return {
       visible: lookUi.visible,
+      mode: lookMode,
       options: lookRoot.querySelectorAll('.lk-opt').length,
       rows: lookRoot.querySelectorAll('.lk-row').length,
+      nameField: lookRoot.querySelectorAll('.lk-name-input').length,
+      seen: lookRoot.querySelectorAll('.lk-seen').length,
+      seenGhost: lookRoot.querySelectorAll('.lk-seen-ghost').length,
+      skip: lookRoot.querySelectorAll('.lk-go-btn').length,
+      name: identity.name,
       preview: (() => {
         const c = lookRoot.querySelector('canvas');
         return c ? { w: c.width, h: c.height } : null;
@@ -3071,6 +3383,10 @@ interface VeloWindow extends Window {
     };
   },
   closeLook,
+  /** The display name, for bin/smoke: it is typed into the panel, not set here. */
+  get playerName() {
+    return identity.name;
+  },
   openClaim() {
     openClaim('mine');
     const c = claimRoot.querySelector('canvas');
@@ -3180,6 +3496,7 @@ interface VeloWindow extends Window {
       error: audio.error,
       lastMs: audio.lastMs,
       cues: audio.cueCount,
+      engine: audio.engine,
       params: audioParams,
     };
   },

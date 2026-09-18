@@ -13,6 +13,7 @@ import {
   APPEARANCE_KEYS,
   BIKES,
   DECALS,
+  ENGINES,
   DEFAULT_APPEARANCE,
   HELMETS,
   JACKETS,
@@ -30,19 +31,21 @@ import {
 } from './appearance.ts';
 import type { Appearance } from './appearance.ts';
 
-/** Every legal appearance. 6 x 10 x 4 x 3 x 3 x 4. */
+/** Every legal appearance. 6 x 4 x 10 x 4 x 3 x 3 x 4. */
 function everyAppearance(): Appearance[] {
   const out: Appearance[] = [];
   for (const bike of BIKES) {
-    for (const paint of PAINTS) {
-      for (const helmet of HELMETS) {
-        for (const jacket of JACKETS) {
-          for (const scarf of SCARVES) {
-            for (const decal of DECALS) {
-              out.push({
-                bike: bike.id, paint: paint.id, helmet: helmet.id,
-                jacket: jacket.id, scarf: scarf.id, decal: decal.id,
-              });
+    for (const engine of ENGINES) {
+      for (const paint of PAINTS) {
+        for (const helmet of HELMETS) {
+          for (const jacket of JACKETS) {
+            for (const scarf of SCARVES) {
+              for (const decal of DECALS) {
+                out.push({
+                  bike: bike.id, engine: engine.id, paint: paint.id, helmet: helmet.id,
+                  jacket: jacket.id, scarf: scarf.id, decal: decal.id,
+                });
+              }
             }
           }
         }
@@ -60,7 +63,8 @@ describe('cosmetics are outside BikeSpec', () => {
     // passing because the catalogue was empty — the classic way a coverage test
     // rots into a no-op.
     expect(ALL_APPEARANCES.length).toBe(
-      BIKES.length * PAINTS.length * HELMETS.length * JACKETS.length * SCARVES.length * DECALS.length,
+      BIKES.length * ENGINES.length * PAINTS.length * HELMETS.length
+      * JACKETS.length * SCARVES.length * DECALS.length,
     );
     expect(ALL_APPEARANCES.length).toBeGreaterThan(1000);
     expect(BIKES.length).toBeGreaterThanOrEqual(6);
@@ -84,13 +88,31 @@ describe('cosmetics are outside BikeSpec', () => {
     expect(specHash(spec)).toBe(specHash(DEFAULT_SPEC));
   });
 
+  it('changing ONLY the exhaust note leaves specHash bit-identical', () => {
+    // Named separately from the product sweep above because it is the one a
+    // player will actually try, and because it is the failure that would be
+    // most infuriating: your times are on the board, you change what your bike
+    // SOUNDS LIKE, and the server starts refusing your runs. The engine is
+    // presentation exactly like the paint, and this says so on its own line.
+    const spec = cloneSpec(DEFAULT_SPEC);
+    const before = specHash(spec);
+    for (const engine of ENGINES) {
+      const app: Appearance = { ...DEFAULT_APPEARANCE, engine: engine.id };
+      cloneAppearance(app);
+      appearanceLabel(app);
+      expect(parseAppearance(JSON.parse(JSON.stringify(app))).engine).toBe(engine.id);
+      expect(specHash(spec), engine.id).toBe(before);
+    }
+    expect(specHash(spec)).toBe(specHash(DEFAULT_SPEC));
+  });
+
   it('no appearance axis is an addressable field on the spec', () => {
     // `specPaths()` is derived from DEFAULT_SPEC itself, so it is by
     // construction the complete set of numbers the sim reads. If a cosmetic
     // ever appeared there it would be hashed, and this is what would say so.
     const paths = specPaths().join(' ').toLowerCase();
     for (const k of APPEARANCE_KEYS) expect(paths).not.toContain(k);
-    for (const o of [...BIKES, ...PAINTS, ...HELMETS, ...JACKETS, ...SCARVES, ...DECALS]) {
+    for (const o of [...BIKES, ...ENGINES, ...PAINTS, ...HELMETS, ...JACKETS, ...SCARVES, ...DECALS]) {
       expect(paths).not.toContain(o.id);
     }
   });

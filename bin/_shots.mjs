@@ -105,6 +105,17 @@ const PHONE_PRESETS = [
   ['portrait', 412, 800],
   ['portrait-narrow', 360, 640],
   ['tablet', 1180, 820],
+  // THE TABLETS ARE REAL DEVICES AND NOT A ROUND NUMBER. 1180 x 820 was a
+  // plausible-looking size nobody owns; these four are the two iPad Pros in
+  // both orientations, in CSS px, which is what the device this gets tested on
+  // actually hands the page. Portrait is in the list on purpose: on a phone it
+  // is the degenerate case, on a tablet it is a way people really hold the
+  // thing, and the aspect (0.70) is further from the reference (1.78) than any
+  // landscape phone is.
+  ['ipad11-land', 1194, 834],
+  ['ipad11-port', 834, 1194],
+  ['ipad13-land', 1366, 1024],
+  ['ipad13-port', 1024, 1366],
 ];
 /**
  * `SHOTS_MENU=1` — open the touch command drawer before the phone shot.
@@ -131,6 +142,46 @@ const LEGEND = process.env.SHOTS_LEGEND === '1';
 const CLOSE_LEGEND = `(()=>{const b=document.querySelector('#legend .lg-close');`
   + `if(b&&!b.closest('.lg-card').hidden)b.click();})();`;
 /**
+ * A FRESH CHROME PROFILE IS A FIRST RUN, AND A FIRST RUN OPENS THE RIDER SCREEN.
+ *
+ * Same argument as `CLOSE_LEGEND` above and the same fix: this harness uses a
+ * throwaway profile, so every first navigation gets the first-run offer, and
+ * without this every shot of the first level would be a shot of a panel rather
+ * than of the level. It goes out through the same `ride →` button a thumb goes
+ * through, which is also what hands the legend back — so the order here has to
+ * be profile first, legend second, exactly as a player gets it.
+ */
+const CLOSE_PROFILE = `(()=>{const r=document.getElementById('look');`
+  + `if(!r||r.classList.contains('hidden'))return;`
+  + `const b=r.querySelector('.lk-go-btn');if(b)b.click();})();`;
+/**
+ * `SHOTS_PROFILE=1` — photograph the first-run rider screen instead of the game.
+ *
+ * It is the screen a kid meets before anything else in this game, it is dense
+ * (a live preview, a name field, a leaderboard row, a ghost and thirty-four
+ * option chips) and the viewport it has to survive is 915 x 348. Every question
+ * about it is a question about a picture: does the preview still read at that
+ * height, is the name field above the fold, is the one-tap way out on screen
+ * without scrolling, and — the one that matters most — does the "this is what
+ * other people see" block land next to the bike rather than under it.
+ *
+ * Two frames per viewport: as it opens, and scrolled to the end, because "is
+ * the way out still on screen after seven rows of chips" is only visible there.
+ * It is opened through `velo.openLook('intro')` rather than by clearing storage
+ * and reloading, which is the same state by a shorter road.
+ */
+const PROFILE = (process.env.SHOTS_PROFILE || '') !== '';
+/**
+ * `SHOTS_PROFILE=finish` photographs the OTHER state the same panel has: the
+ * one re-ask, on the first finish by somebody who skipped the intro. It is a
+ * different title, a different lead — it names the time — and a different
+ * primary button, and all three are judged by looking at them.
+ */
+const PROFILE_MODE = process.env.SHOTS_PROFILE === 'finish' ? 'finish' : 'intro';
+const OPEN_PROFILE = `(()=>{window.velo.openLook('${PROFILE_MODE}');})();`;
+const SCROLL_PROFILE_END = `(()=>{const r=document.getElementById('look');`
+  + `if(r)r.scrollTop=r.scrollHeight;})();`;
+/**
  * `SHOTS_OVERVIEW=1` — press the overview pad before the phone shot.
  *
  * Overview on a phone is a whole mode: the camera goes below its own readability
@@ -141,6 +192,34 @@ const CLOSE_LEGEND = `(()=>{const b=document.querySelector('#legend .lg-close');
  * the transition rather than the destination.
  */
 const OVERVIEW = process.env.SHOTS_OVERVIEW === '1';
+/**
+ * `SHOTS_ABOUT=1` — open the about page before the phone shot.
+ *
+ * The about page is the one screen in this game that is nothing but layout, so
+ * every question about it is a question about a picture: does the size
+ * comparison still read at 348 px tall, does the body copy wrap into a column
+ * or into a wall, and — the one that has bitten every panel on this project —
+ * is the way out still on screen once three hundred words have pushed it off.
+ * Two frames per viewport, the top and the bottom, because the second question
+ * is only visible at the end of the scroll.
+ *
+ * It is opened through the `about` button in the control legend, which is the
+ * only way in a player has, for this file's standing rule: photograph the state
+ * a thumb can reach and not one only the harness can.
+ */
+const ABOUT = process.env.SHOTS_ABOUT === '1';
+const OPEN_ABOUT = `(()=>{window.velo.legend.setOpen(true);`
+  + `const b=document.querySelector('#legend .lg-about');if(b)b.click();})();`;
+const SCROLL_ABOUT_END = `(()=>{const s=document.querySelector('#about .ab-scroll');`
+  + `if(s)s.scrollTop=s.scrollHeight;})();`;
+// THE FIGURE IS THE ONE THING ON THE PAGE THAT IS AN ARGUMENT RATHER THAN A
+// SENTENCE — two strips, the same width, with the same bike drawn at 17 % and
+// at 6.6 % of them. Whether that lands is a question about the two of them SEEN
+// TOGETHER, so it gets its own frame rather than being whatever happens to be
+// on screen at the top of the scroll.
+const SCROLL_ABOUT_SCALE = `(()=>{const s=document.querySelector('#about .ab-scroll');`
+  + `const f=document.querySelector('#about .ab-scale');`
+  + `if(s&&f)s.scrollTop=f.offsetTop-14;})();`;
 const phonesEnv = process.env.SHOTS_PHONES || '';
 const PHONES = !phonesEnv ? [] : phonesEnv === '1' ? PHONE_PRESETS : phonesEnv.split(',').map((x) => {
   const m = /^([A-Za-z0-9-]+):(\d+)x(\d+)$/.exec(x.trim());
@@ -211,7 +290,7 @@ try {
     // Drive for a moment so the bike is mid-level and moving, then freeze the
     // loop: a still of a bike sitting on the start line says nothing about
     // whether the art survives a busy part of a level.
-    await ev(cdp, `(()=>{window.velo.overview.skipIntro();window.velo.restart(false);window.dispatchEvent(new KeyboardEvent('keydown',{code:'ArrowUp',bubbles:true}));return 1})()`);
+    await ev(cdp, `(()=>{${CLOSE_PROFILE}window.velo.overview.skipIntro();window.velo.restart(false);window.dispatchEvent(new KeyboardEvent('keydown',{code:'ArrowUp',bubbles:true}));return 1})()`);
     await new Promise((r) => setTimeout(r, 1500));
     await ev(cdp, `(()=>{window.dispatchEvent(new KeyboardEvent('keyup',{code:'ArrowUp',bubbles:true}));return 1})()`);
     await new Promise((r) => setTimeout(r, 120));
@@ -237,11 +316,21 @@ try {
     // paint over the answer with the question. So the phone pass restarts the
     // loop, drives briefly and photographs whatever the game decided, pads and
     // HUD and all.
-    const variants = phone ? [
+    const variants = phone ? (PROFILE ? [
+      [`profile-${phone}`, `(()=>{window.velo.loop.start();${CLOSE_LEGEND}${OPEN_PROFILE}return 1})()`],
+      [`profile-${phone}-end`, `(()=>{${OPEN_PROFILE}${SCROLL_PROFILE_END}return 1})()`],
+    ] : ABOUT ? [
+      // The top of the page, and then the bottom of the same page. Nothing is
+      // reloaded between them: the second shot is the first one scrolled, which
+      // is what a thumb does to it.
+      [`about-${phone}`, `(()=>{window.velo.loop.start();${OPEN_ABOUT}return 1})()`],
+      [`about-${phone}-scale`, `(()=>{${OPEN_ABOUT}${SCROLL_ABOUT_SCALE}return 1})()`],
+      [`about-${phone}-end`, `(()=>{${OPEN_ABOUT}${SCROLL_ABOUT_END}return 1})()`],
+    ] : [
       [`phone-${phone}`, `(()=>{window.velo.loop.start();${LEGEND ? '' : CLOSE_LEGEND}`
         + `${MENU ? OPEN_MENU : ''}`
         + `${OVERVIEW ? OPEN_OVERVIEW : ''}return 1})()`],
-    ] : at.length === 3 ? [
+    ]) : at.length === 3 ? [
       ['at', `window.velo.renderAt(${at[0]},${at[1]},${at[2]},{art:true})`],
       ['at-debug', `window.velo.renderAt(${at[0]},${at[1]},${at[2]},{art:true,debug:true})`],
     ] : [
@@ -303,9 +392,41 @@ try {
         window.velo.legend.setOpen(false);
         return 1;
       })()`]);
+      // THE ABOUT PAGE. Pure presentation, so it is judged entirely on a
+      // picture: the masthead in the game's own stroke alphabet, the two
+      // strips that draw the size comparison at the sizes it is about, and
+      // whether the numbers read as numbers rather than as prose. Two frames,
+      // the top and the end, for the same reason the phone pass takes two.
+      variants.push(['about', `(()=>{
+        document.body.classList.remove('riding');
+        ${OPEN_ABOUT}
+        return document.querySelectorAll('#about .ab-bike, #about .ab-mastbike').length;
+      })()`]);
+      variants.push(['about-scale', `(()=>{
+        document.body.classList.remove('riding');
+        ${OPEN_ABOUT}
+        ${SCROLL_ABOUT_SCALE}
+        return document.querySelectorAll('#about .ab-bike').length;
+      })()`]);
+      variants.push(['about-end', `(()=>{
+        document.body.classList.remove('riding');
+        ${OPEN_ABOUT}
+        ${SCROLL_ABOUT_END}
+        return document.querySelector('#about .ab-scroll').scrollTop;
+      })()`]);
       variants.push(['look', `(()=>{
         window.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyY',bubbles:true}));
         return document.querySelectorAll('#look .lk-opt').length;
+      })()`]);
+      // THE SAME PANEL DOING ITS OTHER JOB. `look` is somebody who pressed Y;
+      // this is the screen a first-time player is shown before they have ridden
+      // anything, and the difference between them is a title, a line of copy
+      // and which button is the loud one — all three of which are judged by
+      // looking at it rather than by reading the model.
+      variants.push(['profile', `(()=>{
+        window.dispatchEvent(new KeyboardEvent('keydown',{code:'Escape',bubbles:true}));
+        const r = window.velo.openLook('intro');
+        return JSON.stringify({ mode: r.mode, seen: r.seen, name: r.nameField });
       })()`]);
       // The claim code, which has to be photographed rather than described:
       // "is that QR big enough to scan" is not a thing a unit test can answer.
@@ -331,7 +452,8 @@ try {
       // The overview blend is an exponential with a 0.13 s half-life that only
       // LANDS on 1 within a thousandth, so half a second photographs the
       // transition and not the destination. Wait it out when it is in play.
-      if (name === 'hud-off' || name.startsWith('legend') || name.startsWith('phone-')) {
+      if (name === 'hud-off' || name.startsWith('legend') || name.startsWith('about')
+        || name.startsWith('profile') || name.startsWith('phone-')) {
         await new Promise((r) => setTimeout(r, OVERVIEW && name.startsWith('phone-') ? 1600 : 500));
       }
       const r = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false, fromSurface: true });
