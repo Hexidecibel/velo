@@ -16,121 +16,287 @@ import { cloneSpec, DEFAULT_SPEC } from '@/sim/spec.ts';
 import { IN_BRAKE, IN_FLIP, IN_LEAN_L, IN_LEAN_R, IN_MASK, IN_THROTTLE } from '@/sim/consts.ts';
 import { createInput } from './input.ts';
 import {
-  PINCH_DEAD, PINCH_MIN_SPREAD, hitZone, pinchPair, pinchScale, playAreaPointers, slideZone,
-  spread, touchZones, wantsTouch, zoneMask, zoomLabel,
+  HUD_BAND_PX, MIN_PAD_MM, MM, PINCH_DEAD, PINCH_MIN_SPREAD, PX_PER_MM, hitZone, pinchPair,
+  pinchScale, playAreaPointers, slideZone, smallestPadMm, spread, thumbInsetPx, touchZones,
+  wantsTouch, zoneMask, zoomLabel,
 } from './touch.ts';
-import type { Pointer, ZoneId } from './touch.ts';
+import type { Pointer, Viewport, Zone, ZoneId } from './touch.ts';
 
-/** A landscape phone, in CSS pixels. */
-const W = 844;
-const H = 390;
+/**
+ * THE VIEWPORTS THIS HAS TO BE RIGHT ON, and the whole reason the layout is
+ * arithmetic over plain objects rather than four percentages in a CSS file.
+ *
+ * `land-chrome` is the one that matters and the one that was missing: an Android
+ * phone in landscape, in Chrome, with the URL bar and the system bars taking
+ * their quarter. The previous pass was designed against `land-iphone` — a clean
+ * 844 x 390 that no browser actually hands you — and shipped a layout that was
+ * fine there and unusable on the real thing.
+ */
+const VIEWPORTS: Array<{ name: string; w: number; h: number }> = [
+  { name: 'land-chrome', w: 915, h: 348 },
+  { name: 'land-full', w: 915, h: 412 },
+  { name: 'land-iphone', w: 844, h: 390 },
+  { name: 'land-small', w: 736, h: 280 },
+  { name: 'portrait', w: 412, h: 800 },
+  { name: 'portrait-narrow', w: 360, h: 640 },
+  { name: 'tablet', w: 1180, h: 820 },
+];
 
-const at = (zones = touchZones(false)) =>
-  (fx: number, fy: number): ZoneId | null => hitZone(zones, fx * W, fy * H, W, H);
+/** The one the user played on, and the one every claim below is measured at. */
+const PHONE: Viewport = { w: 915, h: 348 };
+const W = PHONE.w;
+const H = PHONE.h;
 
-describe('the layout', () => {
-  const hit = at();
+const zonesAt = (vp: Viewport = PHONE, auto = false, fullscreen: 'none' | 'off' | 'on' = 'off'): Zone[] =>
+  touchZones(vp, { autoThrottle: auto, fullscreen });
 
-  it('gives the right thumb the throttle in the bottom corner', () => {
-    // The biggest, lowest, most comfortable target on the screen, because it is
-    // held almost constantly and everything else is occasional.
-    expect(hit(0.98, 0.98)).toBe('throttle');
-    expect(hit(0.85, 0.75)).toBe('throttle');
-  });
+const at = (zones = zonesAt()) =>
+  (fx: number, fy: number): ZoneId | null => hitZone(zones, fx * W, fy * H);
 
-  it('puts the brake beside the throttle rather than under a different thumb', () => {
-    expect(hit(0.70, 0.98)).toBe('brake');
-  });
+const find = (zones: readonly Zone[], id: ZoneId): Zone => {
+  const z = zones.find((x) => x.id === id);
+  if (!z) throw new Error(`no ${id} zone`);
+  return z;
+};
+/** A pad's short side, in millimetres — the only unit a thumb has. */
+const shortMm = (z: Zone): number => Math.min(z.w, z.h) / PX_PER_MM;
 
-  it('gives the throttle more room than the brake', () => {
-    const z = touchZones(false);
-    const gas = z.find((x) => x.id === 'throttle')!;
-    const brake = z.find((x) => x.id === 'brake')!;
-    expect(gas.w * gas.h).toBeGreaterThan(brake.w * brake.h);
-  });
+describe('the layout is sized in MILLIMETRES, because a thumb is', () => {
+  // THE BUG THIS REPLACES. The pads were fractions of the canvas — 15% wide and
+  // HALF THE HEIGHT each for lean, a third of the width for the gas cluster — so
+  // on a large phone in landscape they were enormous rectangles covering the
+  // entire lower half of the screen, which was empty background, while all the
+  // action was in a band across the top. The same fractions on a small phone
+  // would have been too small to hit. Neither is a size anybody chose, and a
+  // percentage of a canvas cannot be: a thumb is the same size on every phone.
 
-  it('splits the left thumb into two lean zones WITH NO DEAD STRIP between them', () => {
-    // Direction changes constantly in mid-air, and sliding from one to the other
-    // without lifting has to work. A gap between them would swallow exactly the
-    // input the slide exists to give.
-    const z = touchZones(false);
-    const l = z.find((x) => x.id === 'leanL')!;
-    const r = z.find((x) => x.id === 'leanR')!;
-    expect(l.x + l.w).toBe(r.x);
-    expect(l.y).toBe(r.y);
-    expect(l.h).toBe(r.h);
-    expect(hit(0.05, 0.9)).toBe('leanL');
-    expect(hit(0.25, 0.9)).toBe('leanR');
-  });
-
-  it('gives FLIP a home of its own, up and inboard of the right cluster', () => {
-    // Rare, critical, and both thumbs are busy. It is a place, not a gesture:
-    // a double-tap or a swipe that fails does so silently, and this game
-    // punishes a missed input immediately.
-    expect(hit(0.80, 0.35)).toBe('flip');
-  });
-
-  it('leaves the middle and the top of the screen alone — that is the game', () => {
-    expect(hit(0.5, 0.5)).toBe(null);
-    expect(hit(0.5, 0.9)).toBe(null);
-    expect(hit(0.3, 0.2)).toBe(null);
-  });
-
-  it('keeps the commands clear of the in-canvas HUD and the level picker', () => {
-    // The art renderer draws the level name, the clock and the apple count
-    // across the TOP-CENTRE of the canvas, and the level picker sits top-right.
-    // Neither is in the DOM beside these pads, so only a screenshot catches an
-    // overlap — and one did: "RESTART" printed through "20 CLOSE QUARTERS".
-    for (const z of touchZones(false).filter((x) => x.command)) {
-      expect(z.x + z.w, `${z.id} reaches the HUD`).toBeLessThan(0.3);
-    }
-    expect(hit(0.5, 0.04)).toBe(null);
-    expect(hit(0.95, 0.04)).toBe(null);
-  });
-
-  it('never overlaps two HOLD zones, whatever the mode', () => {
-    // Overlap would make "which input did I give" depend on list order, which
-    // is not a thing a player can see.
-    for (const auto of [false, true]) {
-      const holds = touchZones(auto).filter((z) => !z.command);
-      for (let i = 0; i < holds.length; i++) {
-        for (let j = i + 1; j < holds.length; j++) {
-          const a = holds[i];
-          const b = holds[j];
-          const apart =
-            a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
-          expect(apart, `${a.id} overlaps ${b.id}`).toBe(true);
+  it('gives every hold pad a comfortable physical size on every real phone', () => {
+    // About 9-10 mm is the minimum comfortable target and 12-15 mm is generous.
+    // Anything past that is not easier to hit, it is just stealing screen.
+    for (const vp of VIEWPORTS) {
+      for (const auto of [false, true]) {
+        const z = zonesAt(vp, auto);
+        expect(smallestPadMm(z), `${vp.name} auto=${auto}`).toBeGreaterThanOrEqual(MIN_PAD_MM - 1e-9);
+        for (const q of z.filter((x) => !x.command)) {
+          expect(shortMm(q), `${vp.name} ${q.id} is huge`).toBeLessThanOrEqual(22);
         }
       }
     }
   });
 
-  it('keeps every zone on the screen', () => {
-    for (const auto of [false, true]) {
-      for (const z of touchZones(auto)) {
-        expect(z.x).toBeGreaterThanOrEqual(0);
-        expect(z.y).toBeGreaterThanOrEqual(0);
-        expect(z.x + z.w).toBeLessThanOrEqual(1);
-        expect(z.y + z.h).toBeLessThanOrEqual(1);
+  it('draws the SAME physical pad on a big phone and a small one', () => {
+    // The thing fractions could never do. Two landscape phones 180 px apart in
+    // width get gas pads within a millimetre of each other, rather than one 25%
+    // bigger than the other for no reason but its screen.
+    const big = find(zonesAt({ w: 915, h: 412 }), 'throttle');
+    const small = find(zonesAt({ w: 844, h: 390 }), 'throttle');
+    expect(Math.abs(big.w - small.w) / PX_PER_MM).toBeLessThan(1);
+    expect(Math.abs(big.h - small.h) / PX_PER_MM).toBeLessThan(1);
+  });
+
+  it('SHRINKS rather than overlapping when the screen genuinely cannot hold it', () => {
+    // Portrait is the hard case: a 360 px phone is 60 mm across and the two
+    // clusters plus the gap between them want 76. It scales, it does not reflow
+    // — the positions are what a player learns — and it stops at the comfortable
+    // minimum rather than shrinking forever.
+    const wide = find(zonesAt({ w: 915, h: 412 }), 'leanL');
+    const narrow = find(zonesAt({ w: 360, h: 640 }), 'leanL');
+    expect(narrow.w).toBeLessThan(wide.w);
+    expect(shortMm(narrow)).toBeGreaterThanOrEqual(MIN_PAD_MM);
+  });
+
+  it('leaves the level most of the glass, which is the point of all of it', () => {
+    // The old layout was about 40% pads on a large phone and they were in the
+    // middle of everything. Corners, and a quarter at worst.
+    for (const vp of VIEWPORTS) {
+      const z = zonesAt(vp);
+      const covered = z.reduce((s, q) => s + q.w * q.h, 0) / (vp.w * vp.h);
+      expect(covered, `${vp.name}`).toBeLessThan(vp.h < 300 ? 0.4 : 0.3);
+    }
+  });
+});
+
+describe('the layout owes each control something different', () => {
+
+  it('gives GAS the best position on the screen, because it is held constantly', () => {
+    // The bottom-right corner: where the thumb already rests, no reach at all.
+    // THUMBS PIVOT FROM WHERE THE HAND GRIPS and sweep an arc, so on a big phone
+    // the far corners are harder to reach rather than easier — which is why
+    // nothing that matters is out at the end of the arc any more.
+    const gas = find(zonesAt(), 'throttle');
+    // Hard against the bottom-right, bar the edge margin — which is NOT
+    // fussiness: Android's back gesture lives on the left and right edges of the
+    // glass and the home indicator lives on the bottom, so a pad flush to the
+    // corner would be fighting the OS for the same 3 mm.
+    expect(gas.x + gas.w).toBeCloseTo(W - MM.edge * PX_PER_MM, 6);
+    expect(gas.y + gas.h).toBeCloseTo(H - MM.edge * PX_PER_MM, 6);
+    expect(hitZone(zonesAt(), gas.x + gas.w - 1, gas.y + gas.h - 1)).toBe('throttle');
+    expect(gas.w * gas.h).toBeGreaterThan(find(zonesAt(), 'brake').w * find(zonesAt(), 'brake').h);
+    expect(shortMm(gas)).toBeGreaterThanOrEqual(12);
+  });
+
+  it('gives LEAN the left thumb, generous, and with NO DEAD STRIP between the two', () => {
+    // Direction changes constantly in mid-air and sliding from one to the other
+    // without lifting has to work. A gap would swallow exactly that input.
+    const z = zonesAt();
+    const l = find(z, 'leanL');
+    const r = find(z, 'leanR');
+    expect(l.x + l.w).toBe(r.x);
+    expect(l.y).toBe(r.y);
+    expect(l.h).toBe(r.h);
+    expect(shortMm(l)).toBeGreaterThanOrEqual(12);
+    expect(hitZone(z, l.x + 2, l.y + l.h - 2)).toBe('leanL');
+    expect(hitZone(z, r.x + 2, r.y + r.h - 2)).toBe('leanR');
+  });
+
+  it('tiles the brake against the gas, so a drifting thumb lands in a zone', () => {
+    const z = zonesAt();
+    expect(find(z, 'brake').x + find(z, 'brake').w).toBe(find(z, 'throttle').x);
+  });
+
+  it('gives FLIP a place of its own with a DEAD STRIP under it', () => {
+    // Rare, critical, and reached by rolling the right thumb up off the gas —
+    // and that is exactly why it may not tile with the gas. A thumb DRIFTING up
+    // off a held throttle must not arrive in flip, because that fires a
+    // direction change in mid-air and loses the run. `slideZone` latches a touch
+    // that slides into nothing, so 3 mm of nothing is what catches the drift.
+    for (const vp of VIEWPORTS) {
+      const z = zonesAt(vp);
+      const flip = find(z, 'flip');
+      const gas = find(z, 'throttle');
+      const strip = gas.y - (flip.y + flip.h);
+      expect(strip / PX_PER_MM, `${vp.name}`).toBeGreaterThan(1.5);
+      // And the strip is dead: a thumb that drifts into it keeps the throttle.
+      expect(slideZone(z, 'throttle', gas.x + 4, gas.y - strip / 2)).toBe('throttle');
+    }
+    expect(at()(0.92, 0.45)).toBe('flip');
+  });
+
+  it('makes the occasional controls SMALL and dim, not as prominent as the game', () => {
+    // restart, levels, gas-mode, zoom and full-screen were as big and as bright
+    // as the controls, which is exactly backwards: you press these between runs
+    // and the others during one.
+    const z = zonesAt();
+    const cmds = z.filter((q) => q.command);
+    expect(cmds.map((q) => q.id).sort()).toEqual(['auto', 'full', 'levels', 'restart', 'zoom']);
+    const hold = Math.min(...z.filter((q) => !q.command).map((q) => q.w * q.h));
+    for (const c of cmds) {
+      expect(c.w * c.h, `${c.id}`).toBeLessThan(hold);
+      // Still big enough to hit on purpose: small is not the same as fiddly.
+      expect(shortMm(c)).toBeGreaterThanOrEqual(8);
+    }
+  });
+
+  it('drops the full-screen pad rather than offering a button that does nothing', () => {
+    // There is no element fullscreen on an iPhone. A control that cannot work is
+    // worse than no control, and the manifest's `display: standalone` is the
+    // route to a chrome-free game there anyway.
+    expect(zonesAt(PHONE, false, 'none').some((q) => q.id === 'full')).toBe(false);
+    expect(find(zonesAt(PHONE, false, 'off'), 'full').label).toMatch(/full/);
+    expect(find(zonesAt(PHONE, false, 'on'), 'full').label).toMatch(/exit/);
+  });
+});
+
+describe('nothing is drawn on top of anything else', () => {
+  it('never overlaps ANY two zones, on any viewport, in any mode', () => {
+    // Overlap would make "which input did I give" depend on list order, which is
+    // not a thing a player can see. This covers the commands too, and it is what
+    // catches the command block growing into the lean pads on a short screen.
+    for (const vp of VIEWPORTS) {
+      for (const auto of [false, true]) {
+        for (const fs of ['none', 'off', 'on'] as const) {
+          const z = zonesAt(vp, auto, fs);
+          for (let i = 0; i < z.length; i++) {
+            for (let j = i + 1; j < z.length; j++) {
+              const a = z[i];
+              const b = z[j];
+              const apart =
+                a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+              expect(apart, `${vp.name} ${auto}/${fs}: ${a.id} overlaps ${b.id}`).toBe(true);
+            }
+          }
+        }
       }
     }
   });
 
-  it('is resolution-independent — the same fractions on any phone', () => {
-    const z = touchZones(false);
-    for (const [w, h] of [[844, 390], [667, 375], [1180, 820]]) {
-      expect(hitZone(z, w * 0.98, h * 0.98, w, h)).toBe('throttle');
-      expect(hitZone(z, w * 0.02, h * 0.98, w, h)).toBe('leanL');
+  it('stays out of the in-canvas HUD band, which is the other half of fix 2', () => {
+    // The art renderer draws the level card, the clock and the apple counter
+    // across the top of the canvas at a FIXED pixel size. Nothing in this
+    // overlay is allowed up there — the screenshot that started this had the
+    // desktop level bar and a `browse C` button printed straight through them.
+    for (const vp of VIEWPORTS) {
+      for (const auto of [false, true]) {
+        for (const q of zonesAt(vp, auto)) {
+          expect(q.y, `${vp.name} ${q.id}`).toBeGreaterThanOrEqual(HUD_BAND_PX);
+        }
+      }
     }
+  });
+
+  it('keeps every zone on the screen, and out of the safe-area insets', () => {
+    // `viewport-fit=cover` paints under a notch and a home indicator, which is
+    // right for the level and wrong for a control.
+    const cover: Viewport = { w: 844, h: 390, top: 0, right: 47, bottom: 21, left: 47 };
+    for (const vp of [...VIEWPORTS, cover] as Viewport[]) {
+      for (const auto of [false, true]) {
+        for (const q of zonesAt(vp, auto)) {
+          expect(q.x, `${q.id}`).toBeGreaterThanOrEqual(vp.left ?? 0);
+          expect(q.y).toBeGreaterThanOrEqual(0);
+          expect(q.x + q.w).toBeLessThanOrEqual(vp.w - (vp.right ?? 0) + 1e-9);
+          expect(q.y + q.h).toBeLessThanOrEqual(vp.h - (vp.bottom ?? 0) + 1e-9);
+        }
+      }
+    }
+  });
+
+  it('leaves the middle and the top of the screen alone — that is the game', () => {
+    const hit = at();
+    expect(hit(0.5, 0.5)).toBe(null);
+    expect(hit(0.5, 0.9)).toBe(null);
+    expect(hit(0.5, 0.05)).toBe(null);
+    expect(hit(0.95, 0.05)).toBe(null);
+    expect(hit(0.6, 0.2)).toBe(null);
+  });
+});
+
+describe('where the hands are, as a number the camera can use', () => {
+  it('measures the bottom cluster and NOT flip', () => {
+    // The inset means "where the hands live". A hand does not live on flip — it
+    // is touched for a tenth of a second — so counting it would push the bike a
+    // centimetre up the screen to dodge a pad nobody is holding.
+    const z = zonesAt();
+    const inset = thumbInsetPx(z, H);
+    expect(inset).toBeCloseTo(H - find(z, 'throttle').y, 6);
+    expect(inset).toBeLessThan(H - find(z, 'flip').y);
+  });
+
+  it('is a number of PIXELS, so it shrinks as a fraction of a taller screen', () => {
+    // Which is the whole point: the same hands on a taller screen cover less of
+    // it, and the camera's bias should follow that rather than a constant.
+    const short = thumbInsetPx(zonesAt({ w: 915, h: 348 }), 348) / 348;
+    const tall = thumbInsetPx(zonesAt({ w: 1180, h: 820 }), 820) / 820;
+    expect(tall).toBeLessThan(short);
+  });
+
+  it('is zero when there are no pads at all', () => {
+    expect(thumbInsetPx([], 348)).toBe(0);
   });
 });
 
 describe('auto-throttle', () => {
   it('collapses the right cluster to ONE target and frees the thumb', () => {
-    const hit = at(touchZones(true));
-    expect(touchZones(true).some((z) => z.id === 'throttle')).toBe(false);
-    expect(hit(0.98, 0.98)).toBe('brake');
-    expect(hit(0.70, 0.98)).toBe('brake');
+    const z = zonesAt(PHONE, true);
+    expect(z.some((q) => q.id === 'throttle')).toBe(false);
+    const gasCorner = find(zonesAt(), 'throttle');
+    // The corner the gas pad had is now the brake's, whole.
+    expect(hitZone(z, gasCorner.x + gasCorner.w / 2, gasCorner.y + gasCorner.h / 2)).toBe('brake');
+    // It takes the WHOLE cluster rather than staying its own narrow self: the
+    // thumb that was on the gas now has nothing under it, and a corner of dead
+    // glass where a control used to be is a control you press and miss.
+    expect(find(z, 'brake').w).toBe(
+      find(zonesAt(), 'brake').w + find(zonesAt(), 'throttle').w,
+    );
   });
 
   it('holds the gas with nothing pressed at all', () => {
@@ -149,8 +315,8 @@ describe('auto-throttle', () => {
   });
 
   it('leaves lean and flip exactly where they were, so the mode is not a relearn', () => {
-    const off = touchZones(false);
-    const on = touchZones(true);
+    const off = zonesAt(PHONE, false);
+    const on = zonesAt(PHONE, true);
     for (const id of ['leanL', 'leanR', 'flip'] as const) {
       expect(on.find((z) => z.id === id)).toEqual(off.find((z) => z.id === id));
     }
@@ -185,27 +351,30 @@ describe('zoneMask', () => {
 });
 
 describe('sliding', () => {
-  const z = touchZones(false);
+  const z = zonesAt();
+  const leanL = find(z, 'leanL');
+  const leanR = find(z, 'leanR');
+  const restart = find(z, 'restart');
 
   it('slides between the lean zones without lifting', () => {
-    expect(slideZone(z, 'leanL', W * 0.25, H * 0.9, W, H)).toBe('leanR');
-    expect(slideZone(z, 'leanR', W * 0.05, H * 0.9, W, H)).toBe('leanL');
+    expect(slideZone(z, 'leanL', leanR.x + 4, leanR.y + 4)).toBe('leanR');
+    expect(slideZone(z, 'leanR', leanL.x + 4, leanL.y + 4)).toBe('leanL');
   });
 
   it('LATCHES rather than releasing when a thumb drifts into the play area', () => {
     // The throttle is held for most of a run and a thumb drifts while it is
     // held. Four millimetres past the top edge must not cut the engine with
     // nothing on screen to say why; only lifting the finger releases.
-    expect(slideZone(z, 'throttle', W * 0.9, H * 0.2, W, H)).toBe('throttle');
-    expect(slideZone(z, 'leanL', W * 0.5, H * 0.1, W, H)).toBe('leanL');
+    expect(slideZone(z, 'throttle', W * 0.9, H * 0.2)).toBe('throttle');
+    expect(slideZone(z, 'leanL', W * 0.5, H * 0.1)).toBe('leanL');
   });
 
   it('is never slid INTO a command — restart is pressed, never brushed', () => {
     // A thumb crossing the restart button on its way somewhere must not end the
     // run. Commands fire on the press and on nothing else. The coordinates are
     // the restart button's own, so this cannot pass by landing in dead space.
-    expect(hitZone(z, W * 0.05, H * 0.08, W, H)).toBe('restart');
-    expect(slideZone(z, 'leanL', W * 0.05, H * 0.08, W, H)).toBe('leanL');
+    expect(hitZone(z, restart.x + 2, restart.y + 2)).toBe('restart');
+    expect(slideZone(z, 'leanL', restart.x + 2, restart.y + 2)).toBe('leanL');
   });
 });
 
@@ -305,15 +474,20 @@ describe('the pinch, against a game where two fingers is the normal case', () =>
   // controls and gesture fingers are disjoint sets and neither can take the
   // other's input away. All of that is decidable from plain objects, which is
   // the half that would actually have gone wrong.
-  const Z = touchZones(false);
+  const Z = zonesAt();
   const at = (id: number, fx: number, fy: number): Pointer => ({ id, x: fx * W, y: fy * H });
-  const free = (pts: Pointer[]) => playAreaPointers(Z, pts, W, H);
+  const free = (pts: Pointer[]) => playAreaPointers(Z, pts);
+  /** A pointer in the middle of a named pad, which is where a thumb lands. */
+  const on = (id: number, zid: ZoneId): Pointer => {
+    const q = find(Z, zid);
+    return { id, x: q.x + q.w / 2, y: q.y + q.h / 2 };
+  };
 
   // Where the thumbs actually are, in ordinary play.
-  const GAS = at(1, 0.92, 0.80);
-  const LEAN_L = at(2, 0.05, 0.80);
-  const LEAN_R = at(3, 0.22, 0.80);
-  const FLIP = at(4, 0.80, 0.35);
+  const GAS = on(1, 'throttle');
+  const LEAN_L = on(2, 'leanL');
+  const LEAN_R = on(3, 'leanR');
+  const FLIP = on(4, 'flip');
 
   it('is NOT two thumbs on the pads — which is how this game is played', () => {
     expect(free([GAS, LEAN_L])).toEqual([]);
@@ -325,7 +499,7 @@ describe('the pinch, against a game where two fingers is the normal case', () =>
 
   it('is NOT a thumb on the gas plus one stray touch in the play area', () => {
     // One free finger is not a gesture, however far it moves.
-    const stray = at(5, 0.5, 0.5);
+    const stray = at(5, 0.5, 0.45);
     expect(free([GAS, stray])).toEqual([stray]);
     expect(pinchPair(free([GAS, stray]))).toBe(null);
   });
@@ -342,8 +516,8 @@ describe('the pinch, against a game where two fingers is the normal case', () =>
   });
 
   it('IS two fingers that both started in the play area, and nothing else', () => {
-    const a = at(8, 0.35, 0.30);
-    const b = at(9, 0.60, 0.30);
+    const a = at(8, 0.40, 0.45);
+    const b = at(9, 0.65, 0.45);
     const pair = pinchPair(free([a, b]));
     expect(pair).not.toBe(null);
     expect(pair!.map((p) => p.id)).toEqual([8, 9]);
@@ -353,9 +527,9 @@ describe('the pinch, against a game where two fingers is the normal case', () =>
     // The latch: a drifting thumb keeps the throttle, which means it is still a
     // control and still not a pinch finger. It never enters the free set at
     // all, because that is decided once, where the finger landed.
-    const drifted = at(10, 0.5, 0.2);
-    expect(slideZone(Z, 'throttle', drifted.x, drifted.y, W, H)).toBe('throttle');
-    const other = at(11, 0.3, 0.2);
+    const drifted = at(10, 0.5, 0.45);
+    expect(slideZone(Z, 'throttle', drifted.x, drifted.y)).toBe('throttle');
+    const other = at(11, 0.62, 0.45);
     // Only the one that landed in the play area is a candidate; the drifted
     // thumb is held by the pad, not by this list.
     expect(pinchPair(free([other]))).toBe(null);
@@ -365,8 +539,8 @@ describe('the pinch, against a game where two fingers is the normal case', () =>
     // A gesture that died because of a knuckle would be the same silent failure
     // the pads were designed to avoid. `pinchPair` is consulted at the START
     // and never again; the pair is tracked by id from there.
-    const a = at(12, 0.35, 0.30);
-    const b = at(13, 0.60, 0.30);
+    const a = at(12, 0.40, 0.45);
+    const b = at(13, 0.65, 0.45);
     const pair = pinchPair(free([a, b]))!;
     expect(pair).not.toBe(null);
     // and the pads keep working meanwhile: the mask is over held ZONES, which
@@ -408,19 +582,20 @@ describe('the pinch, against a game where two fingers is the normal case', () =>
     // A gesture that goes wrong mid-run needs a way back that is not another
     // gesture — and the pad is also the only thing on the screen that says
     // pinch exists at all.
-    const z = touchZones(false, 1.4);
-    const pad = z.find((x) => x.id === 'zoom')!;
+    const z = touchZones(PHONE, { autoThrottle: false, bias: 1.4, fullscreen: 'off' });
+    const pad = find(z, 'zoom');
     expect(pad.command).toBe(true);
     expect(pad.label).toBe('zoom 1.4\u00d7');
     expect(zoomLabel(1)).toBe('zoom 1.0\u00d7');
-    // Present in both modes, because it is never rebuilt: rebuilding the
-    // overlay mid-run drops pointer capture and would release a held throttle.
-    expect(touchZones(true).some((x) => x.id === 'zoom')).toBe(true);
+    // Present in both modes, because the ELEMENTS are never rebuilt for a
+    // relayout: rebuilding the overlay mid-run drops pointer capture and would
+    // release a held throttle.
+    expect(zonesAt(PHONE, true).some((x) => x.id === 'zoom')).toBe(true);
     // A command, so it cannot be slid into by a thumb on its way somewhere and
     // it contributes no sim bit.
-    expect(slideZone(z, 'leanL', pad.x * W + 4, pad.y * H + 4, W, H)).toBe('leanL');
+    expect(slideZone(z, 'leanL', pad.x + 4, pad.y + 4)).toBe('leanL');
     expect(zoneMask(['zoom'], false)).toBe(0);
     // And it is out of the play area, so it cannot be half of a pinch.
-    expect(hitZone(z, (pad.x + pad.w / 2) * W, (pad.y + pad.h / 2) * H, W, H)).toBe('zoom');
+    expect(hitZone(z, pad.x + pad.w / 2, pad.y + pad.h / 2)).toBe('zoom');
   });
 });

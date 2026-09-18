@@ -765,8 +765,14 @@ try {
         visible: !root.classList.contains('hidden'),
         bodyClass: document.body.classList.contains('touch'),
         ids,
-        biasY: window.velo.cam.params.screenBiasY,
+        biasCap: window.velo.cam.params.screenBiasY,
+        thumbInsetPx: Math.round(window.velo.cam.params.thumbInsetPx),
+        hudInsetPx: window.velo.cam.params.hudInsetPx,
+        padTop: Math.round(Math.min(...[...root.querySelectorAll('.tc-zone')]
+          .filter((e) => /tc-(leanL|leanR|brake|throttle)$/.test(e.className.split(' ')[1]))
+          .map((e) => e.getBoundingClientRect().top))),
         zoomBias: window.velo.cam.zoomBias,
+        viewportH: window.innerHeight,
       };
     })()
   `);
@@ -776,8 +782,15 @@ try {
     if (!tc.ids.includes(want)) throw new Error(`the touch overlay is missing ${want} (${tc.ids})`);
   }
   // Thumbs cover the bottom corners, which is where a grounded bike sits when
-  // the camera centres it, so the bias has to actually be in force.
-  if (!(tc.biasY > 0)) throw new Error('the touch camera did not bias the bike up the frame');
+  // the camera centres it, so the bias has to actually be in force — and the
+  // number it is derived FROM has to have reached the camera. `thumbInsetPx` is
+  // measured off the real pads every frame; a zero here is the whole mechanism
+  // silently not wired up, with a camera that looks fine on a desktop.
+  if (!(tc.biasCap > 0)) throw new Error('the touch camera did not raise the bias cap');
+  if (!(tc.thumbInsetPx > 0)) throw new Error('the camera was never told where the thumbs are');
+  if (Math.abs(tc.thumbInsetPx - (tc.viewportH - tc.padTop)) > 1) {
+    throw new Error(`the thumb inset (${tc.thumbInsetPx}) does not match the pads (top ${tc.padTop})`);
+  }
   // AND THE ZOOM IS NOT TOUCHED. There used to be a 1.25x zoom-IN here, on the
   // reasoning that the bike looks small on a phone. The bike was never the
   // problem: a fixed px/m showed a phone less than half the level a desktop
@@ -795,8 +808,10 @@ try {
   const framing = async (label) => {
     const f = await evalIn(cdp, `
       (() => {
-        const w = document.getElementById('view').clientWidth;
-        return { w, zoom: window.velo.cam.zoom, metres: w / window.velo.cam.zoom };
+        const el = document.getElementById('view');
+        const w = el.clientWidth;
+        const h = el.clientHeight;
+        return { w, h, zoom: window.velo.cam.zoom, metres: w / window.velo.cam.zoom, up: h / window.velo.cam.zoom };
       })()
     `);
     console.log(`    framing ${label}: ` + JSON.stringify(f));
@@ -813,6 +828,70 @@ try {
   });
   await new Promise((r) => setTimeout(r, 2000));
   const phone = await framing('844x390');
+
+  // --- THE VIEWPORT THE BUG WAS ACTUALLY ABOUT -----------------------------
+  //
+  // 844 x 390 is the phone a developer types into a test. 915 x 348 is the one
+  // Chrome hands you on a large Android phone in landscape, once the URL bar and
+  // the system bars have taken their quarter — and at that aspect a zoom derived
+  // from width alone gave 7.4 m of VERTICAL world, which put the whole level in
+  // a band across the top of the canvas with the pads covering the empty rest.
+  // The derivation takes the limiting dimension now, and this is the number that
+  // says so out loud.
+  await cdp.send('Emulation.setDeviceMetricsOverride', {
+    width: 915, height: 348, deviceScaleFactor: 2, mobile: true,
+  });
+  await new Promise((r) => setTimeout(r, 2000));
+  const shortLand = await framing('915x348 (chrome on screen)');
+  if (!(shortLand.up > 8.6)) {
+    throw new Error(`a short landscape phone framed ${shortLand.up.toFixed(1)} m of vertical world`);
+  }
+  // And the desktop chrome is GONE rather than drawn on top of the in-canvas
+  // HUD, which is what the screenshot that started this showed: a level-name
+  // dropdown and a `browse C` button printed through the level card and the
+  // clock. Nothing in a unit test can see a DOM panel over a canvas.
+  const chrome2 = JSON.parse(await evalIn(cdp, `
+    (() => {
+      const vis = (id) => getComputedStyle(document.getElementById(id)).display !== 'none';
+      const pads = [...document.querySelectorAll('#touch .tc-zone')].map((e) => e.getBoundingClientRect());
+      return JSON.stringify({
+        levelbar: vis('levelbar'), legend: vis('legend'), hud: vis('hud'),
+        pads: pads.length,
+        highest: Math.round(Math.min(...pads.map((r) => r.top))),
+        lowest: Math.round(Math.max(...pads.map((r) => r.bottom))),
+      });
+    })()
+  `));
+  console.log('    touch chrome: ' + JSON.stringify(chrome2));
+  for (const id of ['levelbar', 'legend', 'hud']) {
+    if (chrome2[id]) throw new Error(`the desktop ${id} is still drawn over the touch HUD`);
+  }
+  // 52 px is the band the art renderer draws the level card, clock and apple
+  // counter in. Nothing in the overlay may be up there.
+  if (!(chrome2.highest >= 52)) throw new Error(`a pad reaches into the in-canvas HUD (top ${chrome2.highest})`);
+  if (!(chrome2.lowest <= 348)) throw new Error(`a pad runs off the bottom (${chrome2.lowest})`);
+
+  // The level bar is gone, so `levels` is the ONLY way a phone changes level.
+  // A hidden control with nothing replacing it would be a worse bug than the
+  // one hiding it fixed.
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+  const tapPad = async (cls) => {
+    const r = JSON.parse(await evalIn(cdp, `
+      (() => { const b = document.querySelector('.${cls}').getBoundingClientRect();
+        return JSON.stringify({ x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height / 2) }); })()
+    `));
+    const pt = { x: r.x, y: r.y, id: 9, radiusX: 8, radiusY: 8, force: 1 };
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [pt] });
+    await new Promise((r2) => setTimeout(r2, 60));
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await new Promise((r2) => setTimeout(r2, 400));
+  };
+  await tapPad('tc-levels');
+  const chooserUp = await evalIn(cdp, `!document.getElementById('chooser').classList.contains('hidden')`);
+  console.log('    levels pad: ' + JSON.stringify({ chooser: chooserUp }));
+  if (!chooserUp) throw new Error('the levels pad did not open the chooser');
+  await evalIn(cdp, `(() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', bubbles: true })); return 1; })()`);
+  await new Promise((r) => setTimeout(r, 300));
 
   // --- the pinch, driven by two real fingers -------------------------------
   //
@@ -831,12 +910,25 @@ try {
       await new Promise((r) => setTimeout(r, 60));
     }
   };
+  // WHERE THE PADS ACTUALLY ARE, read off the DOM rather than written down.
+  // They are sized in millimetres now and placed from the live viewport, so a
+  // hard-coded coordinate is a test that passes until somebody changes a pad by
+  // a millimetre and then taps empty glass while reporting success.
+  const padBox = async (cls) => JSON.parse(await evalIn(cdp, `
+    (() => { const r = document.querySelector('.${cls}').getBoundingClientRect();
+      return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2 }); })()
+  `));
   // Both fingers land in the play area, well clear of every pad, and spread
-  // from 200 px apart to 440.
+  // from 400 px apart to 880. Mid-height and mid-width is the one region this
+  // layout guarantees is the game.
+  const mid = JSON.parse(await evalIn(cdp, `
+    (() => JSON.stringify({ w: window.innerWidth, h: window.innerHeight }))()
+  `));
+  const my = Math.round(mid.h * 0.45);
   await touchSeq([
-    ['touchStart', [finger(300, 80, 1), finger(500, 80, 2)]],
-    ['touchMove', [finger(260, 80, 1), finger(560, 80, 2)]],
-    ['touchMove', [finger(200, 80, 1), finger(640, 80, 2)]],
+    ['touchStart', [finger(Math.round(mid.w * 0.34), my, 1), finger(Math.round(mid.w * 0.66), my, 2)]],
+    ['touchMove', [finger(Math.round(mid.w * 0.28), my, 1), finger(Math.round(mid.w * 0.72), my, 2)]],
+    ['touchMove', [finger(Math.round(mid.w * 0.16), my, 1), finger(Math.round(mid.w * 0.84), my, 2)]],
     ['touchEnd', []],
   ]);
   const pinched = await evalIn(cdp, `
@@ -849,8 +941,9 @@ try {
   }
   // And the way back, which is the whole reason the pad is there: a gesture
   // that went wrong mid-run must not need another gesture to undo it.
+  const zoomPad = await padBox('tc-zoom');
   await touchSeq([
-    ['touchStart', [finger(63, 88, 3)]],
+    ['touchStart', [finger(Math.round(zoomPad.x), Math.round(zoomPad.y), 3)]],
     ['touchEnd', []],
   ]);
   const reset = await evalIn(cdp, `window.velo.cam.zoomBias`);

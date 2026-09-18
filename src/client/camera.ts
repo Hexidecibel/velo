@@ -55,6 +55,24 @@ export interface CameraParams {
   /** The viewport width, in CSS pixels, `baseZoom` was measured on. */
   refWidth: number;
   /**
+   * The viewport HEIGHT, in CSS pixels, `baseZoom` was measured on — and the
+   * whole of the second half of the derivation.
+   *
+   * A zoom derived from width alone answers "how much level is across the
+   * screen" and says nothing about how much is UP it, which is fine while every
+   * screen is roughly 16:9 and catastrophic the moment one is not. A landscape
+   * phone with Chrome's toolbar and the system bars on it is 915x348 — an
+   * aspect of 2.63 against the reference's 1.78 — and the width-only formula
+   * gave it 47 px/m, which is 19.5 m across and SEVEN AND A HALF METRES UP. The
+   * level came out as a thin band across the top of the canvas with the bottom
+   * two thirds empty, which is exactly what the player photographed.
+   *
+   * So the height is derived the same way the width is, from the same measured
+   * anchor and with the same exponent, and the LIMITING one wins. See
+   * `baseZoomFor`.
+   */
+  refHeight: number;
+  /**
    * How much a wider viewport is spent on MORE WORLD rather than on a bigger
    * picture. `zoom = baseZoom * (cssW / refWidth) ** widthExp`, so:
    *
@@ -87,8 +105,33 @@ export interface CameraParams {
    */
   safeBox: number;
   /**
-   * Push the bike UP the frame by this fraction of the half-viewport. 0 centres
-   * it, which is right on a desktop and wrong in a hand.
+   * How much of the TOP of the viewport the in-canvas HUD covers, in CSS px.
+   *
+   * The level card, the clock and the apple counter are drawn at a fixed pixel
+   * size by artrender.ts — 12 px down, 34 px tall, plus the hard drop shadow —
+   * so this is a constant rather than a fraction. It is here because it is half
+   * of the sum that decides `screenBiasY`: the bike wants to sit in the middle
+   * of the band that nothing is covering, and the HUD is the top edge of it.
+   */
+  hudInsetPx: number;
+  /**
+   * How much of the BOTTOM of the viewport the thumb pads cover, in CSS px. 0
+   * on a desktop; `main.ts` sets it from the touch overlay's own measured
+   * layout, which sizes itself in millimetres and therefore knows a number the
+   * camera cannot derive.
+   */
+  thumbInsetPx: number;
+  /**
+   * The MOST the bike may be pushed up the frame, as a fraction of the
+   * half-viewport. 0 centres it, which is right on a desktop and wrong in a
+   * hand.
+   *
+   * A CAP AND NOT THE VALUE, since the short-viewport bug. The value is derived
+   * per frame by `screenBiasFor` from the two insets above and from how much
+   * room is actually left — 0.17 was picked on an idealised phone and, on a 348
+   * px-tall one, was pushing the bike up UNDER THE HUD CARDS it was supposed to
+   * be keeping clear of. A constant fraction cannot be right on two viewports
+   * that differ by a factor of three in height.
    *
    * IT EXISTS FOR THUMBS. In landscape on a phone, hands cover the bottom
    * corners of the screen — which is exactly where a grounded bike sits when
@@ -128,6 +171,11 @@ export const DEFAULT_CAMERA: CameraParams = {
   // game now derives from that pair, so a phone and an ultrawide are asking the
   // same question ("how much level is that?") rather than two different ones.
   refWidth: 1600,
+  // The other half of the same measured pair. 1600x900 is the window, so 900 is
+  // the height, and 900 / 62 = 14.5 m of world up the screen — which is the
+  // number the twenty levels' vertical beats (the chimney, the cathedral, the
+  // low roof) were all authored against.
+  refHeight: 900,
   widthExp: 0.5,
   // 38 px/m puts the 1.7 m bike at ~65 px and the 0.25 m wheel at ~10 px, which
   // is the point where a wheel-sized gap in the floor is still unmistakable.
@@ -150,8 +198,16 @@ export const DEFAULT_CAMERA: CameraParams = {
   zoomOutHalfLife: 0.35,
   zoomInHalfLife: 0.9,
   safeBox: 0.42,
-  // Zero on a desktop, where nothing is covering the screen. main.ts raises it
-  // when the touch controls come up — see TOUCH_CAMERA there.
+  // The art HUD band: `drawHud` puts its panels at y=12, 34 px tall, with a 4 px
+  // ink shadow under them. 52 is the first row of pixels the game is allowed to
+  // put the bike in.
+  hudInsetPx: 52,
+  // Raised by main.ts from the touch overlay's own layout when there are pads on
+  // the glass, and left at zero otherwise.
+  thumbInsetPx: 0,
+  // Zero on a desktop, where nothing is covering the screen. main.ts raises the
+  // CAP when the touch controls come up — see TOUCH_CAMERA there — and
+  // `screenBiasFor` derives the value under it.
   screenBiasY: 0,
 };
 
@@ -206,14 +262,14 @@ export interface Camera {
    */
   setZoomBias(v: number): number;
   /**
-   * Tell the camera how wide the viewport is without driving a frame.
+   * Tell the camera how big the viewport is without driving a frame.
    *
    * `update` does this every frame, so this exists for the one case that is not
    * a frame: `snap` at boot, before anything has been drawn. Without it the
    * first frame on a phone would start at the desktop's zoom and visibly ease
    * out, which looks like a bug on the one screen the derivation exists for.
    */
-  setViewport(cssW: number): void;
+  setViewport(cssW: number, cssH?: number): void;
   /** Place the camera on the target immediately. Restart, level change, load. */
   snap(t: CameraTarget): void;
   /** One rendered frame. `dt` in seconds; never the sim's dt. */
@@ -253,17 +309,50 @@ export const BIAS_MAX = 3;
  * 25.8 m, a 3440 px ultrawide saw 55.5 m and a landscape phone saw 13.6 m of
  * the same level. Two of those three nobody chose.
  *
- * So the anchor is a MEASURED pair — `baseZoom` px/m at `refWidth` CSS px — and
- * every other viewport is derived from it by `widthExp`. Clamped to the same
- * floor and ceiling as everything else, because the floor outranks framing: on
- * a viewport narrow enough to demand less than `minZoom`, the floor wins and
- * the player sees less world rather than a mushier edge.
+ * So the anchor is a MEASURED pair — `baseZoom` px/m on a `refWidth` x
+ * `refHeight` window — and every other viewport is derived from it by
+ * `widthExp`. Clamped to the same floor and ceiling as everything else, because
+ * the floor outranks framing: on a viewport too small to demand `minZoom`, the
+ * floor wins and the player sees less world rather than a mushier edge.
+ *
+ * BOTH DIMENSIONS, AND THE LIMITING ONE WINS — which is fix 1b, and the bug
+ * that shipped without it.
+ *
+ * Deriving from width alone is only correct while every screen has the
+ * reference's aspect. A landscape phone with Chrome's URL bar and the Android
+ * navigation bar on it does not: 915 x 348 is an aspect of 2.63 against 1.78,
+ * and the width-only formula answered 47 px/m — a comfortable 19.5 m across and
+ * 7.4 m up, which is four bike-lengths of vertical world and put the whole level
+ * in a band across the top of the canvas.
+ *
+ * So each axis derives its own zoom from its own reference extent with the same
+ * exponent, and the answer is the SMALLER of the two. That is not an average and
+ * not a compromise: it is the statement that NEITHER AXIS EVER SHOWS LESS WORLD
+ * THAN ITS OWN DERIVATION ASKED FOR. On the reference window the two agree
+ * exactly, so the desktop framing every level was authored at does not move, and
+ * neither does any window that is a reference-aspect resize of it. On a shape
+ * the reference never anticipated, the axis that is starved is the one that sets
+ * the zoom.
+ *
+ *   915 x 348 landscape phone   47.0 -> 38.6 px/m   19.5 x 7.4 m -> 23.7 x 9.0 m
+ *   3440 x 1440 ultrawide       90.9 -> 78.4 px/m   37.8 x 15.8 m -> 43.9 x 18.4 m
+ *
+ * The ultrawide moving is the same rule doing the same job in the other
+ * direction, and in the direction of more world, which is the one that cannot
+ * hurt.
  */
-export function baseZoomFor(p: CameraParams, cssW: number): number {
-  const ref = p.refWidth > 0 ? p.refWidth : 1600;
-  const w = cssW > 0 ? cssW : ref;
-  const scale = Math.pow(w / ref, clamp(p.widthExp, 0, 1));
-  return clamp(p.baseZoom * scale, p.minZoom, p.maxZoom);
+export function baseZoomFor(p: CameraParams, cssW: number, cssH?: number): number {
+  const refW = p.refWidth > 0 ? p.refWidth : 1600;
+  const refH = p.refHeight > 0 ? p.refHeight : 900;
+  const w = cssW > 0 ? cssW : refW;
+  // A height that was not supplied is assumed to be the REFERENCE ASPECT, which
+  // makes `baseZoomFor(p, w)` mean exactly what it meant before this fix: the
+  // width-only answer. Every caller that has a height passes it.
+  const h = cssH !== undefined && cssH > 0 ? cssH : (w * refH) / refW;
+  const e = clamp(p.widthExp, 0, 1);
+  const byW = p.baseZoom * Math.pow(w / refW, e);
+  const byH = p.baseZoom * Math.pow(h / refH, e);
+  return clamp(Math.min(byW, byH), p.minZoom, p.maxZoom);
 }
 
 /**
@@ -280,9 +369,9 @@ export function baseZoomFor(p: CameraParams, cssW: number): number {
  * At the reference viewport this is exactly `minZoom`, so nothing about the
  * desktop feel moves.
  */
-export function wideZoomFor(p: CameraParams, cssW: number): number {
+export function wideZoomFor(p: CameraParams, cssW: number, cssH?: number): number {
   const ratio = p.baseZoom > 0 ? p.minZoom / p.baseZoom : 1;
-  return clamp(baseZoomFor(p, cssW) * ratio, p.minZoom, p.maxZoom);
+  return clamp(baseZoomFor(p, cssW, cssH) * ratio, p.minZoom, p.maxZoom);
 }
 
 /**
@@ -297,12 +386,56 @@ export function wideZoomFor(p: CameraParams, cssW: number): number {
  * Clamping against the actual zoom range is what makes the gesture feel
  * attached to the screen.
  */
-export function clampZoomBias(p: CameraParams, cssW: number, bias: number): number {
-  const base = baseZoomFor(p, cssW);
+export function clampZoomBias(p: CameraParams, cssW: number, cssH: number | undefined, bias: number): number {
+  const base = baseZoomFor(p, cssW, cssH);
   if (!(base > 0) || !Number.isFinite(bias)) return 1;
   const lo = Math.max(BIAS_MIN, p.minZoom / base);
   const hi = Math.min(BIAS_MAX, p.maxZoom / base);
   return clamp(bias, Math.min(lo, hi), hi);
+}
+
+/**
+ * HOW FAR UP THE FRAME THE BIKE SITS, on this particular viewport.
+ *
+ * `screenBiasY` used to BE this number: a constant 0.17 of the half-frame,
+ * chosen on a phone that was assumed to be 844 x 390. On the 348 px-tall
+ * viewport a real Android phone actually hands you — Chrome's toolbar and the
+ * system bars take about a quarter of the screen — the same fraction is a
+ * smaller distance in pixels but a much larger one relative to the 52 px of HUD
+ * at the top, and it was pushing a grounded bike up UNDER the level card. A
+ * comfort offset that hides the bike behind the HUD has inverted its own
+ * purpose.
+ *
+ * So it is derived, from the two things that are actually covering the screen:
+ *
+ *   THE WANT. The clear band runs from the bottom of the HUD to the top of the
+ *   thumb pads, and the bike wants to be in the middle of THAT rather than in
+ *   the middle of the glass. That is a shift of half the difference between the
+ *   two insets — and it is a number of PIXELS, which is why it comes out small
+ *   on a tall screen and large on a short one without anybody choosing either.
+ *
+ *   THE ROOM. `safeBox` already allows the follow to put the bike that fraction
+ *   of the half-frame away from centre, so the worst case is `safeBox + bias`
+ *   and it must still land below the HUD. On a short viewport that is the
+ *   binding constraint and the want does not get paid in full — which is the
+ *   whole of fix 3, stated as arithmetic instead of as a constant.
+ *
+ *   THE CAP. `screenBiasY` survives as the most this is ever allowed to ask
+ *   for, which is what keeps the desktop at exactly zero (nothing is covering a
+ *   desktop, so `thumbInsetPx` is 0 and the want is negative anyway) and what
+ *   leaves a slider on the tuning panel that means something.
+ */
+export function screenBiasFor(p: CameraParams, cssH: number): number {
+  const half = cssH * 0.5;
+  if (!(half > 0)) return 0;
+  const box = clamp(p.safeBox, 0, MAX_SCREEN_BIAS);
+  const hud = Math.max(p.hudInsetPx, 0);
+  const want = (Math.max(p.thumbInsetPx, 0) - hud) * 0.5 / half;
+  // The bike's worst case is (box + bias) of the half-frame above centre. Keep
+  // that out of the HUD band; on a viewport with no room at all this goes
+  // negative and the clamp below returns 0, which is the honest answer.
+  const room = (half - hud) / half - box;
+  return clamp(Math.min(want, p.screenBiasY, room), 0, MAX_SCREEN_BIAS - box);
 }
 
 export function createCamera(params: CameraParams): Camera {
@@ -319,7 +452,8 @@ export function createCamera(params: CameraParams): Camera {
   // so a camera that is snapped before it has ever been drawn is framed exactly
   // as the reference desktop until the first frame says otherwise.
   let viewW = params.refWidth;
-  let fzoom = baseZoomFor(params, viewW);
+  let viewH = params.refHeight;
+  let fzoom = baseZoomFor(params, viewW, viewH);
 
   const cam: Camera = {
     x: 0,
@@ -329,12 +463,13 @@ export function createCamera(params: CameraParams): Camera {
     zoomBias: 1,
 
     setZoomBias(v: number): number {
-      cam.zoomBias = clampZoomBias(cam.params, viewW, v);
+      cam.zoomBias = clampZoomBias(cam.params, viewW, viewH, v);
       return cam.zoomBias;
     },
 
-    setViewport(cssW: number): void {
+    setViewport(cssW: number, cssH?: number): void {
       if (cssW > 0) viewW = cssW;
+      if (cssH !== undefined && cssH > 0) viewH = cssH;
     },
 
     snap(t: CameraTarget): void {
@@ -342,7 +477,7 @@ export function createCamera(params: CameraParams): Camera {
       leadY = 0;
       fx = t.x;
       fy = t.y;
-      fzoom = clamp(baseZoomFor(cam.params, viewW) * cam.zoomBias, cam.params.minZoom, cam.params.maxZoom);
+      fzoom = clamp(baseZoomFor(cam.params, viewW, viewH) * cam.zoomBias, cam.params.minZoom, cam.params.maxZoom);
       cam.x = fx;
       cam.y = fy;
       cam.zoom = fzoom;
@@ -360,6 +495,7 @@ export function createCamera(params: CameraParams): Camera {
       // `approach` below is already the right behaviour for a framing that
       // changed underneath the player.
       if (cssW > 0) viewW = cssW;
+      if (cssH > 0) viewH = cssH;
 
       // --- lead ---------------------------------------------------------
       // From velocity, never from `facing`: facing is the one discrete thing a
@@ -380,8 +516,8 @@ export function createCamera(params: CameraParams): Camera {
       // Both ends of the speed ramp are derived from the viewport, so the
       // amount of LEVEL the zoom-out buys is the same everywhere rather than
       // depending on the width of somebody's monitor.
-      const base = baseZoomFor(p, viewW);
-      const wide = wideZoomFor(p, viewW);
+      const base = baseZoomFor(p, viewW, viewH);
+      const wide = wideZoomFor(p, viewW, viewH);
       const want = clamp((base + (wide - base) * k) * cam.zoomBias, p.minZoom, p.maxZoom);
       fzoom = approach(fzoom, want, want < fzoom ? p.zoomOutHalfLife : p.zoomInHalfLife, dt);
 
@@ -412,8 +548,7 @@ export function createCamera(params: CameraParams): Camera {
       // the renderer flips, so dropping the camera's centre raises the bike on
       // screen. Clamped against the safe box so the two together can never put
       // the bike off the edge — the guarantee above outranks the comfort.
-      const bias = clamp(p.screenBiasY, 0, MAX_SCREEN_BIAS - clamp(p.safeBox, 0, MAX_SCREEN_BIAS));
-      const shift = bias * halfH;
+      const shift = screenBiasFor(p, cssH) * halfH;
       const b = ov ? clamp(ov.blend, 0, 1) : 0;
       if (b <= 0) {
         cam.x = fx;

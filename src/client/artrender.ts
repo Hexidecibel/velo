@@ -83,6 +83,13 @@ export interface ArtRenderOpts extends RenderOpts {
    */
   detailChip?: boolean;
   /**
+   * True when there is no keyboard. It changes exactly one string — the death
+   * banner says TAP RESTART rather than R TO RESTART — and it is here rather
+   * than left alone because a device with no R key being told to press R is the
+   * same class of mistake as a desktop level bar drawn over the touch HUD.
+   */
+  touch?: boolean;
+  /**
    * THE PLAYER'S OWN LIVERY. Absent means the shipped bike, which is what every
    * offscreen caller (thumbnails, the smoke harness) wants: a thumbnail is a
    * picture of the LEVEL and must not change because somebody repainted their
@@ -212,7 +219,10 @@ export function renderArt(
 
   ctx.restore();
 
-  if (art.hud > 0) drawHud(ctx, cssW, cssH, level.name, state, level.apples.length, P, opts.detailChip === false ? null : q);
+  if (art.hud > 0) {
+    drawHud(ctx, cssW, cssH, level.name, state, level.apples.length, P,
+      opts.detailChip === false ? null : q, opts.touch === true);
+  }
 
   if (opts.markers) {
     const targets: MarkerTarget[] = [];
@@ -712,6 +722,7 @@ const HUD_FONT = 'system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
 function drawHud(
   ctx: CanvasRenderingContext2D, cssW: number, cssH: number,
   name: string, state: SimState, appleCount: number, P: Palette, quality: number | null,
+  touch = false,
 ): void {
   // "10 — Cathedral" is an index and a title. Both are content, so both are
   // read off the level rather than configured.
@@ -746,8 +757,27 @@ function drawHud(
   const titleW = Math.min(320, ctx.measureText(title).width + 26);
   const cardW = index ? 44 : 0;
   const total = cardW + titleW + 10;
-  const x0 = Math.round(cssW / 2 - total / 2);
+  // THE WHOLE ROW, not just the card and the title. The clock and the apple
+  // counter hang off the right of the centred pair, which is invisible on a
+  // desktop and ran the apple counter clean off the edge of a 412 px portrait
+  // phone — the counter is the one thing in this HUD you actually have to read
+  // while driving, and it was not on the screen.
+  const chipW = quality !== null && quality < 0.97 ? 288 : appleCount > 0 ? 188 : 104;
+  const rowW = total + 24 + chipW;
   const y0 = 12;
+  // Desktop stays BYTE-IDENTICAL: the natural position is tried first and only
+  // a row that does not fit is touched at all. When it does not fit, the whole
+  // row is centred, and if it still does not fit it is scaled down — a HUD 12%
+  // smaller is legible and a HUD with its right-hand third missing is not.
+  // The scale below is the ROW's alone — the death banner underneath is centred
+  // on the real viewport and must not inherit it.
+  ctx.save();
+  let x0 = Math.round(cssW / 2 - total / 2);
+  if (x0 < 8 || x0 + rowW > cssW - 8) {
+    const k = Math.min(1, (cssW - 16) / Math.max(rowW, 1));
+    ctx.scale(k, k);
+    x0 = Math.round((cssW / k - rowW) / 2);
+  }
 
   if (index) {
     panel(x0, y0, cardW, 34, P.yellow);
@@ -762,8 +792,8 @@ function drawHud(
   ctx.textAlign = 'left';
   ctx.fillText(title, x0 + cardW + 22, y0 + 18);
 
-  // Clock and apples, right-aligned above the play area.
-  const rx = Math.round(cssW / 2 + total / 2) + 24;
+  // Clock and apples, hung off the right of the title panel.
+  const rx = x0 + total + 24;
   panel(rx, y0, 104, 34, P.cream);
   ctx.fillStyle = state.dead ? P.red : state.finished ? P.lime : P.ink;
   ctx.font = `800 17px ui-monospace, SFMono-Regular, Menlo, monospace`;
@@ -803,8 +833,10 @@ function drawHud(
     ctx.fillText(`DETAIL ${Math.round(quality * 100)}%`, rx + 278, y0 + 18);
   }
 
+  ctx.restore();
+
   if (state.dead || state.finished) {
-    const msg = state.finished ? 'FINISHED' : 'DEAD — R TO RESTART';
+    const msg = state.finished ? 'FINISHED' : touch ? 'DEAD — TAP RESTART' : 'DEAD — R TO RESTART';
     ctx.font = `800 22px ${HUD_FONT}`;
     ctx.textAlign = 'center';
     ctx.lineWidth = 6;

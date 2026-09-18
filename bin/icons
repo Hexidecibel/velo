@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Redraw the home-screen icons into public/.
+#
+# They are generated rather than committed as opaque binaries so that the icon
+# and the game cannot end up using two different blues. Run it after a palette
+# change; the output IS committed, because a build must not need it.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+cd "$ROOT"
+echo "==> icons"
+exec "$NODE" "$ROOT/bin/_icons.mjs" "$@"

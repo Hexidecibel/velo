@@ -269,8 +269,13 @@ const CAMERA_GROUPS: Group<CameraParams>[] = [
         get: (c) => c.refWidth, set: (c, v) => { c.refWidth = v; },
       },
       {
+        label: 'reference height (px)', min: 240, max: 2160, step: 10,
+        hint: 'The other half of the same measured window — 900 px, which is 14.5 m of world up the screen. The zoom is derived on BOTH axes and the LIMITING one wins: a landscape phone with a URL bar on it is 915x348, and deriving from width alone gave it 7.4 m of vertical world and put the whole level in a band across the top.',
+        get: (c) => c.refHeight, set: (c, v) => { c.refHeight = v; },
+      },
+      {
         label: 'viewport exponent', min: 0, max: 1, step: 0.05,
-        hint: '0 = fixed px/m, so a phone sees half the level a desktop does (this is what was wrong). 1 = fixed world width, which asks a phone for less than the readability floor. 0.5 is the geometric mean of "same level visible" and "same apparent size", and it is what ships.',
+        hint: '0 = fixed px/m, so a phone sees half the level a desktop does (this is what was wrong). 1 = fixed world extent, which asks a phone for less than the readability floor. 0.5 is the geometric mean of "same level visible" and "same apparent size", and it is what ships. It applies to both axes.',
         get: (c) => c.widthExp, set: (c, v) => { c.widthExp = v; },
       },
       {
@@ -308,9 +313,19 @@ const CAMERA_GROUPS: Group<CameraParams>[] = [
         get: (c) => c.safeBox, set: (c, v) => { c.safeBox = v; },
       },
       {
-        label: 'screen bias up', min: 0, max: 0.4, step: 0.01,
-        hint: 'Pushes the bike UP the frame. 0 on a desktop; the touch controls raise it, because in landscape your hands cover the bottom corners — which is exactly where a grounded bike sits when the camera centres it.',
+        label: 'screen bias up (cap)', min: 0, max: 0.5, step: 0.01,
+        hint: 'A CEILING, not the value. The bike is pushed up the frame to sit in the middle of the band nothing is covering — between the in-canvas HUD at the top and the thumb pads at the bottom — which is a number of PIXELS and so a bigger fraction of a short screen than of a tall one. A flat 0.17 was chosen on an idealised phone and pushed the bike UNDER the level card on a real one. 0 on a desktop, where nothing covers anything.',
         get: (c) => c.screenBiasY, set: (c, v) => { c.screenBiasY = v; },
+      },
+      {
+        label: 'HUD inset (px)', min: 0, max: 200, step: 2,
+        hint: 'How much of the top of the canvas the in-canvas level card, clock and apple counter own. Drawn at a fixed pixel size, so this is pixels. The top edge of the band the bike is centred in.',
+        get: (c) => c.hudInsetPx, set: (c, v) => { c.hudInsetPx = v; },
+      },
+      {
+        label: 'thumb inset (px)', min: 0, max: 400, step: 2,
+        hint: 'How much of the bottom the thumb pads cover. MEASURED off the real overlay every frame on touch, so moving this by hand only lasts until the next one; it is here to be read. Zero on a desktop.',
+        get: (c) => c.thumbInsetPx, set: (c, v) => { c.thumbInsetPx = v; },
       },
     ],
   },

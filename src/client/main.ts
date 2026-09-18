@@ -315,7 +315,7 @@ const cam = createCamera(cloneCamera(DEFAULT_CAMERA));
 // what handles a window drag and a rotated phone; this is only the boot case,
 // and without it the first frame on a phone starts at the desktop's framing and
 // visibly eases out — on the one screen the whole derivation exists for.
-cam.setViewport(canvas.clientWidth);
+cam.setViewport(canvas.clientWidth, canvas.clientHeight);
 cam.snap({ x: level.start.x, y: level.start.y, vx: 0, vy: 0 });
 // Hold-to-overview, and the start-of-level peek. It owns the freeze: while
 // `overview.frozen` is true, `step()` returns before touching the sim, so no
@@ -1562,6 +1562,13 @@ function draw(alpha: number, dtMs: number): void {
   const dtSec = dtMs / 1000;
   const pose = interpolate(prevState, sim.state, alpha);
 
+  // WHERE THE HANDS ARE, in CSS px, read from the pads themselves rather than
+  // guessed. The camera turns it into `screenBiasY` — see `screenBiasFor` — and
+  // it is read every frame for the same reason the viewport is: a rotation, a
+  // URL bar collapsing and a switch to auto-throttle all change it, and all
+  // three should ease rather than need a listener.
+  cam.params.thumbInsetPx = touch.thumbInset();
+
   overview.tick(dtSec);
   const ov = overview.blend > 0
     ? { ...overviewFrame(level, { x: pose.px, y: pose.py }, cssW, cssH, overview.params), blend: overview.blend }
@@ -1597,6 +1604,8 @@ function draw(alpha: number, dtMs: number): void {
         ...opts,
         time: (performance.now() - bootTime) / 1000,
         detailChip: hudVisible,
+        // No R key on a phone, so the death banner must not name one.
+        touch: touch.enabled,
         // THE BIKE ON SCREEN IS WHOEVER IS RIDING IT. During a playback of
         // somebody else's file or somebody else's board row that is THEIR
         // livery, because the player's own sim is what carries the line — see
@@ -2264,13 +2273,24 @@ panel.setTuned(specIsTuned);
 /**
  * What the camera does when there are hands on the screen.
  *
- * TWO CHANGES AND BOTH ARE ABOUT A PHONE BEING A PHONE.
+ * ONE NUMBER NOW, AND IT IS A CAP RATHER THAN A VALUE.
  *
  * `screenBiasY` — in landscape, hands cover the bottom corners, which is exactly
  * where a centred camera puts a grounded bike. The one thing the readability
  * rule says must always be legible would be under a thumb. Pushing the bike up
  * the frame moves it into the clear, and the ground it is about to hit comes
  * with it.
+ *
+ * IT USED TO BE A FLAT 0.17 AND THAT WAS WRONG ON A REAL PHONE. 0.17 of the
+ * half-frame was chosen against an idealised 844 x 390 viewport; Chrome's URL
+ * bar and Android's system bars make the real one about 915 x 348, and on a
+ * frame that short the same fraction was pushing a grounded bike up UNDER the
+ * in-canvas level card — the exact thing the offset exists to keep it out from
+ * under. So the VALUE is derived per frame by `screenBiasFor` from the two
+ * things actually covering the glass (the 52 px HUD band at the top and the
+ * measured thumb pads at the bottom), and this is only the ceiling on it: 0.30
+ * of the half-frame, which on any viewport still leaves the safe box's worst
+ * case inside the picture.
  *
  * THE ZOOM IS NOT ONE OF THEM ANY MORE, and that was my mistake rather than the
  * previous agent's. There used to be a `zoomBias: 1.25` here, reasoned from "the
@@ -2283,7 +2303,7 @@ panel.setTuned(specIsTuned);
  * it makes the bike bigger on a phone anyway, as a consequence rather than as
  * an aim: ~45 px/m at 844 px is 9.1% of the width against the desktop's 6.6%.
  */
-const TOUCH_CAMERA = { screenBiasY: 0.17 };
+const TOUCH_CAMERA = { screenBiasY: 0.30 };
 
 // Remembered, and OFF by default: the plan's own framing is that some people
 // will strongly prefer each, which makes it an option rather than a default.
@@ -2316,6 +2336,12 @@ const touch = createTouch(
     // because what is a legal zoom depends on the viewport and on the
     // readability floor. What it decided is what the pad prints.
     onZoom: (bias) => applyZoom(bias),
+    // The desktop level bar is HIDDEN on touch — it was being drawn straight
+    // through the in-canvas level card, clock and apple counter, two HUDs
+    // stacked on each other — so the chooser is how a phone changes level, and
+    // this pad is the only way to it.
+    onBrowse: () => openChooser(),
+    onNote: (msg) => toast(msg, 'controls'),
     // Persisted when the fingers come off and not before: a pinch fires this
     // path on every pointermove, and writing localStorage sixty times a second
     // for a value nobody has finished choosing is not a preference, it is a

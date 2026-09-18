@@ -2,7 +2,31 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- `viewport-fit=cover` paints the game under a notch and a home
+         indicator; touch.ts reads env(safe-area-inset-*) off a probe element so
+         the pads stay out from under them. `user-scalable=no` is the belt to
+         `touch-action: none`'s braces — a browser pinch-zoom on a fixed page
+         leaves the player scrolled into a corner with no way back, and this game
+         has a pinch of its own. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <!-- BROWSER CHROME IS ABOUT A QUARTER OF AN ANDROID PHONE IN LANDSCAPE, and
+         `display: standalone` in the manifest is the honest way to get it back:
+         add to home screen, and the game opens with no URL bar at all. The
+         Fullscreen API is the other way and it is OFFERED on a pad rather than
+         taken on load — a game that grabs the screen when it loads is hostile,
+         and on an iPhone the API does not exist to grab it with. Both are
+         optional: the layout is correct with the chrome still there. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#0d0b1a" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Velo" />
+    <link rel="apple-touch-icon" href="/icon-180.png" />
+    <link rel="icon" href="/icon-192.png" sizes="192x192" />
     <title>Velo — M1 feel prototype</title>
   </head>
   <body>

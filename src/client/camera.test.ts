@@ -8,8 +8,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   BIAS_MAX, BIAS_MIN, DEFAULT_CAMERA, MAX_SCREEN_BIAS, baseZoomFor, clampZoomBias, cloneCamera,
-  createCamera, wideZoomFor,
+  createCamera, screenBiasFor, wideZoomFor,
 } from './camera.ts';
+import type { CameraParams } from './camera.ts';
 
 const VIEW = { w: 1200, h: 800 };
 
@@ -149,19 +150,32 @@ describe('the thumb bias', () => {
   // Landscape on a phone puts hands over the BOTTOM CORNERS, which is exactly
   // where a centred camera puts a grounded bike — so the one thing the
   // readability rule says must always be legible ends up under a thumb.
-  const withBias = (bias: number) => {
-    const p = cloneCamera(DEFAULT_CAMERA);
-    p.screenBiasY = bias;
-    const cam = createCamera(p);
+  //
+  // THE BUG THIS REPLACES: it was a flat 0.17 of the half-frame, chosen against
+  // an idealised 844 x 390 viewport. A real Android phone in Chrome is about
+  // 915 x 348, and on a frame that short the same fraction was pushing the bike
+  // up UNDER the 52 px of in-canvas HUD — the exact thing the offset exists to
+  // keep it out from under. It is derived now, from the two insets and from how
+  // much room is actually left.
+  /** A phone-shaped set of params: a thumb cluster at the bottom, a cap on top. */
+  const handsOn = (thumbInsetPx: number, cap = 0.3): CameraParams =>
+    ({ ...cloneCamera(DEFAULT_CAMERA), thumbInsetPx, screenBiasY: cap });
+  const withBias = (bias: number, w = VIEW.w, h = VIEW.h, inset = 141) => {
+    const cam = createCamera(handsOn(inset, bias));
     cam.snap({ x: 0, y: 0, vx: 0, vy: 0 });
     const t = { x: 0, y: 0, vx: 0, vy: 0 };
-    for (let i = 0; i < 120; i++) cam.update(t, 1 / 60, VIEW.w, VIEW.h);
+    for (let i = 0; i < 120; i++) cam.update(t, 1 / 60, w, h);
     return cam;
   };
 
   it('is off by default — a desktop has nothing covering the screen', () => {
     expect(DEFAULT_CAMERA.screenBiasY).toBe(0);
-    expect(withBias(0).y).toBeCloseTo(0, 6);
+    expect(DEFAULT_CAMERA.thumbInsetPx).toBe(0);
+    expect(screenBiasFor(DEFAULT_CAMERA, 900)).toBe(0);
+    expect(withBias(0, VIEW.w, VIEW.h, 0).y).toBeCloseTo(0, 6);
+    // And it stays off even if the cap is raised, because nothing is covering a
+    // desktop: the WANT is what is zero, not just the ceiling.
+    expect(screenBiasFor({ ...DEFAULT_CAMERA, screenBiasY: 0.3 }, 900)).toBe(0);
   });
 
   it('puts the bike HIGHER in the frame, which means the camera goes lower', () => {
@@ -169,10 +183,49 @@ describe('the thumb bias', () => {
     // what raises the bike on screen. Getting this sign backwards would bury
     // the bike under the thumbs it is supposed to escape, and it would look
     // deliberate.
-    const cam = withBias(0.17);
+    const cam = withBias(0.3);
     expect(cam.y).toBeLessThan(0);
     const halfH = VIEW.h * 0.5 / cam.zoom;
-    expect(-cam.y).toBeCloseTo(0.17 * halfH, 6);
+    expect(-cam.y).toBeCloseTo(screenBiasFor(handsOn(141), VIEW.h) * halfH, 6);
+  });
+
+  it('CENTRES THE BIKE IN THE BAND NOTHING IS COVERING, which is the derivation', () => {
+    // The HUD owns the top 52 px and the pads own the bottom `thumbInsetPx`. The
+    // bike wants the middle of what is left, not the middle of the glass — and
+    // that is a number of PIXELS, so it is a large fraction of a short viewport
+    // and a small one of a tall viewport without anybody choosing either.
+    const h = 348;
+    const p = handsOn(141);
+    const bias = screenBiasFor(p, h);
+    const clearMid = (p.hudInsetPx + (h - p.thumbInsetPx)) / 2;
+    expect(h / 2 - bias * (h / 2)).toBeCloseTo(clearMid, 6);
+  });
+
+  it('SCALES WITH THE ROOM: the same hands ask for less of a taller screen', () => {
+    // The whole of fix 3. A constant fraction cannot be right on two viewports
+    // that differ by a factor of three in height, and it was not.
+    const p = handsOn(141);
+    const short = screenBiasFor(p, 348);
+    const tall = screenBiasFor(p, 820);
+    expect(short).toBeGreaterThan(tall);
+    // In PIXELS the two are the same shift, because the hands are the same size.
+    expect(short * 348 * 0.5).toBeCloseTo(tall * 820 * 0.5, 6);
+  });
+
+  it('gives up the comfort rather than hiding the bike under the HUD', () => {
+    // On a short enough viewport the room runs out before the want is paid, and
+    // the room wins. The bound is the one that matters: the safe box already
+    // allows the follow `safeBox` of the half-frame above centre, so
+    // `safeBox + bias` is the worst case and it has to stay out of the HUD band.
+    for (const h of [240, 280, 300, 348, 390, 412, 640, 820, 900]) {
+      const p = handsOn(141);
+      const bias = screenBiasFor(p, h);
+      const worst = (bias + p.safeBox) * (h / 2);
+      expect(h / 2 - worst, `viewport ${h} px tall`).toBeGreaterThanOrEqual(p.hudInsetPx - 1e-9);
+    }
+    // A viewport with no room at all gets no bias rather than a negative one.
+    expect(screenBiasFor(handsOn(141), 140)).toBe(0);
+    expect(screenBiasFor(handsOn(141), 0)).toBe(0);
   });
 
   it('CANNOT push the bike off the edge, however hard it is asked to', () => {
@@ -180,7 +233,7 @@ describe('the thumb bias', () => {
     // screenBiasY` is how far off centre the bike can end up, and at 1 it is at
     // the very edge; the clamp leaves the last 15% for the bike's own size and
     // the ground under it.
-    const cam = withBias(5);
+    const cam = withBias(5, VIEW.w, VIEW.h, VIEW.h);
     const halfH = VIEW.h * 0.5 / cam.zoom;
     const offset = -cam.y / halfH;
     expect(offset).toBeLessThanOrEqual(MAX_SCREEN_BIAS - DEFAULT_CAMERA.safeBox + 1e-9);
@@ -188,8 +241,7 @@ describe('the thumb bias', () => {
   });
 
   it('fades out under the overview — there is no corner to hide in there', () => {
-    const p = cloneCamera(DEFAULT_CAMERA);
-    p.screenBiasY = 0.17;
+    const p = handsOn(141);
     const cam = createCamera(p);
     cam.snap({ x: 0, y: 0, vx: 0, vy: 0 });
     const t = { x: 0, y: 0, vx: 0, vy: 0 };
@@ -270,25 +322,100 @@ describe('the framing is metres of world, not pixels per metre', () => {
     expect(ratio(844)).toBeLessThan(ratio(1600));
   });
 
+  it('DERIVES FROM THE LIMITING DIMENSION, which is the whole of the phone fix', () => {
+    // THE BUG: a zoom derived from width alone answers "how much level is
+    // ACROSS the screen" and says nothing about how much is up it. A landscape
+    // Android phone in Chrome is about 915 x 348 once the URL bar and the system
+    // bars have had their quarter — an aspect of 2.63 against the reference's
+    // 1.78 — so the width-only formula picked a comfortable 19.5 m across and
+    // handed over SEVEN AND A HALF METRES of vertical world. The level came out
+    // as a thin band across the top of the canvas.
+    //
+    // The table, in metres of world, old -> new:
+    //
+    //   1600 x  900  desktop reference   25.8 x 14.5  ->  25.8 x 14.5   unchanged
+    //   1920 x 1080  same aspect         28.3 x 15.9  ->  28.3 x 15.9   unchanged
+    //   3440 x 1440  ultrawide           37.8 x 15.8  ->  43.9 x 18.4
+    //   1180 x  820  tablet landscape    22.2 x 15.4  ->  22.2 x 15.4   unchanged
+    //    844 x  390  iPhone landscape    18.7 x  8.7  ->  20.7 x  9.6
+    //    915 x  348  Android + chrome    19.5 x  7.4  ->  23.7 x  9.0
+    //    915 x  412  the same, installed 19.5 x  8.8  ->  21.8 x  9.8
+    //    412 x  800  portrait            10.8 x 21.1  ->  10.8 x 21.1   at the floor
+    const P = DEFAULT_CAMERA;
+    const widthOnly = (w: number) => clampish(P.baseZoom * Math.pow(w / P.refWidth, P.widthExp));
+    const clampish = (z: number) => Math.min(P.maxZoom, Math.max(P.minZoom, z));
+    for (const [w, h] of [[915, 348], [892, 340], [844, 390], [3440, 1440]]) {
+      expect(baseZoomFor(P, w, h), `${w}x${h}`).toBeLessThan(widthOnly(w));
+      // More world on BOTH axes than the width-only answer gave. That is the
+      // statement the rule makes, and it is the only one it makes.
+      expect(h / baseZoomFor(P, w, h)).toBeGreaterThan(h / widthOnly(w));
+      expect(w / baseZoomFor(P, w, h)).toBeGreaterThan(w / widthOnly(w));
+    }
+    expect(348 / baseZoomFor(P, 915, 348)).toBeGreaterThan(8.9);
+    expect(915 / baseZoomFor(P, 915, 348)).toBeGreaterThan(23);
+  });
+
+  it('does not move a single viewport that has the reference ASPECT', () => {
+    // Which is the safety argument for the whole change: every level was tuned
+    // against 1600 x 900, and a 16:9 window of any size still frames exactly
+    // what it framed before.
+    const P = DEFAULT_CAMERA;
+    for (const w of [1024, 1280, 1600, 1920, 2560]) {
+      const h = (w * P.refHeight) / P.refWidth;
+      expect(baseZoomFor(P, w, h), `${w}x${h}`).toBeCloseTo(baseZoomFor(P, w), 9);
+    }
+    expect(baseZoomFor(P, P.refWidth, P.refHeight)).toBeCloseTo(P.baseZoom, 9);
+  });
+
+  it('SAYS SO when a viewport cannot honour the readability floor', () => {
+    // The floor outranks framing and this is where it gets paid for. A portrait
+    // phone wants 31 px/m by width and gets 38; a 280 px-tall landscape one
+    // wants 34.6 by height and gets 38. Both see LESS world than the derivation
+    // asked for, rather than a mushier collision edge — and the only honest
+    // thing to do about it is to report it, not to lower the floor.
+    const P = DEFAULT_CAMERA;
+    const atFloor = (w: number, h: number) => baseZoomFor(P, w, h) === P.minZoom;
+    expect(atFloor(412, 800)).toBe(true);
+    expect(atFloor(360, 640)).toBe(true);
+    expect(atFloor(736, 280)).toBe(true);
+    // And the one the user is on is barely above it: 348 px of height at 38.55
+    // px/m is 9.0 m, and there is 1.4% of headroom left over the floor. That is
+    // the real answer to "why is there not more level on screen" on that phone
+    // — there is nothing left to give without the edge going soft.
+    expect(baseZoomFor(P, 915, 348)).toBeGreaterThan(P.minZoom);
+    expect(baseZoomFor(P, 915, 348) / P.minZoom).toBeLessThan(1.05);
+    // Reclaiming the browser chrome is what actually buys more, and it is worth
+    // eight tenths of a metre of vertical world — which is why the manifest and the
+    // fullscreen pad are part of this fix rather than a nicety.
+    expect(412 / baseZoomFor(P, 915, 412)).toBeGreaterThan(348 / baseZoomFor(P, 915, 348) + 0.7);
+    for (const [w, h] of [[200, 100], [915, 348], [412, 800], [5120, 2160], [0, 0], [-1, -1]]) {
+      expect(baseZoomFor(P, w, h)).toBeGreaterThanOrEqual(P.minZoom);
+      expect(baseZoomFor(P, w, h)).toBeLessThanOrEqual(P.maxZoom);
+    }
+  });
+
   it('follows a resize and a rotation without being told', () => {
     // The common case on a phone, and it arrives through `update` like
     // everything else: the viewport is an input to the zoom on every frame, so
     // a rotation EASES rather than jumping, and nothing has to listen.
     const cam = createCamera(cloneCamera(DEFAULT_CAMERA));
-    cam.setViewport(844);
+    cam.setViewport(844, 390);
     cam.snap({ x: 0, y: 0, vx: 0, vy: 0 });
-    expect(cam.zoom).toBeCloseTo(baseZoomFor(DEFAULT_CAMERA, 844), 6);
+    expect(cam.zoom).toBeCloseTo(baseZoomFor(DEFAULT_CAMERA, 844, 390), 6);
     const t = { x: 0, y: 0, vx: 0, vy: 0 };
     // Rotated to portrait.
     cam.update(t, 1 / 60, 390, 844);
-    expect(cam.zoom).toBeGreaterThan(baseZoomFor(DEFAULT_CAMERA, 390));
+    expect(cam.zoom).toBeGreaterThan(baseZoomFor(DEFAULT_CAMERA, 390, 844));
     // Ten seconds of frames each way, because easing is the point: a rotation
     // that snapped the zoom would be the one discontinuity in a camera whose
     // whole design rule is that there are none.
     for (let i = 0; i < 600; i++) cam.update(t, 1 / 60, 390, 844);
-    expect(cam.zoom).toBeCloseTo(baseZoomFor(DEFAULT_CAMERA, 390), 2);
+    expect(cam.zoom).toBeCloseTo(baseZoomFor(DEFAULT_CAMERA, 390, 844), 2);
     for (let i = 0; i < 600; i++) cam.update(t, 1 / 60, 844, 390);
-    expect(cam.zoom).toBeCloseTo(baseZoomFor(DEFAULT_CAMERA, 844), 2);
+    expect(cam.zoom).toBeCloseTo(baseZoomFor(DEFAULT_CAMERA, 844, 390), 2);
+    // BOTH DIMENSIONS, and a rotation is the cleanest demonstration of why: the
+    // same phone, the same pixels, and the limiting axis has swapped ends.
+    expect(baseZoomFor(DEFAULT_CAMERA, 844, 390)).toBeLessThan(baseZoomFor(DEFAULT_CAMERA, 844));
   });
 
   it('snaps to the viewport it was told about, not to the reference', () => {
@@ -314,9 +441,9 @@ describe('the manual zoom bias', () => {
     // zoom afterwards, so the bias could wind up to 3 while the zoom sat pinned
     // at maxZoom — and then several presses of `-` did nothing at all. A pinch
     // makes that much worse: the gesture banks travel it has to give back.
-    const hi = clampZoomBias(P, 1600, 99);
+    const hi = clampZoomBias(P, 1600, 900, 99);
     expect(P.baseZoom * hi).toBeCloseTo(P.maxZoom, 6);
-    const lo = clampZoomBias(P, 1600, 0.01);
+    const lo = clampZoomBias(P, 1600, 900, 0.01);
     expect(P.baseZoom * lo).toBeCloseTo(P.minZoom, 6);
   });
 
@@ -324,7 +451,7 @@ describe('the manual zoom bias', () => {
     // 844 px derives ~45 px/m against a 38 px/m floor, so zooming out has 16%
     // to give and no more. Saying so is the point: the floor is not quietly
     // lowered to make a gesture feel better.
-    const lo = clampZoomBias(P, 844, 0.1);
+    const lo = clampZoomBias(P, 844, undefined, 0.1);
     expect(baseZoomFor(P, 844) * lo).toBeCloseTo(P.minZoom, 6);
     expect(lo).toBeGreaterThan(0.8);
     expect(lo).toBeLessThan(1);
@@ -333,7 +460,7 @@ describe('the manual zoom bias', () => {
   it('never leaves the sanity rails', () => {
     for (const w of [390, 844, 1600, 3440]) {
       for (const v of [-5, 0, 0.001, 1, 7, 1e9, NaN, Infinity]) {
-        const b = clampZoomBias(P, w, v);
+        const b = clampZoomBias(P, w, undefined, v);
         expect(Number.isFinite(b)).toBe(true);
         expect(b).toBeGreaterThanOrEqual(BIAS_MIN);
         expect(b).toBeLessThanOrEqual(BIAS_MAX);

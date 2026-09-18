@@ -78,7 +78,8 @@ add a script rather than running an ad-hoc command.
 | `bin/audiobench` | **Measures what the sound costs a frame.** Drives a fixed input stream through the real frame loop twice — loud, and muted, which *suspends* the audio context and so really is the cost of no audio at all — interleaved so a busy box biases both equally, and reports the per-frame audio update alongside whole-frame times. `BENCH_FRAMES` and `BENCH_PASSES` lengthen it. |
 | `bin/artbench` | **Measures the art renderer's frame budget with the camera moving.** Flies the camera across a level at play speed, times the render call against the old flat renderer on the same frames, breaks the cost down layer by layer, and then drives the real game and watches real frame times. Exits 2 if a warm frame's p95 goes over 16.7 ms. Every timed pass runs at FULL detail with the adaptive system off, so "it passes" can never quietly mean "it passed by turning everything off"; what the adaptive system settles at is printed separately. `BENCH_OUT=<file>` appends each level as it finishes, so a killed sweep costs only what it had not reached. `BENCH_ART='{"props":0,...}'` overrides art parameters before measuring, which is how a before/after stays honest on one build. |
 | `bin/montagebench` | **Measures what the end-of-level montage costs a frame, and is where `MONTAGE_CAP` comes from.** Stands up N synthetic riders on a real level and reports the two costs separately — the riders' own sims stepping, and the extra bikes being drawn — because they scale with different things. The draw samples are **paired and interleaved**, each frame drawn twice back to back with the crowd and without it: this box's load average moves by a factor of three inside a minute, and two consecutive passes report whatever somebody else's build was doing. Defaults to `20-close-quarters`, which is the level that decides the cap, because everybody dies inside the same few metres there and so **culling saves nothing**. |
-| `bin/shots` | Screenshots several levels at the three zooms the camera reaches, with the art on, the art off, the `G` overlay up, and framed on the level's tightest ceiling. Output to `shots/` (gitignored). The A/B pair is the point: "is the collision edge still the most legible line" is a comparison, not an opinion. `SHOTS_ONLY=art-62` takes one shot per level, which is how you judge twenty levels as a SET; `SHOTS_AT=x,y,zoom` frames one exact place, which is how you find out what a prop that looked wrong in an overview actually is. `SHOTS_QUERY=touch=1` shoots the page with the phone thumb pads up — they are elements, so they are in the screenshot — and `SHOTS_MONTAGE=24` stands up a crowd of montage riders first, because "does the winning line still read against the failures" is the whole acceptance criterion for that feature's look and is likewise a comparison rather than an opinion. `SHOTS_CHROME=1` adds two frames per level for judging the chrome instead of the art: the **level chooser with its thumbnails drawn** (it waits, because they are rendered one per animation frame on purpose) and the same frame with the **debug readout switched off**. |
+| `bin/icons` | Redraws the home-screen icons into `public/` from the game's own palette. Generated rather than committed as opaque binaries so the icon and the game cannot end up using two different blues; the output *is* committed, because a build must not need it. |
+| `bin/shots` | Screenshots several levels at the three zooms the camera reaches, with the art on, the art off, the `G` overlay up, and framed on the level's tightest ceiling. Output to `shots/` (gitignored). The A/B pair is the point: "is the collision edge still the most legible line" is a comparison, not an opinion. `SHOTS_ONLY=art-62` takes one shot per level, which is how you judge twenty levels as a SET; `SHOTS_AT=x,y,zoom` frames one exact place, which is how you find out what a prop that looked wrong in an overview actually is. `SHOTS_QUERY=touch=1` shoots the page with the phone thumb pads up — they are elements, so they are in the screenshot — and `SHOTS_MONTAGE=24` stands up a crowd of montage riders first, because "does the winning line still read against the failures" is the whole acceptance criterion for that feature's look and is likewise a comparison rather than an opinion. `SHOTS_CHROME=1` adds two frames per level for judging the chrome instead of the art: the **level chooser with its thumbnails drawn** (it waits, because they are rendered one per animation frame on purpose) and the same frame with the **debug readout switched off**. `SHOTS_PHONES=1` re-shoots the page **once per real phone viewport** — landscape with browser chrome (915x348), landscape without it, a small landscape, portrait, narrow portrait and a tablet — of whatever the game itself framed, rather than of a camera the script chose. That flag exists because the first touch pass was designed against an idealised 844x390 that no browser hands you, and shipped a layout that was fine there and unusable on the real thing. |
 | `bin/board` | **Inspect, check, rebuild and prune the leaderboard store.** No arguments — or `list`, which is what everybody types, since every other subcommand here is a verb — lists every level with its entry counts; a level id shows one board; `player <id>` shows one player's PBs; `check` is an integrity pass; `rebuild [--verify]` regenerates the boards and player files from the submission log, re-simulating every replay if asked; `prune [--apply]` removes replay blobs nothing references, and is a dry run unless you say so. |
 | `bin/submit` | **Posts a replay file to a running server.** Defaults to the **TAS** category, because anything submitted from a terminal was produced by a program and declaring that is the whole point of having the category. Takes a directory, so `bin/submit /tmp/pilot/` posts a whole `bin/level-drive --save` sweep. A path that does not exist (or a directory with no replays in it) is one line and a non-zero exit — a typo is the common way to get here and a raw `ENOENT` stack trace reads like the script is broken rather than like the filename is wrong. |
 | `bin/clean` | Removes `dist/` and `tsconfig.tsbuildinfo`; `--all` also removes `node_modules/`. |
@@ -1017,6 +1018,13 @@ Landscape, a thumb in each bottom corner, the play area above and between them.
 The controls come up on their own when the primary pointer is coarse, and
 `?touch=1` forces them on from a desktop (`?touch=0` off).
 
+Everything below is judged with `SHOTS_PHONES=1 SHOTS_QUERY=touch=1 bin/shots`,
+at the viewport a phone actually hands you rather than the one a test would pick.
+The previous version of this section described a layout that looked right at
+844 x 390 and was unusable at 915 x 348, which is the size a large Android phone
+in Chrome really reports — and every part of that was visible in a picture and
+none of it in a number.
+
 **Large zones, never joysticks — and that is the one decision everything else
 follows from.** A virtual stick is the obvious thing to reach for and it would
 be wrong, because **the sim takes a bitmask**: throttle is on or off, lean is on
@@ -1026,14 +1034,55 @@ adds a dead zone, it makes the thumb travel to reach an input that is binary at
 the other end, and it is a **false affordance**, because everybody who has held
 a stick expects it to mean partial throttle and it cannot.
 
-| Zone | Where |
-| --- | --- |
-| **GAS** | bottom-right corner, the biggest and lowest target on the screen — it is held almost constantly and everything else is occasional |
-| **brake** | inboard of it, same row, narrower: you reach for it in bursts |
-| **lean ↺ / lean ↻** | bottom-left, two zones **sharing an edge** |
-| **FLIP** | up and inboard of the right cluster |
-| restart, gas mode | small, top-left, away from both thumbs |
-| zoom 1.0x | under them: prints the manual zoom, and a tap puts it back to 1.0x |
+### The pads are sized in millimetres, and that is not a detail
+
+**A thumb is the same size on every phone. A percentage of a canvas is not.**
+The first version of this layout sized the pads as fractions of the viewport —
+lean at 15% wide and *half the height* each, the gas cluster a third of the
+width — and a screenshot from a large Android phone in landscape showed what
+that means in practice: four enormous rectangles across the entire lower half of
+the screen, over empty background, while the whole level sat in a band across the
+top. The same fractions on a small phone would have been too small to hit.
+Neither is a size anybody chose.
+
+So every number in the layout is millimetres, converted once at the top of
+`touch.ts`. About **9–10 mm is the minimum comfortable touch target and 12–15 mm
+is generous**; past that a pad is not easier to hit, it is just taking screen
+away from the level. And **thumbs pivot from where the hand grips and sweep an
+arc**, so on a big phone the *far* corners are harder to reach rather than
+easier — everything you touch while driving now hugs the bottom corner it is
+already near.
+
+CSS's own `mm` unit cannot be used for this: absolute CSS units are pinned to
+the CSS pixel at exactly 96 per inch, which is a fiction on a phone. The real
+figure is set by the device-pixel-ratio the platform picks and is only knowable
+statistically — ~6.3 CSS px/mm on Android, 5.56 on an iPhone 15 Pro, 6.38 on an
+SE — so `PX_PER_MM` is **6.0**, the middle of the phone range. A pad specified at
+12 mm therefore lands between 10.9 and 12.6 mm on real hardware, inside the
+comfortable band at both ends.
+
+| Zone | Size | Where, and what it is owed |
+| --- | --- | --- |
+| **GAS** | 21 x 20 mm | bottom-right corner, where the thumb already rests — **held almost constantly**, so it gets the best position and the largest area |
+| **brake** | 13 x 20 mm | tiled inboard of it: you reach for it in bursts, so narrower |
+| **lean ↺ / ↻ lean** | 15 x 20 mm each | bottom-left, two zones **sharing an edge** — used constantly and switching direction mid-air |
+| **FLIP** | 34 x 13 mm | directly above the right cluster, across a **3 mm dead strip**: rare, critical, reached by rolling the right thumb up off the gas |
+| restart, levels, full screen, gas mode, zoom | 13 x 9 mm each | a 3 x 2 block at the top-left, below the HUD band and dimmer than the controls — you press these between runs and the others during one |
+
+That comes to about a fifth of a landscape phone's glass, and all of it in the
+corners; the previous layout was nearer 40% and in the middle of everything. On
+a viewport too narrow to hold both clusters — a 360 px portrait phone is 60 mm
+across and the clusters plus their gap want 76 — the whole thing **scales** down
+rather than reflowing, because the positions are what a player learns, and it
+stops at the comfortable minimum rather than shrinking forever.
+
+**The dead strip under FLIP is the one gap in the layout, and it is deliberate.**
+Everywhere else a gap would eat an input. There it prevents one: a thumb
+drifting up off a held throttle must not arrive in flip, because that fires a
+direction change in mid-air and loses the run. A touch that slides into nothing
+latches, so the strip catches the drift and the throttle stays held; reaching
+flip on purpose means crossing 3 mm of nothing, which a press does and a drift
+does not.
 
 **Multi-touch is the normal case, not an edge case.** Throttle plus lean is most
 of the game and throttle plus lean plus flip — three fingers — is how you save a
@@ -1088,13 +1137,50 @@ the auto bit is withheld until the first touch since the last restart.
 **Thumbs occlude the screen.** In landscape, hands cover the bottom corners,
 which is exactly where a grounded bike sits when the camera centres it — so the
 one thing the readability rule says must always be legible would be under a
-thumb. `screenBiasY` pushes the bike up the frame (0.17 of the half-viewport on
-touch, 0 on a desktop), and the ground it is about to hit comes up with it. It
-is a **presentation offset only**: it moves the published view and never the
-follow, so the safe-box guarantee still holds against the play framing, and the
-two together are clamped so they can never put the bike off the edge. It fades
-out under the overview, where there is no corner to hide in and an off-centre
-framing is just a crooked picture.
+thumb. `screenBiasY` pushes the bike up the frame, and the ground it is about to
+hit comes up with it. It is a **presentation offset only**: it moves the
+published view and never the follow, so the safe-box guarantee still holds
+against the play framing, and the two together are clamped so they can never put
+the bike off the edge. It fades out under the overview, where there is no corner
+to hide in and an off-centre framing is just a crooked picture.
+
+**It used to be a flat 0.17 of the half-frame and that was wrong on a real
+phone.** 0.17 was chosen against an idealised 844 x 390 viewport. Chrome's URL
+bar and Android's system bars make the real one about 915 x 348, and on a frame
+that short the same fraction was pushing a grounded bike up **under the level
+card** — the exact thing the offset exists to keep it out from under. A constant
+fraction cannot be right on two viewports that differ by a factor of three in
+height.
+
+So it is derived, from the two things that are actually covering the glass:
+
+- **the want** — the clear band runs from the bottom of the 52 px HUD to the top
+  of the thumb pads, and the bike wants the middle of *that* rather than the
+  middle of the screen. That is a shift of half the difference between the two
+  insets, and it is a number of **pixels**, so it comes out large on a short
+  screen and small on a tall one without anybody choosing either;
+- **the room** — the safe box already allows the follow `safeBox` of the
+  half-frame above centre, so the worst case is `safeBox + bias` and it has to
+  land below the HUD. On a short viewport that is the binding constraint and the
+  want is not paid in full;
+- **the cap** — `screenBiasY` survives as the most this may ever ask for (0.30 on
+  touch, 0 on a desktop), which is what keeps a desktop at exactly zero and
+  leaves a slider on the tuning panel that means something.
+
+`thumbInsetPx` is measured off the real pads every frame rather than guessed, so
+switching to auto-throttle, rotating the phone or the URL bar collapsing all move
+it, and all of them ease.
+
+| viewport | pads cover | derived bias | bike sits |
+| --- | --- | --- | --- |
+| 1600 x 900 desktop | nothing | 0 | dead centre |
+| 1180 x 820 tablet | 141 px | 0.109 | 366 px down of 820 |
+| 915 x 348 phone + browser chrome | 141 px | 0.256 | 130 px down of 348 |
+| 736 x 280 small phone | 136 px | 0.209 | 111 px down of 280 |
+| 412 x 800 portrait | 127 px | 0.094 | 362 px down of 800 |
+
+In every row the bike ends up in the middle of the band nothing is covering,
+which is the only thing the rule says.
 
 **The phone was being shown less than half the level, and that was the real
 bug.** There used to be a `zoomBias: 1.25` here, reasoned from "the bike is only
@@ -1124,24 +1210,69 @@ the reference desktop (25.8 m) and the same APPARENT scale as it (a phone
 subtends about 55% of the visual angle a monitor does, so ~14 m), and it lands
 within 2% of that compromise.
 
-| viewport | derived zoom | world visible | was |
-| --- | --- | --- | --- |
-| 780 x 360 phone | 43.3 px/m | 18.0 m | 10.1 m |
-| 844 x 390 phone | 45.0 px/m | 18.7 m | 10.9 m |
-| 1280 x 800 laptop | 55.5 px/m | 23.1 m | 20.6 m |
-| 1600 x 900 (the reference) | 62.0 px/m | 25.8 m | 25.8 m |
-| 1920 x 1080 | 67.9 px/m | 28.3 m | 31.0 m |
-| 3440 x 1440 ultrawide | 90.9 px/m | 37.8 m | 55.5 m |
-| 390 x 844 portrait | **38 px/m, floored** | 10.3 m | 5.0 m |
+### Both dimensions, and the limiting one wins
+
+**That formula was still only half right, and the half it was missing is the one
+a phone needs.** `zoom = baseZoom * (cssW / refWidth) ** widthExp` answers "how
+much level is *across* the screen" and says nothing at all about how much is up
+it — which is fine while every screen has roughly the reference's 16:9 and
+catastrophic the moment one does not.
+
+A landscape Android phone in Chrome is about **915 x 348** once the URL bar and
+the system bars have taken their quarter. That is an aspect of 2.63 against the
+reference's 1.78, and the width-only formula picked a comfortable 19.5 m across
+and handed over **seven and a half metres of vertical world** — four bike-lengths
+— so the level came out as a thin band across the top of the canvas with the
+pads covering the empty rest. That is the screenshot that started this pass.
+
+So each axis derives its own zoom from its own reference extent with the same
+exponent, and the answer is the **smaller** of the two. It is not an average and
+not a compromise; it is the statement that *no axis ever shows less world than
+its own derivation asked for*:
+
+```
+byW  = baseZoom * (cssW / refWidth)  ** widthExp
+byH  = baseZoom * (cssH / refHeight) ** widthExp
+zoom = clamp(min(byW, byH), minZoom, maxZoom)
+```
+
+| viewport | width-only | now | world visible | was |
+| --- | --- | --- | --- | --- |
+| 1600 x 900 — **the reference** | 62.0 | **62.0** | 25.8 x 14.5 m | unchanged |
+| 1920 x 1080 — same aspect | 67.9 | **67.9** | 28.3 x 15.9 m | unchanged |
+| 1180 x 820 tablet landscape | 53.2 | **53.2** | 22.2 x 15.4 m | unchanged |
+| 3440 x 1440 ultrawide | 90.9 | **78.4** | 43.9 x 18.4 m | 37.8 x 15.8 m |
+| 844 x 390 iPhone landscape | 45.0 | **40.8** | 20.7 x 9.6 m | 18.7 x 8.7 m |
+| **915 x 348 Android + browser chrome** | 46.9 | **38.6** | 23.7 x 9.0 m | 19.5 x 7.4 m |
+| 915 x 412 the same, installed | 46.9 | **41.9** | 21.8 x 9.8 m | 19.5 x 8.8 m |
+| 736 x 280 small phone landscape | 42.1 | **38.0** floored | 19.4 x 7.4 m | 17.5 x 6.7 m |
+| 412 x 800 portrait | 38.0 | **38.0** floored | 10.8 x 21.1 m | unchanged |
+| 360 x 640 narrow portrait | 38.0 | **38.0** floored | 9.5 x 16.8 m | unchanged |
+
+**Every window that has the reference aspect is untouched**, which is the safety
+argument for the whole change: every level was tuned at 1600 x 900, and a 16:9
+window of any size still frames exactly what it framed before. The ultrawide
+moving is the same rule working in the other direction, and in the direction of
+*more* world, which is the one that cannot hurt.
 
 **The floor still outranks the framing, and it is not quietly lowered to make
-the numbers look better.** A portrait phone wants 31 px/m and gets `minZoom`, so
-it sees less world rather than a mushier collision edge — the bike's LOD dead
-bands are derived from that floor too. The same thing happens to the speed
-zoom-out on a phone: it is a *ratio* now (`minZoom / baseZoom`, so the same 1.63x
-everywhere rather than a fixed 38 px/m that would zoom an ultrawide out to 90 m
-of level), and on an 844 px screen the floor takes most of that away, because
-there is no room underneath 38 px/m to zoom out into.
+the numbers look better.** A portrait phone wants 31 px/m and gets `minZoom`; a
+280 px-tall landscape one wants 34.6 and gets 38. Both see less world than the
+rule asked for rather than a mushier collision edge — the bike's LOD dead bands
+are derived from that floor too.
+
+And the honest answer for the phone in the complaint: at 915 x 348 the derived
+zoom is 38.6 px/m against a floor of 38, so **that viewport is within 1.4% of the
+readability floor**. There is no more vertical world to give without the
+collision edge going soft. The only thing that actually buys more is getting the
+browser chrome off the screen — which is worth about 0.8 m of vertical world, and
+is why the manifest and the full-screen pad below are part of this fix rather
+than a nicety.
+
+The same ratio logic applies to the speed zoom-out: it is a *ratio* now
+(`minZoom / baseZoom`, the same 1.63x everywhere rather than a fixed 38 px/m that
+would zoom an ultrawide out to 90 m of level), and on a phone the floor takes
+most of that away, because there is no room underneath 38 px/m to zoom out into.
 
 The happy consequence, which nobody asked for: deriving the zoom makes the bike
 **bigger** on a small screen anyway. 1.7 m at 45 px/m is 9.1% of an 844 px
@@ -1181,11 +1312,68 @@ at all. It is always there rather than appearing when you are zoomed, because a
 pad that comes and goes means rebuilding the overlay mid-run — which drops
 pointer capture and would silently release a held throttle.
 
-The desktop chrome gets out of the way too: the HUD is nine lines of telemetry,
-the legend lists keys there is no keyboard for, and the leaderboard panel sits
-exactly where the left thumb goes. The level bar stays, because changing level
-is navigation and there is no other way to do it, and the results panel's own
-buttons are tappable — the pads fade out for as long as it is up.
+### All of the desktop chrome goes, including the level bar
+
+The HUD is nine lines of telemetry, the legend lists keys there is no keyboard
+for, and the leaderboard panel sits exactly where the left thumb goes. Those
+three were already hidden. **The level bar was not, and it was the problem.** It
+was parked at top-right, which is precisely where the art renderer draws the
+clock and the apple counter — the screenshot has the level-name dropdown and a
+`browse  C` button printed straight through the in-canvas HUD, two HUDs stacked
+on each other, one of them advertising a keyboard key to a device with no
+keyboard.
+
+So it is hidden, and **`levels` in the touch overlay replaces it**: the same
+chooser the button opened, at a size a thumb can hit, in the block with the rest
+of the occasional controls. Hiding the only way to change level without putting
+one back would have been a worse bug than the one it fixed. The death banner
+follows the same rule and says **TAP RESTART** rather than *R TO RESTART* when
+there is no R key.
+
+Nothing in the overlay is allowed into the top 52 px either, which is the band
+the art renderer draws the level card, the clock and the apple counter in. That
+is asserted across every viewport in `touch.test.ts`, and the whole page is
+photographed by `SHOTS_PHONES=1 bin/shots` — because a DOM panel sitting on top
+of a canvas is not a thing any unit test can see, and it took a screenshot to
+catch it the first time.
+
+The in-canvas HUD itself now **fits a narrow screen**: the clock and the apple
+counter used to hang off the right of a centred level card, which is invisible on
+a desktop and ran the apple counter clean off the edge of a 412 px portrait
+phone. The row is centred as a whole when it does not fit, and scaled down if it
+still does not. A desktop is byte-identical — the natural position is tried
+first and only a row that overflows is touched at all.
+
+The results panel's own buttons are tappable: the pads fade out for as long as it
+is up.
+
+### Getting the browser chrome back
+
+**On an Android phone in landscape the browser is eating about a quarter of the
+screen**, and at 915 x 348 that is the difference between 9.0 m of vertical world
+and 9.8 m — on a viewport that is already within 1.4% of the readability floor,
+so it is the only place left to get any.
+
+Two routes, and **neither of them grabs anything**:
+
+- **A web app manifest with `display: standalone`.** Add to home screen and the
+  game opens with no URL bar at all. This is the better route, it is the only one
+  that exists on an iPhone, and it costs the player one deliberate gesture once.
+- **A `full screen` pad**, which calls the Fullscreen API *from the press* — the
+  user gesture the API requires anyway. A game that requests fullscreen on load
+  is hostile, and it would be refused. Where the API does not exist (iOS Safari
+  on an iPhone) the pad is **not built at all**, rather than built and dead.
+
+`viewport-fit=cover` lets the game paint under a notch and a home indicator, and
+the price of that is that the corners of the glass are not all usable — so the
+pads read `env(safe-area-inset-*)` off a probe element and stay out of them. The
+pads also keep a 3.5 mm margin from every edge on purpose: Android's back gesture
+lives on the left and right edges and the home indicator lives on the bottom, so
+a pad flush to the corner would be fighting the OS for the same three
+millimetres.
+
+**The layout is correct with the chrome still on screen.** Both of these are
+extra, and the table above is measured with the browser chrome in place.
 
 ### It is the same game, and that is asserted
 
@@ -2046,6 +2234,16 @@ Four rules, in priority order, and the first one outranks framing:
    half-life, so 144 Hz and 60 Hz displays agree about how fast the camera
    moves. Zoom is speed-driven, out quickly and back in slowly, which is what
    stops the view pumping over rolling terrain.
+
+**1b. The unit of framing is metres of world, not pixels per metre.** A fixed
+px/m answers "how big is the bike", which is not a question anybody asks while
+playing, and it made a 3440 px monitor see more than twice the level an 844 px
+phone got. So `baseZoom` is an anchor measured on ONE window — 62 px/m at
+1600 x 900, the framing all twenty levels were authored at — and every other
+viewport derives from it **on both axes, the limiting one winning**. Rule 1 still
+outranks it: a viewport too small to demand `minZoom` sees less world rather than
+a softer edge. The table and the reasoning are under *Playing on a phone*, which
+is where it matters.
 
 It is not a cinematic system: every value is one exponential and one clamp, and
 all of it is on the tuning panel, because anything with feel belongs on the

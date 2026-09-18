@@ -8,6 +8,20 @@
 #   SHOTS_QUERY=touch=1 bin/shots 01-first-light   # the phone thumb pads, which
 #                                              # are page elements and therefore
 #                                              # in the screenshot
+#   SHOTS_PHONES=1 SHOTS_QUERY=touch=1 bin/shots 20-close-quarters
+#                                              # ONE SHOT PER REAL PHONE VIEWPORT,
+#                                              # of the page as the game framed
+#                                              # it. A landscape phone with
+#                                              # Chrome's URL bar on it is about
+#                                              # 915x348, not 844x390, and the
+#                                              # difference between those two is
+#                                              # the difference between a level
+#                                              # you can see and a band across the
+#                                              # top. Presets: land-chrome,
+#                                              # land-full, land-small,
+#                                              # land-iphone, portrait,
+#                                              # portrait-narrow, tablet — or
+#                                              # SHOTS_PHONES=name:WxH,...
 #   SHOTS_MONTAGE=24 bin/shots 20-close-quarters   # the end-of-level montage:
 #                                              # does the winning line still
 #                                              # read against the crowd

@@ -17,7 +17,10 @@ const DIST = join(ROOT, 'dist');
 const OUT = process.env.SHOTS_OUT || join(ROOT, 'shots');
 const W = Number(process.env.SHOTS_W || 1600);
 const H = Number(process.env.SHOTS_H || 900);
-const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.map': 'application/json' };
+const TYPES = {
+  '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.map': 'application/json',
+  '.png': 'image/png', '.webmanifest': 'application/manifest+json',
+};
 const levels = process.argv.slice(2).filter((a) => !a.startsWith('-'));
 const want = levels.length ? levels : ['07-the-chimney', '10-cathedral', '19-low-roof', '20-close-quarters'];
 /**
@@ -79,6 +82,36 @@ const CHROME = process.env.SHOTS_CHROME === '1';
  * everybody and proves nothing about this.
  */
 const BIKES = (process.env.SHOTS_BIKES || '').split(',').map((x) => x.trim()).filter(Boolean);
+/**
+ * REAL PHONE VIEWPORTS — `SHOTS_PHONES=1`, or `SHOTS_PHONES=name:WxH,...`.
+ *
+ * This exists because the last touch pass shipped a layout that was fine at an
+ * idealised 844 x 390 and unusable at the size a phone actually hands you. A
+ * landscape Android phone in Chrome is about 915 x 348 once the URL bar and the
+ * system bars have taken their quarter, and at that aspect the width-only zoom
+ * put the whole level in a band across the top with the pads covering the empty
+ * rest. Every part of that is visible in a picture and none of it is visible in
+ * a number, which is the entire argument for this flag.
+ *
+ * Each entry re-emulates the metrics and re-shoots, so one run produces the set
+ * to compare: landscape with browser chrome, landscape without it (what
+ * `display: standalone` or the fullscreen pad buys), portrait, and a tablet.
+ */
+const PHONE_PRESETS = [
+  ['land-chrome', 915, 348],
+  ['land-full', 915, 412],
+  ['land-small', 736, 280],
+  ['land-iphone', 844, 390],
+  ['portrait', 412, 800],
+  ['portrait-narrow', 360, 640],
+  ['tablet', 1180, 820],
+];
+const phonesEnv = process.env.SHOTS_PHONES || '';
+const PHONES = !phonesEnv ? [] : phonesEnv === '1' ? PHONE_PRESETS : phonesEnv.split(',').map((x) => {
+  const m = /^([A-Za-z0-9-]+):(\d+)x(\d+)$/.exec(x.trim());
+  if (!m) throw new Error(`SHOTS_PHONES entry should look like name:915x348, got ${x}`);
+  return [m[1], Number(m[2]), Number(m[3])];
+});
 
 await mkdir(OUT, { recursive: true });
 const serve = createServer(async (req, res) => {
@@ -109,6 +142,19 @@ try {
   const cdp = await connect(await waitForTarget(cdpPort));
   await cdp.send('Runtime.enable');
   await cdp.send('Page.enable');
+  // One pass per phone viewport, or one pass at the window size when there are
+  // none. The metrics override goes on BEFORE the navigate, so the game boots
+  // into the viewport rather than resizing into it — which is what a phone does,
+  // and which is the one path where a wrong first frame would not be caught.
+  const passes = PHONES.length ? PHONES : [[null, 0, 0]];
+  for (const [phone, pw, ph] of passes) {
+  if (phone) {
+    await cdp.send('Emulation.setDeviceMetricsOverride', {
+      width: pw, height: ph, deviceScaleFactor: 1, mobile: true,
+    });
+    await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+    console.log(`  == ${phone}  ${pw}x${ph}`);
+  }
   for (const lv of want) {
     await cdp.send('Page.navigate', { url: `${url}?level=${lv}${QUERY ? `&${QUERY}` : ''}` });
     await new Promise((r) => setTimeout(r, 2600));
@@ -135,7 +181,15 @@ try {
 
     const where = await ev(cdp, 'JSON.stringify({x:window.velo.sim.state.px,y:window.velo.sim.state.py})');
     const { x, y } = JSON.parse(where);
-    const variants = at.length === 3 ? [
+    // THE PHONE SHOT IS OF THE PAGE, not of a chosen camera. `renderAt` frames a
+    // place at a px/m the caller picked, which is exactly the wrong tool for
+    // judging whether the DERIVED framing is right on this viewport — it would
+    // paint over the answer with the question. So the phone pass restarts the
+    // loop, drives briefly and photographs whatever the game decided, pads and
+    // HUD and all.
+    const variants = phone ? [
+      [`phone-${phone}`, `(()=>{window.velo.loop.start();return 1})()`],
+    ] : at.length === 3 ? [
       ['at', `window.velo.renderAt(${at[0]},${at[1]},${at[2]},{art:true})`],
       ['at-debug', `window.velo.renderAt(${at[0]},${at[1]},${at[2]},{art:true,debug:true})`],
     ] : [
@@ -197,11 +251,12 @@ try {
     for (const [name, expr] of variants.filter(([n]) => !only.length || only.includes(n))) {
       const said = await ev(cdp, `(()=>{const r=${expr};return r===undefined?1:r})()`);
       if (name === 'chooser') console.log(`    thumbnails: ${await said}`);
-      if (name === 'hud-off') await new Promise((r) => setTimeout(r, 400));
+      if (name === 'hud-off' || name.startsWith('phone-')) await new Promise((r) => setTimeout(r, 500));
       const r = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false, fromSurface: true });
       await writeFile(join(OUT, `${lv}--${name}.png`), Buffer.from(r.data, 'base64'));
     }
     console.log(`    ${lv}: ${variants.filter(([n]) => !only.length || only.includes(n)).length} shots`);
+  }
   }
   console.log(`==> ${OUT}`);
 } catch (e) {

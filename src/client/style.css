@@ -517,21 +517,36 @@ body:has(#panel.hidden) #results { margin-left: 0; }
 #touch.tc-away { opacity: 0; pointer-events: none; }
 #touch.tc-away .tc-zone { pointer-events: none; }
 
+/* SIZED IN MILLIMETRES, IN JS, AND SET IN PIXELS. A thumb is the same size on
+   every phone; a percentage of a canvas is not, and sizing these as fractions is
+   what put four enormous pads across the entire lower half of a large phone
+   while the whole level sat in a band across the top. See `MM` in touch.ts.
+   Nothing here may set a width or a height. */
 #touch .tc-zone {
   position: absolute;
   pointer-events: auto;
   touch-action: none;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: center;
-  padding: 6px;
-  border: 1px solid #ffffff1c;
-  border-radius: 6px;
-  color: #ffffff3d;
-  letter-spacing: .12em;
+  padding: 2px;
+  /* A DARK SCRIM AND A LIGHT EDGE, and not the other way round, because half the
+     twenty levels are painted on a LIGHT ground. A white wash on white tile is
+     invisible — a screenshot of the chimney showed exactly that, four pads that
+     were not there — and the readability rule does not say the controls may be
+     unreadable, it says they may not out-shout the collision edge. A 12% ink
+     scrim is dark enough to hold a label on any of the palettes and far too
+     faint to compete with the cyan lip. */
+  border: 1px solid #ffffff33;
+  border-radius: 7px;
+  color: #ffffff7a;
+  letter-spacing: .1em;
   text-transform: uppercase;
-  font-size: 11px;
-  background: #ffffff06;
+  text-align: center;
+  line-height: 1.15;
+  overflow: hidden;
+  background: #0d0b1a1f;
+  text-shadow: 0 1px 2px #0d0b1a99;
   /* No transition. A pad that faded in after the press would report the input
      late, and this game is decided in tenths of a second. */
 }
@@ -544,27 +559,32 @@ body:has(#panel.hidden) #results { margin-left: 0; }
   background: #29d9f21f;
   color: #29d9f2b0;
 }
-/* Throttle is the biggest, lowest target and it says so. */
-#touch .tc-throttle { align-items: center; font-size: 13px; }
-#touch .tc-flip { align-items: center; }
-#touch .tc-leanL, #touch .tc-leanR { align-items: center; }
-/* The commands, small and at the top, away from the thumbs and away from
-   the bottom corners the hands cover. */
+/* Throttle is the one that is held almost constantly, and it gets the corner
+   the thumb is already resting in. It says so by being the brightest of them,
+   which is still dimmer than the collision edge. */
+#touch .tc-throttle { color: #ffffff9e; background: #0d0b1a29; }
+/* FLIP is rare and critical, and it is a PLACE rather than a gesture. It reads
+   as a control rather than as the large faint word across the play area it used
+   to be. */
+#touch .tc-flip { color: #ffffff85; }
+/* The commands: small, dim, and in a block at the top-left out of both thumbs'
+   way. In the last layout they were as prominent as the controls, which is
+   exactly backwards — you press these between runs and those during one. */
 #touch .tc-cmd {
-  align-items: center;
-  font-size: 9px;
-  letter-spacing: .06em;
+  letter-spacing: .04em;
   background: #17132ecc;
   color: var(--dim);
+  border-radius: 4px;
+  border-color: #ffffff14;
 }
 
 /* On a phone the dev chrome is noise: the HUD is nine lines of telemetry, the
    legend lists keys there is no keyboard for, and the leaderboard panel sits
    exactly where the left thumb goes. The level bar stays — changing level is
    navigation and there is no other way to do it. */
-/* The zoom readout is an instrument rather than a control: dimmer than the two
-   above it, because it is read far more often than it is pressed. */
-#touch .tc-zoom { font-size: 8px; color: #8d85ad99; }
+/* The zoom readout is an instrument rather than a control: dimmer than the rest
+   of the block, because it is read far more often than it is pressed. */
+#touch .tc-zoom { color: #8d85ad99; text-transform: none; letter-spacing: 0; }
 
 /* THE BROWSER'S OWN PINCH IS THE ENEMY OF THIS ONE. Two fingers on the canvas
    is a page zoom by default, which would fight the game's own gesture and leave
@@ -573,9 +593,20 @@ body:has(#panel.hidden) #results { margin-left: 0; }
    because that is where a pinch in the play area actually lands. */
 body.touch #view { touch-action: none; }
 
-body.touch #hud, body.touch #legend, body.touch #board { display: none; }
-body.touch #levelbar { top: 6px; right: 6px; max-width: 46vw; }
-body.touch #levelbar .lb-note { display: none; }
+/* EVERY BIT OF DESKTOP CHROME GOES, AND THE LEVEL BAR IS THE ONE THAT DID NOT.
+   It was parked at top-right, which is exactly where the art renderer draws the
+   clock and the apple counter — the screenshot that started this rewrite has the
+   level-name dropdown and the `browse C` button printed straight through the
+   in-canvas HUD, two HUDs stacked on each other. It also prints a keyboard key
+   on a device with no keyboard.
+
+   Nothing replaces it in the DOM: `levels` in the touch overlay opens the same
+   chooser the button did, at a size a thumb can hit, in the block where the rest
+   of the occasional controls live. */
+body.touch #hud,
+body.touch #legend,
+body.touch #board,
+body.touch #levelbar { display: none; }
 body.touch #results { max-height: 78vh; }
 
 /* --- the level chooser ---------------------------------------------------- */
