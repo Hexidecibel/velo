@@ -759,3 +759,47 @@ rule, so "solver = x = nn" partly reflects the solver's own policy. What it
 proves is the weaker claim — that the geometry does not force a different order —
 and that claim is enough to say fourteen of these levels have their apples
 strung out along one line.
+
+---
+
+## 12. MEASURED VERDICTS — where this document describes the wrong bike (2026-09-18)
+
+**Read this before designing around any unclaimed entry above.**
+
+This taxonomy was assembled by studying Elasto Mania. Much of it transfers. Some of it describes **Elma's bike, not ours**, and the difference is invisible until somebody tries to build the level. Across two authoring batches (levels 27-32), **five entries failed on contact with rev 4** — each disproved by measurement, not by opinion.
+
+| entry | verdict | what was actually measured |
+| --- | --- | --- |
+| **U6** rebound as a hazard | ❌ **not available** | The shipped preset damps compression and rebound **equally (320/320)** — there is no asymmetry to exploit. Head-top after touchdown peaks at **1.18-1.61 m regardless of a 2 m or a 7 m drop**, against 1.16 m standing. The suspension eats a 7 m drop as completely as a 2 m one. |
+| **U5** "lean back kills you" | ❌ **backwards** | Rotation does not move the centre of mass, and tilting the arm slightly **lowers** the head. Leaning back in the air does not raise it at all. The real hazard under a roof is **speed**: faster crossing = flatter flight = the roof arrives sooner. |
+| **U10** traction, not power | ❌ **mechanic does not exist** | Coulomb friction with **no static/kinetic distinction**: forward force is `µ·N_rear` whether the wheel grips or slides, and 126 N·m on a 0.15 kg·m² wheel saturates `maxWheelSpin` in ~0.1 s, so it is *always* slipping. Swept held throttle against 12/25/33/50/62/75 % duty over 24-50°: **held was never worse for traction.** |
+| **U12** "reapply in flight" | ❌ **a trim, not a control** | The driven wheel saturates in **~95 ms**, so airborne throttle is a **one-shot 25-30 °/s impulse worth ~10° of attitude** after angular damping (τ = 0.33 s), not a sustained rate. Off a nose-up kicker that impulse **finishes** the flip. Reapplying is what kills. |
+| **U7** brake-to-climb | ❌ **not realisable** | Held brake on 45-85° faces, pulsed at 8/16/32-frame strokes, brake-as-ratchet, brake-dab-against-the-wheelie on 30-46°, brake timed into a concave foot, brake over a crest, and **a 1,500-program random search over six-phase input sequences** on 1.0/1.6/2.2 m steps at 75°. **The brake lost to not-braking in every cell.** A 1.0 m step is climbable without it and not with it; 1.6 m is climbable by nothing. |
+
+### Two of the five had a real mechanic underneath, and the levels were rebuilt on it
+
+A dead entry is not always a dead level. Where the *player-facing* lesson survived, the geometry was rebuilt on what the bike actually does:
+
+- **U10 → `30-scree`.** Full throttle's real cost is not lost grip, it is **126 N·m of nose-up reaction on the chassis** (`tq -= SWT[rear]`), which loops you backwards on a grade. Held gas finishes **7/126**; gas released whenever the nose rises finishes **137/216** — 11x, at the same best time. To the player the lesson reads identically: *stop holding it*.
+- **U7 → `32-anchor`.** The brake cannot climb, but it is **2-6x better than anything else at holding station**: parked on a face the bike rolls back 13.0 m at 30°, 23.6 m at 55°, and **dies at every angle >= 35°**; the held brake stops it in 2.1-3.3 m. The lesson became *the brake is what keeps the height you bought*. Honestly the weakest of the six, because a good line never needs it.
+
+### Other negative results worth not rediscovering
+
+- **A take-off crest under a beam cannot gate speed.** Head peak over a 30°/R=3 bump varies **non-monotonically** with approach speed — 9.8 m/s cleared better than 8.5 — because the suspension's phase at the bump dominates. Any beam tight enough to punish speed is also randomly lethal. Use **pure free flight** instead, where the closed form and the sim agree within ~0.1 m.
+- **Landing attitude alone is not lethal.** Touchdown pitch swept -20°..110° against slopes -24°..+32°: nothing below ~95° dies. An inversion needs a long enough flight for the throttle to rotate you there — which is why `31-ejector` spends 2.1 s in the air deliberately.
+
+### The rule this establishes
+
+**Measure the mechanic before designing the level, not after.** Every entry above still marked "unclaimed" is a hypothesis about a bike nobody has tested it on. The cost of checking is an afternoon with a scripted rider on `createSim`; the cost of not checking is a level built around something that cannot happen, which is worse than no level because it ships looking fine and teaches nothing.
+
+Where a probe kills an entry, **record the negative here** — five of these were found twice before anyone wrote them down.
+
+### A sixth failure, and this one is the PROBE's, not the canon's (levels 33-35)
+
+`docs/mechanics-probe.md` gives a headroom-to-window calibration for the timed reverse: 0.90 m = 289 ms (free), 0.70 m = 148 ms (a skill), 0.50 m = 55 ms (TAS). **It did not transfer to `35-window`.** Measured there, 0.55 m of headroom gives a **344 ms** survivable span.
+
+The cause is a different approach: on that geometry the bike **leaves the R=3 transition ballistically** and peaks ~3.5 m up the wall *regardless of approach speed* (10.7 and 13.4 m/s gave the same peak), where the probe's rig drove up the face under power. Same headroom, different flight, different window.
+
+**So the probe's numbers are properties of the probe's geometry, not constants of the bike.** Treat every window figure in that document as an existence proof — *this technique can have a window this wide* — and **re-measure it on your own geometry** before sizing a level to it. That is the same rule as §12 one level down: the general finding transfers, the number does not.
+
+One shape worth knowing because nothing predicted it: that level's window is **two-lobed**. Flip frames 18-32 survive, **33-37 die**, 38-61 survive again. The dead band is flipping exactly as the bike crosses the transition's top, reproducible across the sweep. A window is not necessarily an interval.

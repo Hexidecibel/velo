@@ -592,7 +592,7 @@ export function solveLevel(level: Level, spec: BikeSpec, userOpts: Partial<Solve
    * One leg under one strategy: from a set of seed states to apple `t` (or the
    * flower). Returns the arrival states, or null.
    */
-  const rideWith = (seeds: number[], t: number, st: Strategy, tailFr: number): { arrivals: number[]; weak: boolean } | null => {
+  const rideWith = (seeds: number[], t: number, st: Strategy, tailFr: number, legDeadline: number): { arrivals: number[]; weak: boolean } | null => {
     nodes.pool.load(seeds[0], sim.state);
     const d0 = distTo(t, sim.state.px, sim.state.py);
     const thresholds: number[] = [];
@@ -603,9 +603,6 @@ export function solveLevel(level: Level, spec: BikeSpec, userOpts: Partial<Solve
 
     let cur = seeds;
     let weak = false;
-    const legDeadline = opts.maxLegMs > 0
-      ? Math.min(deadline, Date.now() + opts.maxLegMs)
-      : deadline;
     for (const th of thresholds) {
       if (Date.now() > deadline) return null;
       const goal = th === 0
@@ -688,6 +685,17 @@ export function solveLevel(level: Level, spec: BikeSpec, userOpts: Partial<Solve
     // target is literally the same search — and a search that was stopped is
     // not the same search.
     let cutShort = false;
+    // ONE LEG, ONE CLOCK, and it covers every strategy and every re-route the
+    // leg tries — which is what `maxLegMs` always said it was and was not.
+    //
+    // It used to be computed per STRATEGY, so a leg riding four of them got
+    // four times the cap. Measured on 13-reservoir: the round's clock was 151 s
+    // and the cap 50 s, and leg three spent 112 s of it failing under three
+    // strategies in turn, so the round reached the end of its clock at leg
+    // three every time and the four legs after it — half the level's game time
+    // — were never searched at all. A cap that the thing it caps can spend four
+    // times over is not a cap.
+    const legEnd = opts.maxLegMs > 0 ? Math.min(deadline, Date.now() + opts.maxLegMs) : deadline;
 
     for (let round = 0; round <= opts.reroutes; round++) {
       let stallX = NaN;
@@ -707,11 +715,12 @@ export function solveLevel(level: Level, spec: BikeSpec, userOpts: Partial<Solve
       for (const st of ladder) {
 
         if (st.fallback && (bestArrivals || weakFallback)) continue;
+        if (Date.now() > legEnd) { cutShort = true; break; }
         if (Date.now() > deadline) {
           if (bestArrivals) return { arrivals: bestArrivals, weak: false };
           return weakFallback ? { arrivals: weakFallback, weak: true } : null;
         }
-        const got = rideWith(seeds, t, st, tailFr);
+        const got = rideWith(seeds, t, st, tailFr, legEnd);
         if (got) {
           const secs = (nodes.g[got.arrivals[0]] - nodes.g[seeds[0]]) / 128;
           // An arrival nothing simple can be ridden out of is accepted only if
@@ -745,7 +754,7 @@ export function solveLevel(level: Level, spec: BikeSpec, userOpts: Partial<Solve
       // that demonstrably works, which is the one thing re-routing must never
       // do — it exists for legs nothing can ride.
       if (bestArrivals) break;
-      if (round === opts.reroutes || Date.now() > deadline || !sawRealSearch) break;
+      if (round === opts.reroutes || Date.now() > deadline || Date.now() > legEnd || !sawRealSearch) break;
       if (!reroute(t, stallX, stallY, fromX, fromY)) break;
       say(`    ${name}: blocked the map around (${stallX.toFixed(1)}, ${stallY.toFixed(1)}) and re-routed — the grid said that was a way through and it is not`);
     }
