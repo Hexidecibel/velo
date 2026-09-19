@@ -1,9 +1,9 @@
 {
   "format": "velo-level",
   "rev": 1,
-  "name": "24 \u2014 Kickback",
+  "name": "24 — Kickback",
   "author": "velo",
-  "tier": "draft",
+  "tier": "core",
   "provenance": {
     "source": "authored",
     "generator": "agent"

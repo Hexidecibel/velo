@@ -337,12 +337,20 @@ export function solveOne(job: Job, level: Level, spec: BikeSpec, raw: unknown): 
           gateBudgetMs: job.gateBudgetMs ?? Math.min(job.timeBudgetMs / 4, 240000),
           effort: job.effort, branch: job.branch, targetTries: job.targetTries,
           boundVref: job.boundVref ?? 0, forceOrder: order, forceGate: true,
+          // The run just found, handed to the forced pass as states rather
+          // than as nothing. A forced leg seeded with an arrival that is known
+          // to work cannot come back worse than that arrival, so a failure
+          // starts to carry information — and where the two orders have
+          // diverged there is nothing to seed with and the failure means what
+          // it always did. See SolveOpts.seedRun.
+          seedRun: r.masks,
           search: searchOver, onProgress,
         }).best
       : solveLevel(level, spec, {
           rev: job.rev, timeBudgetMs: job.timeBudgetMs,
           strategies: DEFAULT_SOLVE.strategies.map((st) => ({ ...st, budget: Math.round(st.budget * job.effort) })),
           branch: job.branch, targetTries: job.targetTries, forceOrder: order,
+          seedRun: r.masks,
           search: searchOver, onProgress,
         });
     out.tension = tensionOf(out.par, g.solved ? g.frames / 128 : null, order);

@@ -47,9 +47,21 @@ function planFor(level: Level): ReturnType<typeof planProps> {
 }
 
 describe('the level set this runs against', () => {
-  it('found all twenty core levels', () => {
+  it('sweeps every core level in levels/, whatever the count is now', () => {
+    // This asserted a literal 20 until levels 21-26 were promoted to core, and
+    // then it failed for the RIGHT reason on a change that was nothing to do
+    // with props. A hard count here is a tripwire on the level set, not on the
+    // art, and the art is what this file is about.
+    //
+    // It still cannot pass vacuously: the sweep must find every core level on
+    // disk, and there must be a real curriculum's worth of them.
     const core = LEVELS.filter((l) => l.level.tier === null || l.level.tier === undefined || l.level.tier === 'core');
-    expect(core.length).toBe(20);
+    const onDisk = FILES.filter((f) => {
+      const raw = JSON.parse(readFileSync(join(DIR, f), 'utf8')) as { tier?: unknown };
+      return raw.tier === undefined || raw.tier === null || raw.tier === 'core';
+    });
+    expect(core.length).toBe(onDisk.length);
+    expect(core.length).toBeGreaterThanOrEqual(20);
   });
 
   it('also covers whatever drafts are in levels/', () => {

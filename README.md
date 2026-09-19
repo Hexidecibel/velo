@@ -68,8 +68,8 @@ add a script rather than running an ad-hoc command.
 | `bin/level-export` | Writes the built-in levels out to `levels/test01.json` and `levels/test02-bowl.json`. |
 | `bin/level-check` | Validates a hand-authored level JSON, prints its two hashes, and **warns about straight runs too coarse to ride smoothly**. |
 | `bin/level-drive` | Drives a level headlessly with a scripted rider and reports whether every apple and the flower can actually be reached. `--save <path>` writes the pilot's best run as a standard replay file — a trailing `/` writes one per level into a directory. The saved file is re-verified before it is written, and loads in the client with `L`. |
-| `bin/solve` | **Searches for a run that completes a level, proves it, and scores how hard it was.** A best-first search over macro-actions — held input masks for tenths of a second — through `advance(mask)`, so anything it finds is expressible as a replay. Reports completability, the winning apple order, a difficulty score measured from the search rather than from level statistics, and with `--save` a verified replay file you can watch. `--jobs N` solves several levels at once on worker threads. Not a CI tool: minutes per hard level. See *The solver* below. |
-| `bin/difficulty-import` | **Turns a `bin/solve --json` payload into `src/solver/measured.ts`**, which is the one place the client can read a measured difficulty score from. Solving the set is about an hour of CPU, so the scores are a build-time artefact; every row is keyed by the level's `simHash` **and** the sim rev, so an edited level stops matching and the chooser says *unrated* rather than showing a confident number about geometry that no longer exists. |
+| `bin/solve` | **Searches for a run that completes a level, proves it, and scores how hard it was.** A best-first search over macro-actions — held input masks for tenths of a second — through `advance(mask)`, so anything it finds is expressible as a replay. Reports completability, the winning apple order, **par**, a difficulty score measured on a named line rather than from level statistics, and with `--save` a verified replay file you can watch. `--optimise` changes the question from *can this be done* to *how fast*: it gates once, cheaply, then spends the rest of `--time` beating what the gate found against a tightening ceiling, and the number it prints is par. `--tension` measures what the apple **order** is worth by solving again with nearest-apple-first forced. `--human` constrains the macro alphabet to durations a pair of hands can hold. `--jobs N` solves several levels at once on worker threads. Not a CI tool: minutes per level to gate, twelve to twenty to optimise. See *The solver* below. |
+| `bin/difficulty-import` | **Turns one or more `bin/solve --json` payloads into `src/solver/measured.ts`**, which is the one place the client can read a measured difficulty score or a par from. Scoring the shipped set took 6.4 core-hours, so the numbers are a build-time artefact; every row is keyed by the level's `simHash` **and** the sim rev, so an edited level stops matching and the chooser says *unrated* rather than showing a confident number about geometry that no longer exists. It **merges** payloads, which is what lets a level re-solved on a bigger budget replace its own row: it keeps the faster par and, separately, the more forgiving line, so a row can carry par from one run and its difficulty from another. Every row records the `mode` it was measured in — which line, whose hands, what budget — and the writer refuses a row that does not have one. |
 | `bin/spec` | **Changes the bike from a terminal while somebody rides it.** Writes `data/spec.json`; the client picks it up within ~2 s and says what moved. |
 | `bin/replay` | **Re-simulates an exported replay file** and reports identity, hash-chain verification and a diagnostic pass. This is what turns "sometimes it gets weird" into a reproducible artifact. |
 | `bin/air` | Measures jump height and airtime off a fixed synthetic feature, per bike, in metres. Turns "it should catch more air" into a number. |
@@ -289,24 +289,24 @@ measured difficulty and best times — which is below.
 ## The level chooser
 
 **C**, or the `browse` button beside the picker. A card per level with a picture
-of it, what the solver measured its difficulty to be, its apple count and size,
-and your best time on it.
+of it, what the solver measured its difficulty to be, **par**, its apple count
+and size, and your best time on it.
 
 The one-line dropdown is still there and still does its job — it says which
 level you are on, and `[` / `]` step levels instantly. **Neither of them goes
 anywhere near the chooser**, because stepping levels when you already know where
 you are going has to stay free. The chooser answers the other question, the one
-a list of names cannot: *which of the twenty should I ride.*
+a list of names cannot: *which of the twenty-six should I ride.*
 
 ### The pictures are renders, not files
 
 A thumbnail is the real renderer, at the framing TAB already gives you, into a
-176x99 offscreen canvas. Twenty PNGs in the repo would be stale the first time
-somebody edited a level and wrong the first time the art changed; a render
+176x99 offscreen canvas. Twenty-six PNGs in the repo would be stale the first
+time somebody edited a level and wrong the first time the art changed; a render
 cannot drift from the game, because it **is** the game.
 
-Four rules keep it off the hot path, which is the whole risk in drawing twenty
-frames of a game that is trying to hold 60 fps:
+Four rules keep it off the hot path, which is the whole risk in drawing
+twenty-six frames of a game that is trying to hold 60 fps:
 
 - nothing is drawn until the chooser is opened, so a player who never opens it
   never pays;
@@ -315,45 +315,86 @@ frames of a game that is trying to hold 60 fps:
 - results are cached for the session by `simHash`, so the second open is free;
 - the render call passes `measure: false`, so a thumbnail's cost never reaches
   the **adaptive detail controller**. Without that, opening a menu would quietly
-  reduce the detail of the next second of play — twenty long offscreen frames
-  are real milliseconds, but they are not evidence about the frame budget.
+  reduce the detail of the next second of play — twenty-six long offscreen
+  frames are real milliseconds, but they are not evidence about the frame
+  budget.
 
 The chooser also **pauses the game** while it is up, which is the existing `P`
 and cannot touch a recording: no input frames are captured while the loop is
-paused.
+paused. It registers a **hold** as well as pausing — see *Everything that holds
+the sim goes through one register*. That is deliberate belt and braces: a paused
+loop is the stronger freeze of the two, since it does not draw either, but the
+guarantee that matters is "no tick advances while this is up", `step()`'s gate
+is the one place that is decided, and a screen whose freeze depends on a
+scheduling flag somewhere else is a screen whose freeze can be removed by an
+edit that was about something else entirely.
 
 ### The difficulty number is the solver's, not an opinion
 
-Every rating comes from `bin/solve` — precision, clearance, effort and
-lethality, measured from what the search actually experienced (see *Difficulty,
-measured from the search*). Nothing here is hand-assigned, and there is **no
-description text**, because the level format has no description field and
-twenty invented sentences would be filler nobody maintains. What is on a card
-besides the picture and the time is read off the level: apple count, and size in
-metres.
+Every rating comes from `bin/solve`, and since `SCORE_REV = 2` it is **two
+axes**: how often a human-sized fumble of the inputs kills you, and how close
+the rider's head comes to rock. Neither is a statistic about the file. Nothing
+here is hand-assigned, and there is **no description text**, because the level
+format has no description field and twenty-six invented sentences would be
+filler nobody maintains. What is on a card besides the picture and the times is
+read off the level: apple count, and size in metres.
 
-Scoring the set costs about an hour of CPU, so the numbers are a build-time
-artefact in `src/solver/measured.ts`, written by `bin/difficulty-import`. **The
-anti-rot mechanism is the key**: a row is keyed by the level's `simHash` and the
-sim rev, so moving one apple re-keys the level, the row stops matching, and the
-card says *unrated* instead of describing geometry that no longer exists. A
-rename or a recolour keeps it — the same split the leaderboard already trusts.
+**`par` is the other number, and it is not difficulty.** It is the fastest run
+anything has found, it sits on the card beside your own best and as a row in the
+board browser, and it is the one number in the whole system that is a property
+of the level rather than of a person — your best is yours, the board's best is
+somebody's, par is the level's. It is also a target rather than a curiosity: on
+this box's board par is currently faster than the best posted human time on six
+of the twenty-four rated levels. The difficulty score and par are measured on
+**different runs on purpose** — par on the fastest line anything has found, the
+score on the most forgiving one — and *Difficulty, measured on the most
+forgiving line* below is the argument for why those are two questions rather
+than one.
 
-Two more rules about honesty, both of which cost a card its rating:
+Scoring the set took 6.4 core-hours, so the numbers are a build-time artefact in
+`src/solver/measured.ts`, written by `bin/difficulty-import`. **The anti-rot
+mechanism is the key**: a row is keyed by the level's `simHash` and the sim rev,
+so moving one apple re-keys the level, the row stops matching, and the card says
+*unrated* instead of describing geometry that no longer exists. A rename or a
+recolour keeps it — the same split the leaderboard already trusts.
 
-- **an unsolved level is never shown as hard.** `16-one-way` is the one the
-  solver cannot do; that is an honest "could not" and the solver has been wrong
-  in that direction twice, so the card says unrated and says why.
-- a level with no row at all — a new one, an edited one, a rev bump — is
-  unrated, never easy.
+**An unrated card says WHY, as a code rather than as a sentence**, because two
+screens render it now — the card in the grid and the header of the board browser
+— and two hand-written copies of the same excuse is the bug at the top of
+`keys.ts` wearing different clothes. Three of the five codes are the solver's
+own, recorded on the row when it was measured, and the other two are the
+client's own dead ends:
+
+- `unsolved` — the search did not finish it inside its budget. **Never shown as
+  hard.** That is an honest "could not", and the solver has been wrong in that
+  direction more than once; `16-one-way` is the level that has it, and somebody
+  has posted a 68 s time on it.
+- `zero-apples` — no apples, so the search is one leg steered by the distance to
+  the flower, which is hopeless on a level that wants you to ride away from it
+  first. `26-nothing-to-take` is the level that has it. See *Where it is weak*.
+- `unverified` — a run was found and did not re-simulate. That is a bug in the
+  solver and the card says so.
+- `unmeasured` — no solver row for this level on this rev. A new level, an
+  edited one, a rev bump: unrated, never easy.
+- `broken` — it does not load. It still appears, marked, with the loader's own
+  message.
 
 The word beside the bar (*gentle, steady, tricky, hard, brutal*) is presentation
-cut against the twenty levels the set actually contains, which span 8 to 56. The
-score is the measurement; re-cutting the words changes no ordering.
+cut against the twenty-four rated levels the set actually contains, which span
+**13 to 85**. The edges were **recut** for `SCORE_REV = 2` and that is the cost
+of using words rather than numbers: the old 15/28/38/48 were drawn against a set
+that spanned 8 to 56 under the previous composite, and against the new
+distribution they put **sixteen of twenty-four levels in "brutal"** — a band
+every level is in is not a band. At 25/42/55/68 the two tutorials are gentle and
+only Needle, Mind Your Head and Whoops are brutal. The score is the measurement;
+re-cutting the words changes no ordering, and a band table is only ever right
+for the scale it was drawn against, so it wants checking whenever `SCORE_REV`
+moves.
 
 ### Grouped by the shape the set already has
 
-In `number` order the cards group by decade — `01 – 10`, `11 – 20` — because the
+In `number` order the cards group by decade — `01 – 10`, `11 – 20`, `21 – 30` —
+because the
 set was authored as a curriculum and a flat alphabetical list throws that away.
 The grouping is **derived from the leading number in the filename**, so a
 twenty-first level lands in `21 – 30` without anybody editing a table, and
@@ -746,9 +787,12 @@ nothing else — it is handed the TAS standing as well and pointedly never looks
 at it, so that the rule is stated where it is enforced and `ghost.test.ts` can
 assert the consequence directly: a level with a TAS entry and no human entry
 yields **no ghost**, for every selector setting. That matters today rather than
-in principle, because thirteen of the twenty shipped levels are currently in
-exactly that state. See *Why a TAS line cannot be watched* below for why this is
-a spoiler argument and not a preference one.
+in principle: when this was written, thirteen of the twenty shipped levels were
+in exactly that state. They are not any more — every board on this box now
+carries a human entry at the live rev — but `data/` is a local directory that is
+not in the repo, so a fresh install starts there and any new level arrives there,
+which is the state this rule is load-bearing in. See *Why a TAS line cannot be
+watched* below for why this is a spoiler argument and not a preference one.
 
 Which board is on SCREEN is a separate question from which board a ghost comes
 from, and conflating them was a real bug: opening the TAS category quietly
@@ -1701,10 +1745,15 @@ frozen — is a picture.
 
 ### Everything that holds the sim goes through one register
 
-There are now more things that cover the game than the overview: the armed start
-line, the about page, and a first-run profile screen after them. Every one of
-them needs the same guarantee — **no tick may advance while it is up** — and
-"two freezes would be two ways to lose a tick" scales badly past two.
+There are now four things that cover the game: the overview, the about page,
+the first-run profile screen, and the browse surface the chooser opens. Every
+one of them needs the same guarantee — **no tick may advance while it is up** —
+and "two freezes would be two ways to lose a tick" scales badly past two. It
+started as one boolean, `overview.frozen`; the second could have been a second
+`||` in the same `if` and the third a third. The reason not to is not tidiness.
+Every one of those is a separate answer to the same question, and separate
+answers are how two of them end up disagreeing about whether the sim is
+running.
 
 So there is one gate in `step()`, above every line that can move anything, and it
 asks one question of a register of **named predicates** (`hold.ts`). A true
@@ -1722,7 +1771,8 @@ has to be balanced, and the failure of an unbalanced one is a permanently frozen
 game with nothing on screen to say why. If the panel is shut, the panel is not
 holding anything, and there is no second piece of state that could disagree.
 `window.velo.hold.by` names whatever is holding, so a frozen game is a question
-with an answer.
+with an answer. The four registered names are `overview`, `about`, `browse` and
+`profile`.
 
 The **about page** is wired that way and nothing in `about.ts` had to change for
 it: `hold.add('about', () => legend?.about.open ?? false)`. It needed it — the
@@ -2528,7 +2578,7 @@ so that fraction is literally how much torque the engine still has; it drives
 the lowpass cutoff. At max wheelspin the engine is at full pitch with the filter
 closing — screaming with nothing behind it, which is what wheelspin *is*.
 
-### Four engines, and the character is the FIRING PATTERN
+### Five engines, and the character is the FIRING PATTERN
 
 You choose one. It lives on the bike panel with the paint and the helmet, it is
 part of `Appearance` and therefore **outside `BikeSpec`**, and
@@ -2545,6 +2595,22 @@ set to. Each one is a real mechanism:
 | **two-stroke** | 1, two-stroke | 1 per 360° | 360 | 1800 → 9500 rpm, **30 → 158 bangs/s** | Fires **every** revolution instead of every other, so at the same crank speed it is twice as busy as the lawnmower below. That is what "brap" actually is. A powerband curve holds the note down and then lets it go. |
 | **v-twin** | 2, four-stroke, shared crankpin | 2 per 720° | **315 then 405** | 900 → 5500 rpm, **15 → 92 bangs/s** | Two rods on one pin 45° apart cannot fire evenly. The 90° deficit is the entire potato-potato. At idle the cycle runs at 7.5 Hz and you hear two separate, unevenly spaced bangs. |
 | **lawnmower** | 1, four-stroke, governed | 1 per 720° | 720 | 1800 → 3600 rpm, **15 → 30 bangs/s** | One bang per two revolutions and a governed ceiling, so it is flat out almost immediately and still managing thirty bangs a second at full noise. The governor **hunts** at 3.4 Hz, which is the funny part and is a real mechanism rather than a wobble bolted on. |
+| **impression** | a glottis, not a crank | 2 per 360° | **205 then 155** | 1500 → 7500 rpm, **50 → 250 bangs/s** | Somebody doing the noise with their mouth. The uneven pair is **diplophonia** — push a voice down into a silly deep engine noise and the folds stop closing cleanly once per period, producing a strong pulse and then a weaker one that does *not* sit halfway between — so it is a real uneven excitation for the same kind of reason the V-twin's is, rather than a timbre. The cycle is the perceived pitch: 25 Hz at idle is vocal fry, 125 Hz at the limiter is an adult male shouting. |
+
+**A vowel is a pulse train too, which is why the fifth one is not a cheat.** A
+vowel is a set of formant resonances over a glottal pulse train, and an engine
+note here is already a pulse train — so the same Fourier series, run through a
+vocal tract instead of an exhaust, is a person doing an impression. Four formant
+triples from a slack mouth to a strained one (*uh, ah, eh, ee*) are interpolated
+across the rev range, so the **vowel travels** as the wheel spins up: a filter
+that merely opens sounds like a filter opening, and a vowel that changes sounds
+like somebody straining. It blows off when you lift, through the same noise
+source the wind uses. The firing pattern stays underneath on purpose — a pure
+vowel with no bangs in it is a synth pad, not a joke — and `bright` is far
+higher than any exhaust here because the formants have to be **excited**: a
+resonance at 3 kHz over a 25 Hz cycle is the hundred-and-twentieth harmonic, and
+a soft pulse has nothing up there to resonate with. A real glottal pulse is
+bright for exactly that reason, and it is why speech is intelligible at all.
 
 **One engine cycle is one period of a waveform.** Put the exhaust pulses at their
 crank angles inside that period, hand it to WebAudio as a `PeriodicWave`, and run
@@ -2572,11 +2638,15 @@ separated by a fixed fraction of a cycle — cylinder-to-cylinder scatter, which
 is what it was always pretending to be, and it cannot drift because there is
 nothing for it to drift against.
 
-The **output trims are measured, not guessed**: the same offline render put the
-four ten decibels apart at full throttle, because peak-normalising a wavetable
-equalises exactly the wrong thing — a lawnmower banging fifteen times a second
-has far less energy in it than an inline four banging three hundred. They now
-sit within about two dB, with the small engines deliberately a shade down.
+The **output trims are measured, not guessed**: an offline render put the fleet
+ten decibels apart at full throttle before the trims existed, because
+peak-normalising a wavetable equalises exactly the wrong thing — a lawnmower
+banging fifteen times a second has far less energy in it than an inline four
+banging three hundred. They now sit within about two dB, with the small engines
+deliberately a shade down. `firing.test.ts` guards the range rather than
+restating the measurement: a trim outside 0.5 to 3 is somebody having typed a
+number instead of rendering one, and it is the audio bug a player feels in their
+ears.
 
 **Only your own bike makes a noise.** An appearance travels with every replay, so
 a ghost carries an engine id — and nothing reads it. The end-of-level montage
@@ -2587,7 +2657,7 @@ would not be atmosphere. `audio.test.ts` enforces that by reading the source:
 call, and every `audio.setEngine` call in it must be passing
 `identity.appearance.engine`.
 
-Under all four: a square sub below the firing rate, and one lowpass with a slow
+Under all five: a square sub below the firing rate, and one lowpass with a slow
 wobble on its cutoff. The wobble is why an idle reads as a machine running
 rather than as a test tone.
 
@@ -3419,11 +3489,23 @@ skipping them is how a `Math.pow` ends up three months deep.
 The renderer is explicitly exempt and uses `atan2`, `sin` and `cos` freely —
 nothing downstream of rendering is ever verified.
 
-`bin/smoke` closes the loop: `src/sim/crosscheck.ts` runs a fixed 2000-frame
-input stream and returns its state-hash chain, and the smoke check runs it in
-Chrome's V8 *and* in Node's V8 and asserts the chains are identical. That is the
-one check that actually proves a server can re-simulate a browser's replay. A
-second engine (SpiderMonkey via Playwright) plugs into the same place.
+`bin/smoke` runs `src/sim/crosscheck.ts` — a fixed 2000-frame input stream that
+returns its state-hash chain — in Chrome's V8 *and* in Node's V8 and asserts the
+chains are identical. **That is a check of the bundle and not of engines**, and
+it called itself "the cross-engine check" for a while, which is the more useful
+thing to have found out: two copies of V8 agreeing is not evidence about
+SpiderMonkey or JavaScriptCore, and a check that overstates its coverage is
+worse than no check because you stop looking.
+
+`bin/engines` is the one that closes the loop. It hands the same bundled fixture
+to Node and Chrome (V8), Firefox (SpiderMonkey) and Playwright's WebKit
+(JavaScriptCore), compares the full chains frame by frame against Node's —
+because Node is what the server verifies in, so a browser that disagrees with it
+is a player whose runs get *refused* — and names the first diverging frame. As
+of 2026-09-18 there is no diverging frame: the chain is identical across all
+three engine families over 24,000 sim ticks on a shipped level. That is the
+claim the leaderboard rests on, and it is now a measurement rather than an
+argument from IEEE-754. Nobody has run it on a real iPhone.
 
 **There are no golden replay fixtures yet, on purpose.** The plan's
 `bin/goldens-regen` forcing function — refuse to regenerate unless `SIM_REV` has
@@ -3466,12 +3548,43 @@ replay you can watch or tells you exactly where it got stuck.
 ```
 bin/solve levels/13-reservoir.json --save /tmp/
 bin/solve levels/*.json --jobs 7 --time 1500 --json /tmp/solved.json
+bin/solve levels/21-rollers.json --optimise --time 1200      # find a FAST run
 ```
 
 All three turned out to be fine and the pilot was simply too weak — 13-reservoir
 is two jumps of 8 m and 12 m over pits with overhanging lips, 15-feather wants
 14.6 m/s carried through a fast section, and 17-backswing is a 909 m route that
 doubles back twice. The solver rides all three and the replays are in `replays/`.
+
+**`--optimise` changes the question, and it is the newest thing here.** Without
+it the tool satisfices at all three levels of its decision — the first apple
+order that completes wins, the first strategy that gets a leg done wins, the
+first arrival the search trips over is the one it hands on — which is exactly
+right for the thing the default is *for*: "can this level be done at all", run
+over a whole generated batch, where one run is the whole answer and cheapness is
+the point. With it, the tool gates once and then spends the rest of `--time`
+beating what the gate found. It is branch and bound, and having a run already in
+hand is the only reason a route search with this branching factor is tractable
+at all: every state can be asked "could anything through here finish sooner than
+what we have", and on a level with a decent incumbent most of the state space
+answers no for the cost of one subtraction. Each round is a **whole fresh
+solve** with the ceiling set to the best run so far, so it either returns
+something strictly faster or it returns nothing, and the number that comes out
+is **par**.
+
+The rounds restart rather than continuing for a reason that is about memory: a
+node table is never reclaimed inside a solve, because the mask chain back to the
+start has to stay walkable, so one search that kept improving for fifteen
+minutes would hold every state it had ever considered. Restarting throws all of
+it away and keeps only the ceiling. The schedule also **cycles** rather than
+climbing, which is a correction to the obvious design: a ladder from greedy to
+near-Dijkstra reads right and behaves badly — on 01-first-light the greedy round
+took 13.69 s to 11.88 s and then both patient rounds returned nothing, because
+at a weight near 1.0 the last leg is a search they cannot finish inside any sane
+leg cap. The strategy that improved the run was the first one, and a ladder
+never goes back to it against the tighter ceiling it just earned. So every
+strategy gets another turn, each cycle with more expansions than the last, and
+the clock is the only thing that ends it.
 
 ### What it searches over
 
@@ -3614,123 +3727,371 @@ the same wall again. What has to stop being a route is the route.
 A re-route is refused if it would make the target unreachable, which is the
 failure mode that would turn an honest "could not" into a false "cannot".
 
-### The answer on the twenty levels
+### The answer on the twenty-six levels
 
-**19 of 20, and all three of the levels `bin/level-drive` called uncompletable
-are completable.** The pilot was simply too weak. Every run below is a real
-input stream that re-simulates from scratch to a finished, living bike, and is
-saved beside this README in `replays/` as `<level>.solve.replay.json` — watch
-one with `bin/replay replays/13-reservoir.solve.replay.json` or load it in the
-client with `L`.
+**24 of the 26 are solved and rated.** Every rated row below is a real input
+stream that re-simulates from scratch to a finished, living bike. The two that
+are not rated fail for different reasons and both are an honest *could not* — a
+person has a posted time on each of them.
 
-Measured on one box, seven workers, a 20-minute cap per level; `search` is that
-level's own wall clock, not the wall clock of the set.
+**Two numbers, and they come from two different runs on purpose.** `par` is the
+fastest run anything has found. The score is measured on the most **forgiving**
+line anything has found, which is sometimes that same run and sometimes the
+cheap satisficing gate's slower one; the `line` column says which. *Difficulty,
+measured on the most forgiving line* below is the argument for why those are two
+questions rather than one, and `gate` is here beside par so the before/after is
+visible.
 
-| level | | time | score | precision | clearance | effort | lethality | head clearance | search |
-|---|---|---|---|---|---|---|---|---|---|
-| 03 Mind Your Head | ok | 35.0 s | **56** | 0.07 | 0.98 | 0.76 | 1.00 | 0.014 m | 113 s |
-| 08 Needle | ok | 27.7 s | **55** | 0.20 | 1.00 | 0.54 | 0.89 | 0.001 m | 48 s |
-| 07 The Chimney | ok | 47.1 s | **51** | 0.04 | 0.94 | 1.00 | 0.41 | 0.041 m | 841 s |
-| 06 Two Doors | ok | 68.3 s | **48** | 0.04 | 0.93 | 0.56 | 0.90 | 0.049 m | 58 s |
-| 12 Whoops | ok | 62.6 s | **48** | 0.03 | 0.94 | 0.69 | 0.73 | 0.040 m | 156 s |
-| 20 Close Quarters | ok | 108.9 s | **43** | 0.07 | 0.95 | 0.57 | 0.50 | 0.037 m | 155 s |
-| 10 Cathedral | ok | 96.3 s | **42** | 0.01 | 0.87 | 0.70 | 0.41 | 0.089 m | 296 s |
-| 05 Airtime | ok | 25.5 s | **41** | 0.01 | 0.91 | 0.30 | 1.00 | 0.061 m | 5 s |
-| 14 Kicker | ok | 73.0 s | **39** | 0.02 | 0.81 | 0.63 | 0.44 | 0.133 m | 184 s |
-| 18 Double | ok | 38.3 s | **39** | 0.03 | 0.77 | 0.45 | 0.74 | 0.162 m | 17 s |
-| 19 Low Roof | ok | 93.7 s | **39** | 0.03 | 0.86 | 0.37 | 0.80 | 0.097 m | 23 s |
-| 04 Switchback | ok | 72.6 s | **36** | 0.04 | 0.52 | 0.62 | 0.58 | 0.333 m | 109 s |
-| 17 Backswing | ok | 113.3 s | **36** | 0.01 | 0.96 | 0.61 | 0.11 | 0.029 m | 164 s |
-| 09 Runaway | ok | 45.3 s | **35** | 0.03 | 0.51 | 0.50 | 0.73 | 0.346 m | 63 s |
-| 13 Reservoir | ok | 53.1 s | **35** | 0.02 | 0.61 | 0.66 | 0.35 | 0.270 m | 119 s |
-| 11 Downhill | ok | 27.2 s | **33** | 0.00 | 0.61 | 0.35 | 0.77 | 0.274 m | 9 s |
-| 15 Feather | ok | 44.6 s | **31** | 0.00 | 0.71 | 0.44 | 0.38 | 0.204 m | 27 s |
-| 01 First Light | ok | 13.7 s | **20** | 0.01 | 0.08 | 0.34 | 0.65 | 0.645 m | 4 s |
-| 02 The Long Climb | ok | 17.6 s | **8** | 0.00 | 0.15 | 0.15 | 0.10 | 0.593 m | 2 s |
-| 16 One Way | **unsolved** | — | — | | | | | | 1200 s |
+Most of this came from `bin/solve --optimise --jobs 5 --time 720 --gate-time 240`
+over `levels/[0-9]*.json` on one twelve-core box. Five levels whose gate did not
+fit in a 240 s share under five-way parallelism were re-solved singly on a
+larger one — 07 at 2700/1500 s, 10 at 1800/700, 14 at 1500/600, 17 and 20 at
+1500/600 — so `search` is each level's own wall clock and not the wall clock of
+the set. 6.4 core-hours in total. `src/solver/measured.ts` is the shipped copy
+of this table and it, not this page, is what the game reads.
 
-The ordering reads right. The two tutorials are at the bottom with room to
-spare; the top of the table is the low-roof set — 03, 08, 07 — where the head
-passes within a centimetre or two of rock and a one-frame slip kills you a fifth
-of the time on 08-needle. 02-the-long-climb scoring 8 is honest rather than
-flattering: it is a wide corridor with a gentle climb and the solver walks it in
-593 expansions.
+| level | | par | gate | score | a fumble kills | head clearance | line | search |
+|---|---|---|---|---|---|---|---|---|
+| 08 Needle | ok | 20.6 s | 27.7 s | **85** | 39% | 0.023 m | optimised | 714 s |
+| 03 Mind Your Head | ok | 27.3 s | 35.0 s | **68** | 26% | 0.008 m | optimised | 720 s |
+| 12 Whoops | ok | 62.6 s | 62.6 s | **68** | 27% | 0.040 m | optimised | 720 s |
+| 20 Close Quarters | ok | 80.6 s | 108.9 s | **67** | 26% | 0.037 m | optimised | 1501 s |
+| 19 Low Roof | ok | 93.7 s | 93.7 s | **64** | 26% | 0.097 m | optimised | 721 s |
+| 04 Switchback | ok | 72.6 s | 72.6 s | **63** | 34% | 0.333 m | optimised | 720 s |
+| 23 Pump | ok | 11.7 s | 13.2 s | **62** | 24% | 0.085 m | gate | 721 s |
+| 13 Reservoir | ok | 53.1 s | 53.1 s | **62** | 31% | 0.270 m | optimised | 720 s |
+| 25 Serpentine | ok | 10.1 s | 10.1 s | **61** | 20% | 0.002 m | optimised | 723 s |
+| 07 The Chimney | ok | 41.3 s | 47.1 s | **60** | 22% | 0.070 m | optimised | 2700 s |
+| 09 Runaway | ok | 36.3 s | 45.3 s | **59** | 32% | 0.346 m | gate | 721 s |
+| 05 Airtime | ok | 18.8 s | 25.5 s | **59** | 21% | 0.061 m | gate | 709 s |
+| 11 Downhill | ok | 23.7 s | 27.2 s | **54** | 18% | 0.079 m | optimised | 721 s |
+| 06 Two Doors | ok | 30.5 s | 68.3 s | **53** | 16% | 0.049 m | gate | 718 s |
+| 21 Rollers | ok | 10.0 s | 13.9 s | **53** | 32% | 0.480 m | optimised | 715 s |
+| 22 Stutter | ok | 11.3 s | 12.5 s | **51** | 18% | 0.148 m | optimised | 720 s |
+| 10 Cathedral | ok | 88.3 s | 96.3 s | **46** | 12% | 0.089 m | gate | 1801 s |
+| 14 Kicker | ok | 62.6 s | 73.0 s | **46** | 25% | 0.428 m | optimised | 1501 s |
+| 24 Kickback | ok | 27.1 s | 32.2 s | **43** | 12% | 0.146 m | optimised | 720 s |
+| 17 Backswing | ok | 109.0 s | 113.3 s | **39** | 4% | 0.029 m | gate | 1501 s |
+| 15 Feather | ok | 34.7 s | 44.6 s | **38** | 10% | 0.204 m | gate | 721 s |
+| 18 Double | ok | 31.0 s | 38.3 s | **35** | 18% | 0.465 m | optimised | 721 s |
+| 01 First Light | ok | 10.3 s | 13.7 s | **24** | 11% | 0.511 m | optimised | 720 s |
+| 02 The Long Climb | ok | 13.6 s | 17.6 s | **13** | 6% | 0.593 m | gate | 721 s |
+| 16 One Way | **unsolved** | — | — | — | — | — | — | 241 s |
+| 26 Nothing To Take | **zero-apples** | — | — | — | — | — | — | 241 s |
 
-**Times are not competitive times.** The solver finds *a* run, not a fast one —
-a weighted A* on frames stops at the first thing that works. 17-backswing's
-113 s is a lap of a level a person would ride in well under a minute. Optimising
-the found line is a separate job and a much easier one, because it starts from a
-solution.
+*a fumble kills* is the raw slip measurement: of a hundred runs with one input
+boundary and the three after it fumbled by a 31 ms standard deviation, the
+fraction that end with a dead bike inside the next second and a half. *head
+clearance* is metres between the rider's head and rock at the tightest point of
+the scored line. The composite is those two and nothing else.
 
-**16-one-way is the one it cannot do.** It gets within 8 m of apple 6, having
-collected five. The level's name is the diagnosis: apples 3 and 4 sit six metres
-apart vertically at the same x, and the drop between them is one-way, so the
-route has to commit to the right hole on the way past and the solver keeps
-arriving at the wrong one. That is a "could not", not a "cannot" — `bin/level-drive`'s
-scripted navigator completes it, so a run certainly exists.
+**What is checked in is the gate's line, not par.** `replays/<level>.solve.replay.json`
+holds nineteen verified rev-4 runs — 01 to 20, less 16, which is unsolved — and
+every one of them is the `gate` column, watchable with
+`bin/replay replays/13-reservoir.solve.replay.json` or with `L` in the client.
+The optimised lines that produced the `par` column are not in the repo, and
+neither is anything for 21 to 26. That is a gap and it is worth knowing about
+before quoting a par at somebody: the number is reproducible from
+`src/solver/measured.ts` and the run behind it is not sitting here to watch.
+
+The ordering reads better than the four-axis one it replaced. 08-needle is top
+at 85 and earns both halves — a fumble kills you two times in five and the head
+passes within 2.3 cm of rock. 02-the-long-climb is bottom at 13, which is what
+the second tutorial should be. And the two axes genuinely disagree, which is why
+there are two: **17-backswing is tight and forgiving** (2.9 cm of clearance, a
+fumble kills 4% of the time) and **21-rollers is roomy and slippery** (48 cm of
+clearance, a fumble kills 32% of the time). One number could not have said
+either of those.
+
+**Par beats a person now, sometimes, and that is what `--optimise` bought.**
+Before it the solver returned the first run that completed, and on the
+seventeen levels where a person and the solver both had a time the person was
+faster on sixteen. Against this box's board today par is faster than the best
+posted human time on **six of the twenty-four** — 02-the-long-climb, 05-airtime,
+07-the-chimney, 14-kicker, 21-rollers and 22-stutter — and the *gate's* line
+beats a person on exactly one, 07-the-chimney, where the one posted human time
+is 53.3 s against the gate's 47.1 s and par's 41.3 s.
+
+That count moves and `data/` is not in the repo, so recount it rather than
+quoting it: it was seven of twenty-four until somebody took 01-first-light back
+by four hundredths of a second — 10.28 s against par's 10.32 s — about an hour
+before this paragraph was written. **Without `--optimise` the times are still
+not competitive times**: a weighted A* on frames stops at the first thing that
+works, and the `gate` column is what that is worth. What is no longer true is
+the sentence this section used to end on. Optimising the found line is not "a
+separate job and a much easier one". It is branch and bound over whole
+re-solves, it costs twelve to twenty minutes a level against the gate's two, and
+on five levels it buys nothing at all.
+
+**Five rows improve by 0%, and the reason is structural rather than a claim of
+optimality.** 04-switchback, 12-whoops, 13-reservoir, 19-low-roof and
+25-serpentine have par exactly equal to the gate after eight rounds each. A
+round is not a refinement of the run in hand: it is a whole fresh solve that
+inherits the ceiling and nothing else — no arrival states, no frontier — so it
+has to re-find a complete route *and* beat that ceiling strictly, and a partial
+route is worth zero. On a level where the gate's line is already close to what
+this search can do, every round stalls somewhere and returns nothing.
+04-switchback is the level that set the round budget: at 0.9 of the gate's time
+its eight rounds each stalled two metres short of the same apple with the clock
+gone, which is why a round now gets at least 1.2× what the gate took — and it
+still returns nothing. Read a 0% row as *eight fresh searches found nothing
+faster*, never as *this is optimal*.
+
+**16-one-way is a route failure.** The 241 s in its row is its share of the
+optimising sweep; given 900 s of its own in a separate gate pass it does no
+better. It collects four of the eight apples and stops 11.1 m short of the
+fifth, reported **exhausted** rather than timed out — the leg stopped on the
+search's own limits, its expansion budget or an empty frontier, and not on the
+wall clock. The report does not distinguish those two, which it should. The level's name is the diagnosis:
+apples sit in pairs either side of one-way drops, so the route has to commit to
+the right hole on the way past and the search keeps arriving at the wrong one.
+`bin/level-drive`'s scripted navigator completes it — 175.3 s, every apple, still
+alive, on rev 3 — and a person has ridden it in 68.5 s on the live rev, so a run
+certainly exists.
+
+**26-nothing-to-take is a steering failure, and it is a hole in the search
+rather than a hard level** — see *Where it is weak*.
+
+### Route tension is unresolved, in both directions
+
+`--tension` asks what the apple **order** is worth: solve once with the order
+searched, once with plain nearest-apple-first forced, and report the spread.
+That is depth rather than difficulty — a level where the obvious order is
+twenty-five seconds off the best one has something to discover, which is not the
+same claim as "this is hard to ride" — so it is reported as its own axis and
+never folded into the score, and it is judged against a ~3 s run-to-run noise
+floor because that is what repeated optimising runs of the same level on the
+same budget actually vary by.
+
+Run over the fourteen levels whose searched apple order differs from plain
+nearest-first, **strict nearest-first failed to complete eleven of them**. Only
+three produced a spread at all: 09-runaway 5.05 s (a finding), 15-feather 1.02 s
+and 05-airtime 0.28 s (both under the noise floor).
+
+It is tempting to read the eleven failures as tension so large it has no upper
+bound, and the commit that produced them says exactly that. **Do not.** What was
+measured is that *this search, with this budget, could not complete those levels
+under a forced order* — a solver "could not", never a level's "cannot". The
+instrument here is a search that fails for its own reasons, and this one has
+declared levels uncompletable wrongly more than once: `13-reservoir`,
+`15-feather` and `17-backswing` were all called uncompletable by
+`bin/level-drive` and all three ride; `07-the-chimney` and `10-cathedral` came
+back UNSOLVED from a 240 s gate share and solve comfortably at 2700 s and
+1800 s; `16-one-way` and `26-nothing-to-take` are unsolved right now and both
+have human times posted. Several of the eleven gave up in seconds rather than
+spending their budget — 14-kicker in 4 s, 24-kickback in 11 s, 06-two-doors in
+12 s — which says the forced order defeats this search quickly rather than
+narrowly, and is still not a proof about the level.
+
+So the honest position is that route tension is **unresolved in both
+directions**: the original "it is noise" reading was wrong because a wrong order
+does not finish slowly, and the replacement reading is not established either,
+because nothing here separates "the obvious order is much worse" from "the
+searcher cannot ride the obvious order". Measuring it properly needs an
+instrument that is not this search.
 
 ### Where it is weak
 
 - **Failure is never proof.** Every unsolved report is "this search, with this
-  budget, could not". The tool has been wrong in that direction twice already
-  in its own short history — once for a three-frame minimum macro duration, once
-  for an apple order that stranded an apple on an upper shelf — and both times
-  the level was fine.
+  budget, could not". The tool has been wrong in that direction repeatedly —
+  once for a three-frame minimum macro duration, once for an apple order that
+  stranded an apple on an upper shelf, and twice more in the run that produced
+  the table above, where 07-the-chimney and 10-cathedral came back UNSOLVED from
+  a 240 s gate share and then solved. Two levels are unsolved as this is
+  written and somebody has posted a time on both of them.
+- **A level with no apples has nothing to steer by.** Progress is distance along
+  a route to the next target, so with no apples there is exactly one leg and the
+  only target is the flower. `26-nothing-to-take` is built so that you have to
+  ride *away* from it first: the flower is **23.5 m from the start in a straight
+  line and 87.2 m along the only route there is**, out to the far end of the
+  lower gallery and back. All four strategies stall at the same lip around
+  x = 23 — 35.8 m, 34.9 m and 34.9 m short of the flower along the route, and
+  segmented 4.5 m short of its own 31 m mark. Handing segmented **twelve times
+  the expansions** (16,000 → 200,000) moved it 2.5 m. The re-route mechanism then
+  fires, and on this level it does damage rather than repair, because the map
+  was not wrong: the grid really does go that way and the route really is 87 m
+  long, so blocking the corridor the heuristic pointed at blocks the route.
+  After the block the search's best point is (−3.8, −0.5), which the re-routed
+  field calls 23.2 m from the flower and the *real* field calls 64.3 m — so the
+  final report is the flattering number, taken against a map the solver itself
+  broke. The row is `unrated: 'zero-apples'` and the chooser says so in those
+  words.
+- **A row is only as good as its `mode.budgetSeconds`.** Par converges — down,
+  by a shrinking amount, as the budget grows — which is the property that makes
+  it usable at all, and it converges to whatever that budget reached. Comparing
+  par across two rows measured on different budgets is comparing two searches,
+  which is why every row carries the budget it was measured with.
 - **It is sensitive to the macro alphabet.** One entry in `DURATIONS` is the
   difference between 13-reservoir being completable and not. A level needing a
   take-off timed finer than 16 ms would be reported uncompletable and the report
   would be wrong.
 - **The map does not know about gravity.** The occupancy grid answers "does a
   disc fit", so it routes up walls. The re-route mechanism repairs that when the
-  search proves it wrong, but it repairs it *slowly*, a corridor at a time, and
-  each round costs a search.
+  search proves it wrong, but it repairs it *slowly*, a corridor at a time, each
+  round costs a search, and on a level where the map was right all along it does
+  damage instead.
 - **Apple order is a greedy DFS with a tier rule, not a solver.** It tries three
   targets per step, prefers apples at or above the bike's own height, and
-  memoises failures. That is enough for these twenty and it is not a route
-  optimiser; a level with a genuinely non-obvious order could defeat it.
-- **Cost is real.** One to four minutes for a typical level on one core, 14
-  minutes for the worst of these twenty, ~60 minutes of CPU for the set. This is
-  a tool you run over a level set or a generator batch, not one you put in CI.
-- **Memory grows with the search.** A hard level holds 300-600 MB of nodes by
-  the end, and nothing is reclaimed within a level, because the mask chain back
-  to the start has to stay walkable.
+  memoises failures. That is enough for these twenty-six and it is not a route
+  optimiser; a level with a genuinely non-obvious order could defeat it. The
+  optimiser's `free` rung re-searches the order and is occasionally worth
+  several seconds at once, which is the same weakness seen from the other side.
+- **Cost is real.** Two minutes a level to gate, twelve to twenty to optimise,
+  and 6.4 core-hours for the set as it stands. This is a tool you run over a
+  level set or a generator batch, not one you put in CI.
+- **Memory grows with the search.** Nothing is reclaimed within a level, because
+  the mask chain back to the start has to stay walkable; the worst level in the
+  run above finished holding 184 MB of nodes and earlier passes have held
+  hundreds more. That is the reason the optimiser is a loop of whole solves
+  rather than one long search — restarting throws all of it away and keeps only
+  the ceiling, which is the one number worth carrying.
 
-### Difficulty, measured from the search
+### Difficulty, measured on the most forgiving line
 
-A difficulty number must come from what the search *experienced*. Apple count,
-level length and polygon count are properties of a file; they say nothing about
-whether a level is hard, and a generator optimising against them would learn to
-make long boring levels.
+A difficulty number must come from what somebody riding the level would
+*experience*. Apple count, level length and polygon count are properties of a
+file; they say nothing about whether a level is hard, and a generator optimising
+against them would learn to make long boring levels.
+
+That was the argument for the first version too, which measured four axes from
+what the **search** experienced. Then `optimise.ts` arrived, produced a
+different and faster run over the same rock, and re-measuring the same four axes
+on it moved the composite by up to fourteen points — 11-downhill 33 → 47,
+21-rollers 41 → 31, with head clearance on 21-rollers going 0.282 m → 0.586 m,
+which is to say **the fast line was the roomier one**. The score was never a
+property of the level. It was a property of the run, and the run had just
+changed.
+
+So the rule the rewrite is built on: a term earns a place in the composite only
+if it is a property of the **level**. Everything that is really a property of
+the searcher is still measured, still reported, and no longer weighted.
+`SCORE_REV = 2`, and it is two terms:
 
 | component | weight | what it measures |
 |---|---|---|
-| **precision** | 0.40 | of 200 one-frame nudges to the winning stream, the fraction that **kill** within 1.5 s |
-| **effort** | 0.25 | node expansions per metre of route, logged |
-| **clearance** | 0.20 | the smallest gap between the rider's head and rock anywhere on the line |
-| **lethality** | 0.15 | deaths per expansion during the search |
+| **slip** | 0.65 | of 100 runs with one input boundary and the three after it fumbled by a 31 ms σ, the fraction where the bike is **dead within 1.5 s** |
+| **clearance** | 0.35 | the smallest gap between the rider's head and rock anywhere on the line |
 
-The precision measure is the one worth arguing about, because the obvious
-version of it is wrong. "Does the perturbed stream still finish the level" was
-tried first and is not a difficulty measure at all: a deterministic bike is
-chaotic, so nudging one boundary near the start makes everything downstream a
-different run, and the finish rate mostly reports how *long* the stream is. On
-that measure 01-first-light scored 0.89, above levels nobody finds hard. Death
-within a bounded horizon of the nudge is local, is comparable between a
-14-second level and a 100-second one, and is what a player actually feels: on a
-hard level a slip kills you, on an easy one it just means you come up short and
-go round again. The whole-run finish rate is still reported, because it is
-interesting, but it is not weighted.
+`score = 100 × (0.65 × slip + 0.35 × clearance)`. The slip axis is normalised
+against a ceiling of a half and a floor of zero, and clearance against 0.7 m of
+head room. Both ends are chosen on the **meaning** of the number rather than
+calibrated against this level set, because calibrating a scale against the
+twenty-six levels you then score with it is circular — add a twenty-seventh
+harder level and every existing score silently moves. So the floor is a level
+where no human-sized fumble kills you, which is asking nothing of your hands and
+is the honest bottom, and `slip = 1.00` reads as *a fumble here kills you at
+least half the time*, which is a sentence rather than a percentile. Everything
+past a half is the same verdict.
+
+**Slip replaced a one-frame nudge, and the size of the error is the whole
+difference.** The old `precision` asked the same question with a 7.8 ms
+perturbation, deliberately below human timing resolution so that it would be
+about how narrow the corridor is rather than about anybody's hands — and that is
+exactly why it did not discriminate. Across this set the nudge runs **0.00 to
+0.08**, most levels under 0.05, where slip runs **4% to 39%**. Measured side by
+side on the same gate lines, 11-downhill and 15-feather both read nudge 0.00;
+slip reads 22% and 10%. The one-frame nudge cannot tell those two levels apart
+at all and the human-sized error puts one at twice the other. Same idea; the
+error size is what made it a measurement rather than a rounding.
+
+**The trap, which two separate passes walked into anyway**: the obvious version
+— jitter every boundary and count how often the whole run still finishes — is
+not a difficulty measure. A deterministic bike is chaotic, so a stream with an
+error on every boundary has diverged into a different run long before the end,
+and the finish rate mostly reports how *long* the stream is. It returned 0 of
+100 on a twelve-second level with no hazard in it. The error has to be local and
+so does the verdict. The whole-run finish rate is still reported, because it is
+interesting, and it is still not weighted.
+
+**Clearance saturates and that is its known weakness.** Nine of the twenty-four
+rated levels pass within seven centimetres of rock somewhere, which is an axis
+reading 0.90+ for all of them, so what clearance really separates is roomy from
+tight and not one tight level from another. That is still worth 35% — 21-rollers
+and 09-runaway are genuinely roomy and 08-needle genuinely is not — and the
+discrimination inside the tight half comes from slip, which does not saturate.
+Making it logarithmic would spread the tight end and would also start claiming
+that one centimetre against five is a difference a rider can feel, which is a
+claim nothing here has measured.
+
+**Three numbers are still reported and none of them is in the score.**
+
+- `nudge` — the one-frame version of slip, above. Kept because the **ratio** of
+  the two is informative: a level where a one-frame nudge already kills is
+  asking for frame-accuracy, and a level where only the human-sized error kills
+  is asking for consistency.
+- `effort` — node expansions per metre of route. It measures the searcher and
+  the heuristic. 07-the-chimney tops the axis at 1.00 and 17-backswing sits well
+  above the middle at 0.61, and what both numbers are reporting is the occupancy
+  grid routing somewhere a bike cannot get to and the search having to be proved
+  wrong about it one corridor at a time — two re-routes each. That is a fact
+  about `field.ts`. Change the heuristic and the number moves without a vertex
+  of the level moving.
+- `lethality` — deaths per expansion during the search. It reads like a property
+  of the level and is not one, for a subtler reason: the denominator is
+  expansions, and *where* the search spends them is the heuristic's choice. A
+  search that thrashes in a safe corridor for a million nodes reports the level
+  as safe.
+
+The demotion is not an opinion about them, it is a measurement. **One flag moves
+both without a vertex of the level moving**: point `--branch 8 --tries 3` at
+11-downhill — it widens the goal search and says nothing about the rock — and
+effort goes 0.42 → 0.37 while lethality goes 0.77 → 1.00. Both are also scored
+on the **gate's** pass even when the line being scored is the optimiser's,
+deliberately, because expansions-per-metre measured on an optimising run reports
+how long the optimiser was given. A measure that has to be pinned to one fixed
+pass to stay comparable between levels is a measure of the pass. They are kept
+because the gap between "hard for the solver" and "hard for a person" is worth
+being able to see.
+
+**And the heading of this section used to say "measured from the search", which
+was the thing that had to change.** The composite is measured on the most
+forgiving line anyone has found — not the fastest, and not whichever one the
+search tripped over. The obvious alternative, and the one the rework set out to
+implement, is to score the optimal line, since par is the best-defined run on a
+level. Measured across the set it is wrong, and 02-the-long-climb is the level
+that shows it: the second tutorial, a wide corridor with a gentle climb and half
+a metre of head clearance throughout, reads 6% slip on the gate's line and 29%
+on the optimised one, because the optimised line rides that corridor at the
+limit, and riding **anything** at the limit is dangerous. Scored on par it comes
+out at 46/100, above 24-kickback and level with 22-stutter. That is not a fact
+about 02-the-long-climb; it is a fact about what "fastest" means. Scoring on par
+also fails the same test `effort` failed — the optimiser's line gets more
+marginal the more budget it is given, so slip-on-par drifts with the clock.
+
+So there are **two minima and they answer two questions**: par is the least
+*time* anyone has got round in, difficulty the least *danger*. Both converge
+downward as more lines are found, both are only as good as the budget that
+found them, and both are stored with that budget beside them. Difficulty takes
+the forgiving minimum because of what the slip test asks — "how often does
+somebody who knows the line get down it" — and somebody who knows a level and is
+trying to *finish* rides the forgiving line, not the fast one. Whoever is
+chasing par can read `parMode` instead.
+
+Which line wins is genuinely mixed: the gate's on eight of the twenty-four rated
+levels and the optimiser's on the rest. 02-the-long-climb (6% against 29%),
+06-two-doors (16% against 29%), 10-cathedral (12% against 25%) and 15-feather
+(10% against 28%) are much more forgiving on the gate's slower line;
+22-stutter (38% against 18%), 24-kickback (27% against 12%) and 18-double (26%
+against 18%) are the other way round and by as much. **There is no rule to
+shortcut it with** — the fast line is not reliably the dangerous one and not
+reliably the safe one — which is exactly why both are measured and the winner is
+named in `measuredOn`.
 
 **What this is not.** It is not a claim about how hard a *human* finds a level —
-nothing here models learning, reading a level, or nerve. It measures how narrow
-the successful corridor is and how much work it took to find, which is what a
-generator needs to filter on and what an editor can show live. A level whose
-solution only a solver would find scores high and may simply be bad; the number
+nothing here models learning, reading a level, or nerve. It measures how much
+execution the best known line demands and how much room it leaves, which is what
+a generator needs to filter on and what an editor can show live. A level whose
+only line a solver would ever find scores high and may simply be bad; the number
 is a flag to go and look, not a verdict.
 
-The `effort` component also depends on the solver's own parameters, so scores
-are comparable **within a run** and not across solver versions. `precision`,
-`clearance` and the raw measurements behind them do not have that problem.
+And it is a property of the level **and the best known line**, which is weaker
+than "a property of the level" and is the strongest true statement available:
+find a faster or a safer line and the numbers move. What is no longer true is
+the old closing caveat that scores are comparable "within a run and not across
+solver versions". That was `effort`'s fault and `effort` is gone — scores are
+now comparable across solver versions, at one `SCORE_REV`. What they are not
+comparable across is **lines**, which is what `measuredOn` and `mode` exist to
+record.
 
 ## The level editor
 
@@ -3747,7 +4108,7 @@ it touches the touch layout.
 
 ### Editing a core level forks it. Always.
 
-The twenty shipped levels are the curriculum and they carry the leaderboard.
+The twenty-six shipped levels are the curriculum and they carry the leaderboard.
 Opening `03-mind-your-head` and adding a jump produces a **new file** —
 `03-mind-your-head-fork` by default, renamed in the panel — with
 `provenance.parent` recording the simHash and the name of what it came from. The
@@ -3767,12 +4128,21 @@ protected filenames to keep up to date:
 > a write is allowed to a path that does not exist, or to one whose file on disk
 > declares a tier that is not `core`. **Absent tier is core.**
 
-The twenty shipped levels carry no `tier`, so they are core by that rule without
-anybody having to remember them. A level the editor wrote carries
-`"tier": "draft"`, so saving over your own draft is the ordinary case it looks
-like. And promoting a level to core — a hand edit, a curation decision,
-deliberately not a workflow — takes it out of the editor's reach in the same
-motion, which is what promotion ought to mean.
+`01` to `20` carry no `tier`, so they are core by that rule without anybody
+having to remember them. A level the editor wrote carries `"tier": "draft"`, so
+saving over your own draft is the ordinary case it looks like. And promoting a
+level to core — a hand edit, a curation decision, deliberately not a workflow —
+takes it out of the editor's reach in the same motion, which is what promotion
+ought to mean.
+
+**`21` to `26` are shipped and still say `"tier": "draft"`, so the rule does not
+protect them.** They were authored in the editor, they carry the leaderboard and
+they have measured rows in `src/solver/measured.ts` like every other level, and
+opening one and pressing `^S` will overwrite it in place rather than forking it.
+That is the promotion step not having been taken rather than the rule
+misbehaving — the rule is doing exactly what it says — but the effect is that
+six curriculum levels are one keystroke from being edited out from under their
+own leaderboard entries. It wants a hand edit.
 
 Probed over HTTP against the live endpoint:
 
@@ -4056,8 +4426,8 @@ and `src/sim/curvelevel.ts`, which are the same data as TypeScript literals.
   ```
 
   It is honoured now. **A level that says nothing gets a palette and a look
-  derived from its own `simHash`**, which is what makes twenty levels twenty
-  places with no hand-authoring; `style.palette` naming a palette this build
+  derived from its own `simHash`**, which is what makes twenty-six levels
+  twenty-six places with no hand-authoring; `style.palette` naming a palette this build
   ships wins over the derivation, `style.colors` overrides individual slots on
   top of either, and `style.variant` overrides the non-colour parameters. A
   malformed override — a colour that is not `#rrggbb`, a variant field that is
@@ -4086,8 +4456,10 @@ and `src/sim/curvelevel.ts`, which are the same data as TypeScript literals.
   unanswerable unless the field already existed — the information is not
   recoverable afterwards, because nothing else records it and nothing can
   reconstruct it. Absent means UNKNOWN, which is the honest answer for every
-  level authored before the field existed; the twenty are deliberately not
-  backfilled.
+  level authored before the field existed, and `01` to `20` are deliberately not
+  backfilled. `21` to `26` were written in the editor and carry
+  `"source": "authored"` because the field existed by then, which is the
+  distinction working.
 
   `source` is deliberately **not an enum**. A generator that does not exist yet
   will want a value this build has never heard of, and rejecting it would let a

@@ -63,6 +63,40 @@ describe('solveLevel', () => {
     expect(r.routeMetres).toBeGreaterThan(10);
   });
 
+  // MONOTONICITY, and the cheapest possible test of it.
+  //
+  // Every strategy is given a budget of one expansion, so not one leg can be
+  // ridden by searching. Everything the solve returns therefore has to have
+  // come from the run it was seeded with — which means the seeded run really
+  // was replayed into the node table, every arrival really is addressable by
+  // the leg that wants it, and the chain back to the root really is walkable.
+  // Anything less than an exact match on the masks is a splice that lost
+  // something.
+  it('rides the run it was seeded with when it cannot ride anything itself', () => {
+    const seeded = solveLevel(level, DEFAULT_SPEC, {
+      timeBudgetMs: 120000,
+      strategies: [{ name: 'hobbled', segmentMetres: Infinity, budget: 1, hWeight: 1.6 }],
+      reroutes: 0,
+      forceOrder: [...r.appleOrder],
+      seedRun: r.masks,
+    });
+    expect(seeded.solved).toBe(true);
+    expect(seeded.masks).toEqual(r.masks);
+    expect(seeded.appleOrder).toEqual(r.appleOrder);
+  });
+
+  it('is not seeded by default, and an unseeded solve is untouched by any of it', () => {
+    // The completability gate runs on every generated level and pays for none
+    // of this: with no run handed in there is nothing to replay and nothing to
+    // look up.
+    const plain = solveLevel(level, DEFAULT_SPEC, {
+      timeBudgetMs: 2000,
+      strategies: [{ name: 'hobbled', segmentMetres: Infinity, budget: 1, hWeight: 1.6 }],
+      reroutes: 0,
+    });
+    expect(plain.solved).toBe(false);
+  });
+
   it('gives up honestly, with a place, when it has no time at all', () => {
     const none = solveLevel(level, DEFAULT_SPEC, { timeBudgetMs: 1 });
     expect(none.solved).toBe(false);

@@ -41,7 +41,7 @@
 // from the start to any node is always walkable and the solution is one
 // continuous input stream by construction. It is re-simulated from scratch and
 // verified before anything is written out.
-import { IN_MASK } from '@/sim/consts.ts';
+import { IN_FLIP, IN_MASK } from '@/sim/consts.ts';
 import type { Level } from '@/sim/level.ts';
 import type { BikeSpec } from '@/sim/spec.ts';
 import { getEngine, SIM_REV } from '@/sim/rev.ts';
@@ -145,6 +145,42 @@ export interface SolveOpts {
    * over early is collected and simply skipped when the list reaches it.
    */
   forceOrder?: number[];
+  /**
+   * A run already in hand, as its input-frame masks, replayed into this solve's
+   * node table so every leg can be handed the states that run actually reached.
+   *
+   * THIS IS WHAT MAKES AN OPTIMISING ROUND MONOTONE, and before it existed the
+   * rounds were not. A round is a fresh solve with a fresh node table, so the
+   * only thing it inherited from the run it was beating was a number — the
+   * ceiling. Everything else it had to find again from its own arrivals, and
+   * that is exactly the run-up this file's own header says a gap is a question
+   * about. Measured on 13-reservoir: every round rode legs one and two FASTER
+   * than the gate and then every round failed leg three, stalling 65-70 m short
+   * at the same spot under every strategy, because the leg crosses a 12 m pit
+   * that can be crossed only from the arrival states the gate's `carry` pass
+   * produced at apple one. The gate's whole ladder was available as a fallback
+   * and still failed, because by then it was starting from the ROUND's arrivals.
+   * Four levels returned 0% improvement on exactly that signature.
+   *
+   * So the incumbent is replayed in as real nodes, chained from the root like
+   * any other, and each leg gets two things from it:
+   *
+   *   the state the incumbent LEFT FROM, as one more seed, so a leg can always
+   *     be ridden from a place it is known to be rideable from;
+   *   the state the incumbent ARRIVED AT, as a candidate answer, so a leg that
+   *     nothing beats returns the incumbent's own arrival rather than nothing.
+   *
+   * "Nothing faster" then replaces "nothing at all": a round that cannot improve
+   * leg three rides the incumbent's leg three and spends its clock on leg four,
+   * which is where the improvement it can actually make lives.
+   *
+   * Both are refused unless the incumbent had collected EXACTLY THE SAME APPLES
+   * IN EXACTLY THE SAME ORDER at that point. Without that guard a forced-order
+   * solve seeded with an unforced run would quietly ride the unforced run's
+   * prefix and report it as the forced one, which is not a weaker measurement —
+   * it is a false one, and route tension is measured by forcing an order.
+   */
+  seedRun?: readonly number[];
   onProgress?: (line: string) => void;
 }
 
@@ -461,6 +497,81 @@ export function solveLevel(level: Level, spec: BikeSpec, userOpts: Partial<Solve
   // chain is rooted at "the moment the run begins".
   const root = nodes.add(sim.state, -1, 0, 0, 0);
 
+  /**
+   * The run already in hand, as nodes of THIS table. See SolveOpts.seedRun.
+   *
+   * `runDepart[t]` is the state the incumbent set off from on its way to `t`;
+   * `runArrive[t]` is the state it reached `t` in; `runBefore[t]` is the apples
+   * it had collected, in order, when it set off. All three are keyed by target
+   * — apple index, or FLOWER — because that is what a leg is addressed by.
+   */
+  const runDepart = new Map<number, number>();
+  const runArrive = new Map<number, number>();
+  const runBefore = new Map<number, number[]>();
+
+  if (opts.seedRun && opts.seedRun.length > 0) {
+    // Replayed frame by frame into the node table, cut into the longest chunks
+    // of one held mask that `masksTo` can put back together exactly — flip is
+    // edge-triggered and lives on a chunk's first frame only, which is the same
+    // contract `Nodes.masksTo` already encodes — and cut short at any frame a
+    // target is reached, so every arrival has a node of its own to be handed on.
+    //
+    // It is the incumbent's own stream, so the states are the incumbent's exact
+    // states and the chain from the root is walkable like any other. A run that
+    // does not replay (a rev mismatch, a truncated stream) simply stops here and
+    // leaves the maps short; every read of them is optional.
+    const masks = opts.seedRun;
+    let node = root;
+    let depart = root;
+    let before: number[] = [];
+    let g = 0;
+    let i = 0;
+    const seen = new Uint8Array(nApples);
+    nodes.pool.load(root, sim.state);
+    while (i < masks.length) {
+      const code = masks[i] & IN_MASK;
+      const held = code & ~IN_FLIP;
+      const hits: number[] = [];
+      let n = 0;
+      while (i + n < masks.length && n < 0xffff) {
+        if (n > 0 && (masks[i + n] & IN_MASK) !== held) break;
+        sim.advance(n === 0 ? code : held);
+        n++;
+        if (sim.state.dead) break;
+        for (let a = 0; a < nApples; a++) {
+          if (seen[a] === 0 && sim.state.applesTaken[a] !== 0) { seen[a] = 1; hits.push(a); }
+        }
+        if (sim.state.finished) hits.push(FLOWER);
+        if (hits.length > 0) break;
+      }
+      if (n === 0) break;
+      node = nodes.add(sim.state, node, code, n, g + n);
+      g += n;
+      i += n;
+      for (const a of hits) {
+        runArrive.set(a, node);
+        runDepart.set(a, depart);
+        runBefore.set(a, [...before]);
+      }
+      if (hits.length > 0) {
+        depart = node;
+        before = [...before, ...hits.filter((a) => a !== FLOWER)];
+      }
+      if (sim.state.dead || sim.state.finished) break;
+    }
+    if (!sim.state.finished) {
+      say(`    the run handed in as a seed did not replay to a finish — using the ${runArrive.size} arrival(s) it did reach`);
+    }
+  }
+
+  /** The apples a node has in the bag, as a bitmask. Levels are nowhere near 30. */
+  const bagOf = (id: number): number => {
+    nodes.pool.load(id, sim.state);
+    let m = 0;
+    for (let a = 0; a < nApples && a < 30; a++) if (sim.state.applesTaken[a] !== 0) m |= 1 << a;
+    return m;
+  };
+
   const base: Omit<SearchOpts, 'budget' | 'deadline'> = { ...DEFAULT_SEARCH, ...opts.search };
   const segments: SegmentReport[] = [];
   const totals = { expansions: 0, frames: 0, deaths: 0, generated: 0, deduped: 0, ms: 0 };
@@ -561,7 +672,7 @@ export function solveLevel(level: Level, spec: BikeSpec, userOpts: Partial<Solve
    * carries no information about the run's time — and the cheap strategy's
    * greedy weight is precisely the one that trades seconds for certainty.
    */
-  const ride = (seeds: number[], t: number, depth: number, tailFr: number): number[] | null => {
+  const rideLeg = (seeds: number[], t: number, depth: number, tailFr: number): { arrivals: number[]; weak: boolean } | null => {
     const name = t === FLOWER ? 'flower' : `apple ${t}`;
     const memo = seeds[0] + '|' + t;
     if (deadLeg.has(memo)) return null;
@@ -596,7 +707,10 @@ export function solveLevel(level: Level, spec: BikeSpec, userOpts: Partial<Solve
       for (const st of ladder) {
 
         if (st.fallback && (bestArrivals || weakFallback)) continue;
-        if (Date.now() > deadline) return bestArrivals ?? weakFallback ?? null;
+        if (Date.now() > deadline) {
+          if (bestArrivals) return { arrivals: bestArrivals, weak: false };
+          return weakFallback ? { arrivals: weakFallback, weak: true } : null;
+        }
         const got = rideWith(seeds, t, st, tailFr);
         if (got) {
           const secs = (nodes.g[got.arrivals[0]] - nodes.g[seeds[0]]) / 128;
@@ -608,7 +722,7 @@ export function solveLevel(level: Level, spec: BikeSpec, userOpts: Partial<Solve
           if (!got.weak) {
             if (!opts.optimise) {
               say(`    leg ${depth}: ${name} in ${secs.toFixed(2)} s [${st.name}${round > 0 ? ' +' + round + ' reroute' : ''}] (${((Date.now() - t0) / 1000).toFixed(0)} s elapsed)`);
-              return got.arrivals;
+              return { arrivals: got.arrivals, weak: false };
             }
             const g = nodes.g[got.arrivals[0]];
             if (g < bestG) {
@@ -635,13 +749,72 @@ export function solveLevel(level: Level, spec: BikeSpec, userOpts: Partial<Solve
       if (!reroute(t, stallX, stallY, fromX, fromY)) break;
       say(`    ${name}: blocked the map around (${stallX.toFixed(1)}, ${stallY.toFixed(1)}) and re-routed — the grid said that was a way through and it is not`);
     }
-    if (bestArrivals) return bestArrivals;
+    if (bestArrivals) return { arrivals: bestArrivals, weak: false };
     if (weakFallback) {
       say(`    leg ${depth}: ${name} reached, but only into a state nothing simple rides out of (${((Date.now() - t0) / 1000).toFixed(0)} s elapsed)`);
-      return weakFallback;
+      return { arrivals: weakFallback, weak: true };
     }
     if (Date.now() <= deadline && !cutShort) deadLeg.add(memo);
     return null;
+  };
+
+  /**
+   * What the run in hand has to offer this leg, if anything. See
+   * SolveOpts.seedRun.
+   *
+   * The guard is order-prefix equality and it is the whole of the safety
+   * argument. Both things offered here splice the incumbent's chain into this
+   * solve's answer — the seed by starting a leg from it, the arrival by
+   * returning it — so unless the incumbent had collected exactly the same
+   * apples in exactly the same sequence at that point, splicing would change
+   * which apples the run collected and in what order while the caller carried
+   * on believing its own bookkeeping. On a FORCED order that is not a weaker
+   * answer, it is a false one: the run would follow the seed's order and be
+   * reported as following the forced one, and route tension is exactly the
+   * difference between those two numbers.
+   */
+  const incumbentFor = (seeds: number[], t: number, order: readonly number[]): { seeds: number[]; arrival: number | null } => {
+    const depart = runDepart.get(t);
+    const before = runBefore.get(t);
+    if (depart === undefined || before === undefined) return { seeds, arrival: null };
+    if (before.length !== order.length || before.some((a, i) => a !== order[i])) return { seeds, arrival: null };
+    // Belt and braces: the order says the bags agree, so this can only fail if
+    // the replay and the DFS disagree about what is in one, and a silent apple
+    // is worse than a missed optimisation.
+    if (bagOf(depart) !== bagOf(seeds[0])) return { seeds, arrival: null };
+    return {
+      seeds: seeds.includes(depart) ? seeds : [...seeds, depart],
+      arrival: runArrive.get(t) ?? null,
+    };
+  };
+
+  /**
+   * One leg, with the run already in hand behind it.
+   *
+   * MONOTONICITY LIVES HERE: whatever the strategies manage, the leg comes back
+   * no later than the incumbent came back, because the incumbent's own arrival
+   * is one of the answers on offer. A round can improve a leg or leave it
+   * alone; it can no longer lose one, and a leg it cannot ride no longer takes
+   * the whole route down with it.
+   */
+  const ride = (seedsIn: number[], t: number, depth: number, tailFr: number, order: readonly number[]): number[] | null => {
+    if (runDepart.size === 0) return rideLeg(seedsIn, t, depth, tailFr)?.arrivals ?? null;
+    const inc = incumbentFor(seedsIn, t, order);
+    const got = rideLeg(inc.seeds, t, depth, tailFr);
+    if (inc.arrival === null) return got?.arrivals ?? null;
+    // A WEAK arrival loses to the incumbent's however early it is. `weak` means
+    // nothing simple could be ridden out of it, and the incumbent demonstrably
+    // rode out of its own — an earlier arrival that poisons the next leg is not
+    // an improvement, it is the failure this whole mechanism exists to stop.
+    if (got && !got.weak && nodes.g[got.arrivals[0]] <= nodes.g[inc.arrival]) return got.arrivals;
+    const name = t === FLOWER ? 'flower' : `apple ${t}`;
+    say(`    leg ${depth}: ${name} — ${got ? 'nothing beat' : 'nothing rode'} the run in hand, so it rides that one (${(nodes.g[inc.arrival] / 128).toFixed(2)} s in)`);
+    // Anything kept alongside it has to have the same apples in the bag, or the
+    // next leg would be handed two different routes and do its arithmetic on
+    // one of them.
+    const bag = bagOf(inc.arrival);
+    const rest = got && !got.weak ? got.arrivals.filter((id) => bagOf(id) === bag) : [];
+    return [inc.arrival, ...rest];
   };
 
   /**
@@ -659,7 +832,7 @@ export function solveLevel(level: Level, spec: BikeSpec, userOpts: Partial<Solve
    * tier rule below is a good guess, which is why it is kept as the order of
    * exploration even where every branch is explored.
    */
-  const attempt = (from: number[], remaining: number[], order: number[], depth: number): { node: number; order: number[] } | null => {
+  const attempt = (from: number[], remaining: number[], order: number[], depth: number): number | null => {
     if (Date.now() > deadline) return null;
     const plan = from[0] + '|' + remaining.join(',');
     if (deadPlan.has(plan)) return null;
@@ -691,7 +864,7 @@ export function solveLevel(level: Level, spec: BikeSpec, userOpts: Partial<Solve
             return [...here, ...below].slice(0, width).map((e) => e.i);
           })();
 
-    let best: { node: number; order: number[] } | null = null;
+    let best: number | null = null;
 
     for (const t of targets) {
       if (Date.now() > deadline) break;
@@ -709,14 +882,14 @@ export function solveLevel(level: Level, spec: BikeSpec, userOpts: Partial<Solve
         if (lb >= ceil) continue;
       }
 
-      const arrivals = ride(from, t, depth, tailFr);
+      const arrivals = ride(from, t, depth, tailFr, order);
       if (!arrivals) {
         if (Date.now() > deadline) break;
         continue;
       }
       if (t === FLOWER) {
         const g = nodes.g[arrivals[0]];
-        if (!best || g < nodes.g[best.node]) best = { node: arrivals[0], order };
+        if (best === null || g < nodes.g[best]) best = arrivals[0];
         if (opts.optimise) {
           if (g < ceil) {
             ceil = g;
@@ -735,13 +908,13 @@ export function solveLevel(level: Level, spec: BikeSpec, userOpts: Partial<Solve
       const got = remaining.filter((i) => taken[i] !== 0);
       const rest = remaining.filter((i) => taken[i] === 0);
       const sub = attempt(arrivals, rest, [...order, t, ...got.filter((i) => i !== t)], depth + 1);
-      if (sub) {
-        if (!best || nodes.g[sub.node] < nodes.g[best.node]) best = sub;
+      if (sub !== null) {
+        if (best === null || nodes.g[sub] < nodes.g[best]) best = sub;
         if (!opts.optimise) return best;
       }
       if (Date.now() > deadline) break;
     }
-    if (!best && Date.now() <= deadline) deadPlan.add(plan);
+    if (best === null && Date.now() <= deadline) deadPlan.add(plan);
     return best;
   };
 
@@ -755,7 +928,7 @@ export function solveLevel(level: Level, spec: BikeSpec, userOpts: Partial<Solve
   const win = attempt([root], all, [], 1);
   const ms = Date.now() - t0;
 
-  if (!win) {
+  if (win === null) {
     return {
       solved: false, masks: [], appleOrder: [], frames: 0, segments, totals, poolBytes, ms,
       failure: failure ?? {
@@ -766,12 +939,34 @@ export function solveLevel(level: Level, spec: BikeSpec, userOpts: Partial<Solve
     };
   }
 
-  const masks = nodes.masksTo(win.node).map((m) => m & IN_MASK);
+  const masks = nodes.masksTo(win).map((m) => m & IN_MASK);
+
+  // THE ORDER IS READ OFF THE RUN, not off the walk that found it.
+  //
+  // The DFS carries an order along as it recurses and that list is a record of
+  // what it MEANT to do: opportunistic pickups are appended in whatever order
+  // `remaining` happened to be in, and a leg that takes the run in hand instead
+  // of its own splices a prefix the walk was not keeping the book for. One
+  // replay of the winning stream costs a millisecond and turns the reported
+  // order from a claim into a measurement, which is the same standard every
+  // other number in this file is held to.
+  const appleOrder: number[] = [];
+  {
+    nodes.pool.load(root, sim.state);
+    const seen = new Uint8Array(nApples);
+    for (const m of masks) {
+      sim.advance(m);
+      for (let a = 0; a < nApples; a++) {
+        if (seen[a] === 0 && sim.state.applesTaken[a] !== 0) { seen[a] = 1; appleOrder.push(a); }
+      }
+    }
+  }
+
   let routeMetres = 0;
   {
     let x = level.start.x;
     let y = level.start.y;
-    for (const t of [...win.order, FLOWER]) {
+    for (const t of [...appleOrder, FLOWER]) {
       const d = distTo(t, x, y);
       if (Number.isFinite(d)) routeMetres += d;
       x = pts[t].x;
@@ -779,7 +974,7 @@ export function solveLevel(level: Level, spec: BikeSpec, userOpts: Partial<Solve
     }
   }
   return {
-    solved: true, masks, appleOrder: win.order, frames: masks.length,
+    solved: true, masks, appleOrder, frames: masks.length,
     segments, totals, poolBytes, ms, field, routeMetres,
   };
 }

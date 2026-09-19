@@ -74,6 +74,19 @@ export interface OptimiseOpts {
   /** Gate with this order too. Off by default; route tension wants it on. */
   forceGate: boolean;
   /**
+   * A run already in hand, as input masks, offered to the GATE. See
+   * SolveOpts.seedRun — the rounds are always seeded with the incumbent and do
+   * not need telling.
+   *
+   * It exists for route tension, which is the one measurement whose gate is not
+   * the cheapest question. Tension forces an apple order and compares; a forced
+   * gate failed on eleven of the fourteen levels it was asked about, which is a
+   * "could not" and says nothing about the order. Handing it the unforced run
+   * gives it the states that run reached, and they are usable wherever the two
+   * orders agree so far — which is not everywhere, and is honest about where.
+   */
+  seedRun?: readonly number[];
+  /**
    * Search knobs every pass inherits — the gate and every round. The macro
    * alphabet lives here, so this is how human mode constrains all of them at
    * once rather than per-pass.
@@ -192,6 +205,7 @@ export function optimiseLevel(level: Level, spec: BikeSpec, userOpts: Partial<Op
     branch: DEFAULT_SOLVE.branch,
     targetTries: opts.targetTries,
     forceOrder: opts.forceGate ? opts.forceOrder : undefined,
+    seedRun: opts.seedRun,
   });
   const gateMs = Date.now() - t0;
   const rounds: OptimiseRound[] = [];
@@ -273,14 +287,24 @@ export function optimiseLevel(level: Level, spec: BikeSpec, userOpts: Partial<Op
         // here would only hide the route that works.
         reroutes: 0,
         forceOrder: order,
+        // The run this round is trying to beat, as states rather than as a
+        // number. See SolveOpts.seedRun: without it a round inherits only the
+        // ceiling and has to re-find every run-up the incumbent already paid
+        // for, which is why four levels used to return nothing at all rather
+        // than nothing faster.
+        seedRun: best.masks,
       });
     } catch (e) {
       say(`  ${name}: the round failed outright (${e instanceof Error ? e.message : String(e)}) — keeping what we had`);
       rounds.push({ name, frames: null, ms: Date.now() - rt, expansions: 0, ceil: best.frames });
       return false;
     }
+    // `frames: null` means THIS ROUND FOUND NOTHING FASTER, and it has to keep
+    // meaning that. Since the rounds are seeded with the incumbent a round can
+    // now complete the route by riding the incumbent's own legs, so `r.solved`
+    // on its own no longer distinguishes "improved" from "tied".
     rounds.push({
-      name, frames: r.solved ? r.frames : null, ms: Date.now() - rt,
+      name, frames: r.solved && r.frames < best.frames ? r.frames : null, ms: Date.now() - rt,
       expansions: r.totals.expansions, ceil: best.frames,
     });
     if (r.solved && r.frames < best.frames) {
