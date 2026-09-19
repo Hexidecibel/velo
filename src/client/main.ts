@@ -30,9 +30,13 @@ import { LEVELS, adoptLevel, findBySimHash, resolveLevel, upsertLevel } from './
 import type { LevelEntry } from './levels.ts';
 import { createLegend, createLevelBar } from './chrome.ts';
 import type { Legend } from './chrome.ts';
-import { buildChooser, chooserSummary, CHOOSER_SORTS } from './chooser.ts';
-import type { ChooserSort } from './chooser.ts';
+import { buildChooser, chooserSummary, CHOOSER_SORTS, flatten } from './chooser.ts';
+import type { ChooserGroup, ChooserSort } from './chooser.ts';
 import { createChooserUi } from './chooserui.ts';
+import type { ChooserView } from './chooserui.ts';
+import { buildBrowse, createBoardCache } from './browse.ts';
+import type { BoardSlot, BrowseModel } from './browse.ts';
+import { avatarImg } from './avatar.ts';
 import { createThumbs } from './thumbs.ts';
 import { persistentBadges } from './hudmode.ts';
 import type { HudWarnState } from './hudmode.ts';
@@ -1229,7 +1233,17 @@ function onNameChosen(raw: string): void {
  * optimal line deletes the puzzle permanently. A time is information; a line is
  * a solution.
  */
-function watchEntry(e: BoardEntry): void {
+/**
+ * Play one board row's run from the start.
+ *
+ * `simHash` is the LEVEL THE ROW IS ON, and it defaults to the one loaded
+ * because the board panel is per-level. The browser is not: a row there can
+ * belong to any of the twenty-four, and fetching its replay against the wrong
+ * level is a 404 that reads as "that run is broken". `loadReplay` then switches
+ * to the level the file names, so watching a rival on a level you are not on
+ * takes you there.
+ */
+function watchEntry(e: BoardEntry, simHash: string = level.simHash): void {
   if (!watchableCategory(e.category)) {
     boardStatusSet(
       'that is a machine run — its time is the whole of what this board shows. A solver picked the apple ' +
@@ -1238,7 +1252,7 @@ function watchEntry(e: BoardEntry): void {
     );
     return;
   }
-  fetchReplay(e.replayId, level.simHash).then((r) => {
+  fetchReplay(e.replayId, simHash).then((r) => {
     if (!r.ok) {
       boardStatusSet(`could not load that run: ${r.error}`, 'bad');
       return;
@@ -2211,11 +2225,91 @@ function setLegendOpen(on: boolean): void {
 // a recording (no input frames are captured while the loop is paused), and it
 // is what makes the thumbnail queue free — nothing is competing for the frame.
 let chooserSort: ChooserSort = loadChoice<ChooserSort>('chooserSort', CHOOSER_SORTS, 'number');
+/**
+ * WHICH VIEW OF THE ONE BROWSE SURFACE IS UP — the grid you ride from, or the
+ * leaderboards you browse.
+ *
+ * DELIBERATELY NOT REMEMBERED, unlike the sort beside it. Every way in names
+ * the view it wants: `C` and the `levels` pad mean the grid, the `times` pad
+ * and the board panel's button mean the ladder. Remembering it would make `C`
+ * — advertised as "the level chooser" — open a leaderboard for anybody who had
+ * looked at one earlier, which is a control that does different things on
+ * different days. The tab is for switching once you are in there.
+ */
+let chooserView: ChooserView = 'levels';
+/**
+ * Which level the board browser is looking at, as an ID rather than an index.
+ *
+ * The index would be wrong the moment somebody changed the sort — "by
+ * difficulty" reorders the same twenty-four — and quietly showing a different
+ * level's board under the same heading is the exact class of bug `boardToken`
+ * exists to stop on the other panel.
+ */
+let browseId = entry.id;
 let pausedBeforeChooser = false;
 
 const thumbs = createThumbs({
   onReady: (simHash, url) => chooserUi.setThumb(simHash, url),
 });
+
+/**
+ * ONE BOARD PER LEVEL, FETCHED ONCE PER OPENING OF THE SCREEN.
+ *
+ * The whole ask was to see leaderboards "without having to load each one", and
+ * a refetch on every `next ›` would put a loading state between a player and
+ * every level in the set — which is the thing being removed, in a smaller and
+ * more annoying form. It is cleared in `openChooser`, so a board is never older
+ * than the screen it is on, and the `↻` button drops one when somebody suspects
+ * it anyway.
+ *
+ * It is deliberately NOT the board that feeds the ghost. `refreshBoard` owns
+ * that, it is token-guarded against a slow fetch landing after a level change,
+ * and a browse of some other level must not be able to change which run is
+ * riding beside you.
+ */
+const browseBoards = createBoardCache(
+  (simHash, category): Promise<BoardSlot> =>
+    fetchBoard(simHash, { category, playerId: identity.playerId }).then((r) =>
+      r.ok
+        ? { state: 'ready', payload: r.value, error: '' }
+        : { state: 'offline', payload: null, error: r.error },
+    ),
+  (simHash, category) => {
+    // Only the board actually on screen redraws. The neighbours are warmed on
+    // purpose (see `browseModel`) and a rebuild for one of those would be a
+    // panel flickering under somebody who is reading a different one.
+    if (!chooserUi.visible || chooserView !== 'times') return;
+    if (category !== boardCategory) return;
+    if (browsedEntry()?.level?.simHash !== simHash) return;
+    renderChooser();
+  },
+);
+
+/**
+ * A livery is solved against the level it is RIDDEN on, so a board of level 14
+ * draws its bikes in level 14's room even while you are standing in level 3.
+ *
+ * Memoised by simHash, and that is load-bearing rather than tidy: `avatar.ts`
+ * caches rendered bikes in a WeakMap keyed by the palette OBJECT, so handing it
+ * a freshly derived palette per render would miss the cache on every row of
+ * every step and redraw forty little bikes for nothing.
+ */
+const browsePalettes = new Map<string, ReturnType<typeof levelPalette>>();
+function browseP(e: LevelEntry | null): ReturnType<typeof levelPalette> {
+  const lvl = e?.level ?? null;
+  if (!lvl || artParams.derive <= 0) return CONCRETE;
+  if (lvl.simHash === level.simHash) return levelP();
+  let P = browsePalettes.get(lvl.simHash);
+  if (!P) {
+    P = levelPalette(lvl.style, lvl.simHash);
+    browsePalettes.set(lvl.simHash, P);
+  }
+  return P;
+}
+
+function browsedEntry(): LevelEntry | null {
+  return LEVELS.find((l) => l.id === browseId) ?? null;
+}
 
 const chooserUi = createChooserUi(chooserRoot, {
   onPick: (id) => {
@@ -2237,20 +2331,119 @@ const chooserUi = createChooserUi(chooserRoot, {
     const hit = findBySimHash(simHash);
     if (hit?.level) thumbs.request(hit.level);
   },
+  onView: (v) => {
+    chooserView = v;
+    renderChooser();
+  },
+  onBrowse: (id) => {
+    browseId = id;
+    chooserView = 'times';
+    renderChooser();
+  },
+  onStep: (d) => stepBrowse(d),
+  // The SAME category state the board panel uses, rather than a second one.
+  // Two answers to "which board am I looking at" is how the ghost ended up
+  // changing because somebody glanced at another tab, which is the bug the
+  // human/board split upstairs exists to prevent.
+  onCategory: (c) => {
+    setCategory(c);
+    renderChooser();
+  },
+  onGhost: (k) => {
+    setGhostKind(k);
+    renderChooser();
+  },
+  onWatch: (e) => {
+    const hit = browsedEntry();
+    closeChooser();
+    watchEntry(e, hit?.level?.simHash ?? level.simHash);
+  },
+  onRefresh: () => {
+    const hash = browsedEntry()?.level?.simHash;
+    if (hash) browseBoards.drop(hash, boardCategory);
+    renderChooser();
+  },
+  // The ROW SHOWS A PERSON. An appearance that never travelled — every row
+  // written before customisation existed — resolves to a stable derivation from
+  // the playerId rather than to one shared default, so an old board is still a
+  // board of different people.
+  avatarFor: (e) => avatarImg(resolveAppearance(e.appearance, e.playerId), browseP(browsedEntry()), e.playerId),
 });
 
-function renderChooser(): void {
-  const groups = buildChooser(LEVELS, {
+/**
+ * The model for the board browser: one level of the list, its board, and where
+ * it sits in the order the current sort produced.
+ *
+ * The neighbours are warmed on the way past. Stepping is the verb this screen
+ * was asked for, and a board that is already in hand when `next ›` is pressed
+ * is the difference between browsing and waiting.
+ */
+function browseModel(groups: readonly ChooserGroup[]): BrowseModel | null {
+  const items = flatten(groups);
+  if (items.length === 0) return null;
+  let i = items.findIndex((x) => x.id === browseId);
+  if (i < 0) i = Math.max(0, items.findIndex((x) => x.current));
+  const item = items[i];
+  const board: BoardSlot = item.simHash
+    ? browseBoards.get(item.simHash, boardCategory)
+    : { state: 'ready', payload: null, error: '' };
+  for (const d of [1, -1]) {
+    const n = items[(i + d + items.length) % items.length];
+    if (n.simHash && n.simHash !== item.simHash) browseBoards.want(n.simHash, boardCategory);
+  }
+  return buildBrowse(item, {
+    playerId: identity.playerId,
+    category: boardCategory,
+    at: i + 1,
+    of: items.length,
+    board,
+  });
+}
+
+/** `‹ prev` / `next ›`. Wraps, because a twenty-four-level list should. */
+function stepBrowse(delta: number): void {
+  const items = flatten(chooserGroups());
+  if (items.length === 0) return;
+  let i = items.findIndex((x) => x.id === browseId);
+  if (i < 0) i = Math.max(0, items.findIndex((x) => x.current));
+  browseId = items[(i + delta + items.length) % items.length].id;
+  renderChooser();
+}
+
+function chooserGroups(): ChooserGroup[] {
+  return buildChooser(LEVELS, {
     bests,
     currentId: entry.id,
     sort: chooserSort,
     rev: SIM_REV,
   });
-  chooserUi.show({ groups, summary: chooserSummary(groups, SIM_REV), sort: chooserSort });
 }
 
-function openChooser(): void {
-  if (chooserUi.visible) return;
+function renderChooser(): void {
+  const groups = chooserGroups();
+  chooserUi.show({
+    groups,
+    summary: chooserSummary(groups, SIM_REV),
+    sort: chooserSort,
+    view: chooserView,
+    browse: chooserView === 'times' ? browseModel(groups) : null,
+    ghost: ghostKind,
+  });
+}
+
+function openChooser(view: ChooserView = 'levels'): void {
+  chooserView = view;
+  // Every board it shows is fetched fresh for this opening of the screen, and
+  // never again while it is up. See `browseBoards`.
+  browseBoards.clear();
+  // Follow the level on screen unless somebody has already browsed elsewhere
+  // during this opening — arriving at "level 3's board" while standing in level
+  // 17 would be a screen that is about nothing you did.
+  browseId = entry.id;
+  if (chooserUi.visible) {
+    renderChooser();
+    return;
+  }
   closeResults();
   pausedBeforeChooser = loop.paused;
   loop.paused = true;
@@ -2274,6 +2467,20 @@ function closeChooser(): void {
   syncLegendPads(legend?.open ?? false);
 }
 
+/**
+ * THE BROWSE SURFACE HOLDS THE SIM, through the one register every other screen
+ * that covers the game uses.
+ *
+ * It also pauses the loop, which it has always done, and that is not a second
+ * freeze so much as a stronger one — a paused loop does not draw either. The
+ * hold is registered anyway and deliberately: the guarantee that matters is
+ * "no tick advances while this is up", `step()`'s gate is the one place that is
+ * decided, and a screen whose freeze depends on a scheduling flag somewhere
+ * else is a screen whose freeze can be removed by an edit that was about
+ * something else entirely. hold.test.ts asserts the bytes.
+ */
+hold.add('browse', () => chooserUi.visible);
+
 // The leaderboard panel. Created before live tune, because live tune's first
 // poll fires immediately and can reach `syncBoardUi` through recomputeSpec.
 const boardUi = createBoardUi(boardRoot, {
@@ -2284,6 +2491,10 @@ const boardUi = createBoardUi(boardRoot, {
   onWatch: (e) => watchEntry(e),
   onCustomise: () => openLook(),
   onLinkDevice: () => openClaim('mine'),
+  // This panel is the board for the level you are riding. Everybody else's, on
+  // everything else, is the browser in the chooser — which already owns the
+  // level list and so is the one place that list lives.
+  onBrowseAll: () => openChooser('times'),
 });
 
 // --- being the same player on two devices ------------------------------------
@@ -2864,7 +3075,14 @@ const touch = createTouch(
     // through the in-canvas level card, clock and apple counter, two HUDs
     // stacked on each other — so the chooser is how a phone changes level, and
     // this pad is the only way to it.
-    onBrowse: () => openChooser(),
+    onBrowse: () => openChooser('levels'),
+    // THE LEADERBOARD, ON A PHONE, AT LAST. The board panel is `display: none`
+    // on touch and always has been, so until this pad the only leaderboard a
+    // phone ever saw was the handful of rows the results screen prints at the
+    // end of a run. It opens the same screen `levels` does, on its other view —
+    // one surface, two doors, because two browse screens listing the same
+    // twenty-four levels would be the worse outcome.
+    onTimes: () => openChooser('times'),
     // THE PHONE'S TAB KEY, and the reason it needed one: overview is the only
     // answer this game has to "where am I and where do I go", route planning is
     // its depth, and it was bound to a key no phone has. The pad asks; this is
@@ -3263,6 +3481,38 @@ loop.start();
 syncBoardUi();
 refreshBoard();
 
+/**
+ * What the board browser has on screen, read off the DOM.
+ *
+ * For bin/smoke and bin/shots. It counts elements rather than trusting the
+ * model for the same reason the leaderboard assertions do: an escaper proves
+ * nothing about a sink that forgot to call it, and `injected` is the count that
+ * goes to zero only while every string on this screen is `textContent`. The
+ * avatars are `<img>` the panel drew itself as data: URLs, so they are excluded
+ * by their scheme rather than by their tag.
+ */
+function browseState(): Record<string, unknown> {
+  const rows = [...chooserRoot.querySelectorAll('.ch-bdrow')];
+  return {
+    visible: chooserUi.visible,
+    view: chooserUi.view,
+    levelId: browseId,
+    at: chooserRoot.querySelector('.ch-at')?.textContent ?? '',
+    level: chooserRoot.querySelector('.ch-lvname')?.textContent ?? '',
+    rows: rows.filter((r) => !r.classList.contains('par')).length,
+    par: rows.filter((r) => r.classList.contains('par')).length,
+    parText: chooserRoot.querySelector('.ch-bdrow.par .ch-bdtime')?.textContent ?? '',
+    avatars: chooserRoot.querySelectorAll('.ch-bdrow img.avatar').length,
+    watch: chooserRoot.querySelectorAll('.ch-bdwatch').length,
+    gaps: chooserRoot.querySelectorAll('.ch-bdgap').length,
+    ghost: chooserRoot.querySelectorAll('.ch-ghost select').length,
+    text: chooserRoot.textContent ?? '',
+    injected:
+      [...chooserRoot.querySelectorAll('img')].filter((e) => !(e.getAttribute('src') ?? '').startsWith('data:')).length
+      + chooserRoot.querySelectorAll('script, iframe, svg, object').length,
+  };
+}
+
 // A handle for the headless smoke check in bin/smoke, and for poking at the sim
 // from devtools while tuning. Not load-bearing.
 interface VeloWindow extends Window {
@@ -3383,6 +3633,32 @@ interface VeloWindow extends Window {
     };
   },
   closeLook,
+  /**
+   * THE BOARD BROWSER, for bin/smoke and bin/shots.
+   *
+   * It reports what is actually in the document rather than what the model
+   * said, because the failures this is here to catch are the ones where every
+   * unit test passes and the screen is empty: the rows, the avatars the rows
+   * drew, the par marker, and — the assertion that matters — how many elements
+   * a hostile display name managed to create in it.
+   */
+  openBrowse(levelId?: string) {
+    openChooser('times');
+    if (typeof levelId === 'string' && LEVELS.some((l) => l.id === levelId)) {
+      browseId = levelId;
+      renderChooser();
+    }
+    return browseState();
+  },
+  /** Step the browser, the way the pads and the arrows do. */
+  stepBrowse(delta: number) {
+    stepBrowse(delta);
+    return browseState();
+  },
+  get browse() {
+    return chooserUi.visible && chooserUi.view === 'times' ? browseState() : null;
+  },
+  closeChooser,
   /** The display name, for bin/smoke: it is typed into the panel, not set here. */
   get playerName() {
     return identity.name;

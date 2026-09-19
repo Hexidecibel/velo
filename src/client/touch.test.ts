@@ -223,7 +223,7 @@ describe('the layout owes each control something different', () => {
     expect(z.filter((q) => q.command).map((q) => q.id).sort())
       .toEqual(['menu', 'overview', 'restart']);
     expect(openAt().filter((q) => q.command).map((q) => q.id).sort())
-      .toEqual(['auto', 'full', 'help', 'levels', 'look', 'menu', 'overview', 'restart', 'zoom']);
+      .toEqual(['auto', 'full', 'help', 'levels', 'look', 'menu', 'overview', 'restart', 'times', 'zoom']);
     // And the pads say which way they go, because a state you cannot see is a
     // state you press twice.
     expect(find(z, 'menu').label).toBe('more');
@@ -231,6 +231,52 @@ describe('the layout owes each control something different', () => {
     expect(find(z, 'overview').label).toBe('overview');
     expect(find(touchZones(PHONE, { autoThrottle: false, overview: true }), 'overview').label)
       .toBe('ride');
+  });
+
+  it('is full at three permanent pads, and a fourth would not fit the smallest phone', () => {
+    // THE CLIFF, ASSERTED FROM THE PAD COUNT RATHER THAN FROM THE CONSTANT.
+    // `MM.cmdW`'s own comment describes it — three 13 mm pads want 252 px and
+    // the 736 x 280 gutter is 250 — but nothing checked it from the side an
+    // author actually approaches it from, which is "may I add one more pad".
+    // The answer is no, and this is what says so. Whatever wants permanent
+    // glass next has to move something off it first, deliberately.
+    const vp = { w: 736, h: 280 };
+    const z = zonesAt(vp);
+    // px per mm as this layout actually scaled it: a command pad is `cmdW` mm
+    // wide by construction, so its width IS the conversion.
+    const ppm = find(z, 'restart').w / MM.cmdW;
+    const leanR = find(z, 'leanR');
+    const brake = find(z, 'brake');
+    const gutter = brake.x - (leanR.x + leanR.w) - 2 * MM.cmdMargin * ppm;
+    const row = (n: number): number => (n * MM.cmdW + (n - 1) * MM.gap) * ppm;
+    expect(row(3)).toBeLessThanOrEqual(gutter);
+    expect(row(4)).toBeGreaterThan(gutter);
+  });
+
+  it('keeps the drawer to ONE row on every landscape phone, in every fullscreen state', () => {
+    // THE DRAWER'S OWN BUDGET, and the assertion that fails the day somebody
+    // adds one entry too many. A second row of commands is not a slightly
+    // taller menu — it is a menu that has climbed out of the cheap glass it was
+    // placed in and into the band the bike is framed in, or up into the HUD.
+    // `oneRowW` shrinks rather than wrap, down to `cmdMin`, and both halves of
+    // that are checked here: one row, and no pad under the floor.
+    //
+    // The `times` pad spent the last slot this had. That is the whole reason
+    // this is a test and not a comment.
+    for (const vp of PHONES.filter((v) => v.w > v.h)) {
+      for (const fs of ['none', 'off', 'on'] as const) {
+        for (const auto of [false, true]) {
+          const z = touchZones(vp, { autoThrottle: auto, fullscreen: fs, menu: true });
+          const cmds = z.filter((q) => q.command);
+          const rows = new Set(cmds.map((q) => Math.round(q.y)));
+          // The three permanent ones on one row, the drawer on one more.
+          expect(rows.size, `${vp.name} fullscreen=${fs} auto=${auto}`).toBe(2);
+          const ppm = find(z, 'restart').w / MM.cmdW;
+          const narrowest = Math.min(...cmds.map((q) => q.w)) / ppm;
+          expect(narrowest, `${vp.name} fullscreen=${fs}`).toBeGreaterThanOrEqual(MM.cmdMin - 1e-6);
+        }
+      }
+    }
   });
 
   it('keeps the overview pad in the gutter on every landscape phone', () => {

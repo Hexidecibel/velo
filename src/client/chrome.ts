@@ -33,14 +33,38 @@ export function createLevelBar(
   browse.className = 'lb-browse';
   browse.textContent = 'browse  C';
   browse.title = 'pictures of every level, with difficulty and your best times';
-  browse.addEventListener('click', () => onBrowse());
+  // BLURRED BEFORE IT DOES ANYTHING, for the same reason the dropdown below is
+  // — see that note. A button keeps focus after a click, and a focused button
+  // eats Space and Enter, which are FLIP and the results screen's primary
+  // action. Every button in this client that opens something does this.
+  browse.addEventListener('click', () => {
+    browse.blur();
+    onBrowse();
+  });
   root.append(browse);
 
   const note = document.createElement('span');
   note.className = 'lb-note';
   root.append(note);
 
-  select.addEventListener('change', () => onPick(select.value));
+  // THE KEYBOARD GOES BACK TO THE GAME THE INSTANT A LEVEL IS CHOSEN, and this
+  // one line is the whole of it.
+  //
+  // THE BUG IT FIXES, in the user's words: "when i click level selector, then
+  // choose level. i have to click back on screen to use hotkeys". A `<select>`
+  // keeps focus after a change, and `input.ts` deliberately ignores every
+  // command key whose target is an INPUT, a SELECT or a TEXTAREA — so that
+  // typing a name into the board's name field does not restart the run. Both
+  // halves are right; together they left the whole keyboard dead after the most
+  // ordinary action in the game, until a click somewhere else blurred it.
+  //
+  // It is fixed HERE rather than by loosening that check, because the check is
+  // what makes text fields usable and this control has no text in it. A
+  // dropdown that has been answered is a dropdown nobody is typing into.
+  select.addEventListener('change', () => {
+    select.blur();
+    onPick(select.value);
+  });
 
   return {
     update(currentId: string, bests: Record<string, number>): void {

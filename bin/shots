@@ -50,6 +50,25 @@
 #                                              # px/m: do six silhouettes read
 #                                              # as six bikes? A comparison, not
 #                                              # an opinion.
+#   SHOTS_BROWSE=1 SHOTS_PHONES=1 bin/shots 07-the-chimney
+#                                              # the BOARD BROWSER, two frames
+#                                              # per viewport: the ladder as it
+#                                              # opens and the same screen
+#                                              # scrolled to the end. Opened
+#                                              # through the `times` pad — more,
+#                                              # then times — which is the only
+#                                              # way in a phone has. It is the
+#                                              # densest screen in the game (a
+#                                              # stepper, a level, a category
+#                                              # switch, rows carrying everyone's
+#                                              # actual bike, a ghost picker) and
+#                                              # "does a row read at 280 px tall"
+#                                              # is a picture. SHOTS_BROWSE=api
+#                                              # opens it through window.velo
+#                                              # instead, for passes with no pads
+#                                              # on screen. The harness serves a
+#                                              # synthetic board, since there is
+#                                              # no velo server behind it.
 #   SHOTS_ABOUT=1 SHOTS_PHONES=1 SHOTS_QUERY=touch=1 bin/shots 01-first-light
 #                                              # the about page, two frames per
 #                                              # viewport: the top of it and the

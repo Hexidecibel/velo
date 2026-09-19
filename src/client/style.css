@@ -1015,10 +1015,260 @@ body:has(#panel.hidden) #chooser { margin-left: 0; }
 }
 #hud.compact span.bad { border-color: #6b2020; background: #220d0dee; }
 
+/* --- the board browser, which is the chooser's other view ------------------- */
+/* ONE SCREEN, TWO VIEWS, and the CSS says so: everything below is inside
+   `#chooser`, shares its surface, its borders and its absence of animation, and
+   the only thing `.ch-times` on the root changes is how much room it takes.
+   There is no second panel because there is no second screen — a leaderboards
+   page that listed the same twenty-four levels a second time would be two lists
+   to keep in step, and the one that fell behind would be the one somebody was
+   reading. */
+
+/* THE WAY OUT IS ALWAYS ON SCREEN. Every panel on this project has shipped at
+   least one state where the close button was below the fold on a 280 px phone —
+   the about page and the customiser both learned it from a screenshot. Twenty-
+   four cards and fifty board rows are both taller than any phone, so the head
+   is sticky in both views rather than only in the new one. The negative margins
+   pull it out to the panel's own edges so the rule under it spans the card. */
+#chooser .ch-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: -10px -12px 0;
+  padding: 8px 12px 6px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+#chooser .ch-views { display: flex; gap: 4px; }
+#chooser .ch-view.on { color: var(--bg); background: var(--edge); border-color: var(--edge); }
+
+/* Wider in the times view: a board row is a rank, a bike, a name, a time and a
+   gap, and squeezing five columns into the width a grid of cards wanted is how
+   a name ends up as an ellipsis. */
+#chooser.ch-times { width: min(980px, calc(100vw - 24px)); }
+
+/* --- skipping through levels ----------------------------------------------- */
+/* The verb the ask was written in, in the one part of the screen that is always
+   on glass. It had a row of its own for exactly one screenshot: on 736 x 280
+   that row plus the level block below it left a leaderboard one and a half rows
+   tall, which is a leaderboard you cannot read. */
+#chooser .ch-stepbtn { flex: 0 0 auto; font-size: 13px; line-height: 1; padding: 2px 9px; }
+#chooser .ch-at {
+  flex: 0 0 auto;
+  color: var(--dim);
+  font-size: 10px;
+  letter-spacing: .08em;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+#chooser.ch-times .ch-title {
+  text-transform: none;
+  letter-spacing: .02em;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- the level this board is for -------------------------------------------- */
+#chooser .ch-lv {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 2px 0 8px;
+}
+#chooser .ch-shot.big {
+  flex: 0 0 216px;
+  width: 216px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+#chooser .ch-lvmeta { flex: 1 1 220px; min-width: 0; font-size: 11px; }
+/* "You are standing in this one." A different mark from the grid's left rule,
+   because here there is one level rather than twenty-four to distinguish. */
+#chooser .ch-here {
+  color: var(--accent);
+  font-size: 9px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  margin-left: 7px;
+}
+#chooser .ch-nums {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 5px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+/* PAR IS THE LEVEL'S OWN NUMBER, so it is coloured like the level's own facts
+   and not like anybody's time. */
+#chooser .ch-par { color: #8e86c8; }
+#chooser .ch-pargap { color: var(--dim); }
+#chooser .ch-lvgo { flex: 0 0 auto; align-self: center; }
+#chooser .ch-ride {
+  padding: 6px 12px;
+  color: var(--ink);
+  border-color: var(--edge);
+}
+#chooser .ch-cardtimes { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+
+/* --- the board -------------------------------------------------------------- */
+#chooser .ch-bdhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 7px;
+}
+#chooser .ch-cats { display: flex; gap: 4px; }
+#chooser .ch-cat.on { color: var(--bg); background: var(--edge); border-color: var(--edge); }
+#chooser .ch-entries { flex: 1 1 auto; color: var(--dim); font-size: 10px; }
+
+#chooser .ch-bdlist { margin: 5px 0 6px; }
+#chooser .ch-bdrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px;
+  border-bottom: 1px solid #1d1838;
+  font-size: 11px;
+}
+#chooser .ch-bdrow.you { background: #221d42; border-radius: 2px; }
+#chooser .ch-bdrank {
+  flex: 0 0 22px;
+  text-align: right;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+/* The avatar column, kept even on the rows that have no rider — see the note in
+   chooserui.ts. Matches AVATAR_W in avatar.ts. */
+#chooser .ch-bdav { flex: 0 0 46px; }
+#chooser .ch-bdrow .avatar { flex: 0 0 auto; }
+#chooser .ch-bdname {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#chooser .ch-bdtime { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+/* THE GAP, which a per-level popup never showed. Quieter than the time it is
+   about: the time is the fact and the gap is the reading of it. */
+#chooser .ch-bdgap {
+  flex: 0 0 74px;
+  text-align: right;
+  color: var(--dim);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+/* PAR, sitting in the ladder at the rank its time earns. Dashed, because it is
+   a line drawn across the board rather than a person on it — and with no
+   `watch`, on any condition, ever. */
+#chooser .ch-bdrow.par {
+  border-bottom: 1px dashed #4a4380;
+  border-top: 1px dashed #4a4380;
+  background: #181433;
+  color: #8e86c8;
+}
+#chooser .ch-bdrow.par .ch-bdname { color: #8e86c8; letter-spacing: .1em; text-transform: uppercase; font-size: 10px; }
+/* A FIXED WIDTH, so the rows that have no button still line their times up
+   with the rows that do. See the spacer in chooserui.ts. */
+#chooser .ch-bdwatch,
+#chooser .ch-bdwatchpad { flex: 0 0 52px; box-sizing: border-box; }
+#chooser .ch-bdwatch { padding: 2px 0; text-align: center; }
+
+#chooser .ch-stand { color: var(--ink); font-size: 11px; margin: 4px 0; }
+#chooser .ch-bdnote { color: #6b6390; font-size: 10px; margin: 4px 0; line-height: 1.35; }
+
+#chooser .ch-ghost {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 2px;
+  border-top: 1px solid var(--line);
+  padding-top: 7px;
+}
+#chooser .ch-ghostlabel { flex: 0 0 auto; color: var(--dim); font-size: 10px; white-space: nowrap; }
+#chooser .ch-ghost select { flex: 1 1 auto; min-width: 0; font: inherit; font-size: 11px; }
+
 /* On a phone the chooser is the one piece of new chrome that earns its place —
    there is no keyboard to press [ with — so unlike the HUD and the legend it is
    not hidden, only made to fit. */
 body.touch #chooser { max-height: 80vh; margin-left: 0; }
+/* THE BROWSER IS A FULL SCREEN ON GLASS, and the grid is not.
+   The grid is a panel of cards that works at any height. A board is a rank, a
+   bike, a name, a time and a gap per row, and on a 736 x 280 phone an 80vh
+   panel is 224 px — six rows with nothing left for the level it is a board of.
+   It is also not a thing you glance at mid-run: the pads are hidden underneath
+   it either way, so the whole glass is free and taking it costs nothing. */
+body.touch #chooser.ch-times {
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: auto;
+  max-height: none;
+  transform: none;
+  margin-left: 0;
+  /* OPAQUE, unlike every other panel in this game, and that is the one place
+     this screen breaks the house style on purpose. The others are cards over a
+     level you are still looking at; this is a full screen of small text and
+     forty little bikes, and the in-canvas HUD showing through it at 95 % put a
+     level card and a clock behind the head — two HUDs on top of each other,
+     which is the exact thing the phone rewrite exists to remove. */
+  background: var(--bg, #0d0b1a);
+  padding:
+    env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+    env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+}
+body.touch #chooser.ch-times .ch-panel {
+  min-height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  /* A COLUMN, NOT A WALL. Full bleed is right on a phone, where the glass IS
+     the column; on a 1366 px iPad the same rule put a `watch` button 1300 px
+     from the rank it belongs to, with the whole lower half of the screen empty.
+     A tablet is a big screen held close, which is the argument for a measure
+     rather than against one. */
+  max-width: 900px;
+  margin: 0 auto;
+}
+body.touch #chooser.ch-times .ch-head { background: var(--bg, #0d0b1a); }
+/* A THUMB IS THE SAME SIZE ON EVERY PHONE — the argument touch.ts makes in
+   millimetres, applied to the one screen that is buttons rather than pads. The
+   desktop chip sizes are a pointer's sizes; 30 px is about 5 mm, which is what
+   there is room for on a row and still twice what a 2 px pad chip would be. */
+body.touch #chooser button { padding: 6px 10px; font-size: 11px; }
+body.touch #chooser .ch-stepbtn,
+body.touch #chooser .ch-ride { padding: 9px 14px; }
+body.touch #chooser .ch-shot.big { flex-basis: 160px; width: 160px; }
+body.touch #chooser .ch-bdrow { padding: 4px; }
+/* A LANDSCAPE PHONE IS 280 TO 348 PIXELS TALL, and every pixel the level block
+   takes is a row of the board it is a header for. Judged from the pictures: at
+   the desktop spacing, 736 x 280 showed one and a half rows. */
+/* AT 360 PX WIDE THE HEAD CANNOT HOLD EVERYTHING, and the counter is what goes.
+   Judged from the picture: with `7 / 28` in the row the level's name clipped to
+   "07 —…", which is not a name. The arrows still step and the level block below
+   still says which level it is; the position in the set is the least of the
+   three and the only one that is stated twice. */
+@media (max-width: 400px) {
+  body.touch #chooser.ch-times .ch-at { display: none; }
+}
+@media (max-height: 440px) {
+  body.touch #chooser.ch-times .ch-head { padding: 5px 10px 4px; }
+  body.touch #chooser.ch-times .ch-lv { gap: 8px; margin: 4px 0 5px; }
+  body.touch #chooser.ch-times .ch-shot.big { flex-basis: 104px; width: 104px; }
+  body.touch #chooser.ch-times .ch-lvmeta { flex-basis: 150px; }
+  body.touch #chooser.ch-times .ch-nums { margin-top: 3px; }
+  body.touch #chooser.ch-times .ch-bdhead { padding-top: 5px; }
+  body.touch #chooser.ch-times .ch-bdrow { padding: 2px 4px; }
+  body.touch #chooser.ch-times button { padding: 5px 9px; }
+  body.touch #chooser.ch-times .ch-ride { padding: 7px 11px; }
+}
 
 
 /* --- somebody's bike, small ------------------------------------------------ */

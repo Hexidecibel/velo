@@ -111,7 +111,13 @@ export const PLAY: readonly Control[] = [
     title: 'zoom',
     note: 'in, out, back to the default — remembered; a pinch drives the same variable',
   },
-  { id: 'board', codes: ['KeyB'], caps: ['B'], title: 'leaderboard' },
+  // `pad` IS WHAT PUTS IT ON THE TOUCH LEGEND, and this row went without one
+  // for as long as the capability did: `body.touch #board { display: none }`
+  // meant a phone had no leaderboard at all, so there was no pad to name. There
+  // is now — `times` in the command drawer opens the board browser, which is a
+  // whole screen rather than the desktop panel this key toggles — and naming it
+  // here is what teaches it on the one screen whose job is teaching the pads.
+  { id: 'board', codes: ['KeyB'], caps: ['B'], pad: 'times', title: 'leaderboard' },
   // `pad` IS WHAT PUTS IT ON THE TOUCH LEGEND, and leaving it off is how a pad
   // that exists goes untaught: `chrome.ts` skips a padless PLAY row on touch —
   // correctly, because a row about a key is noise on a device with no keyboard

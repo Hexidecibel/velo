@@ -30,6 +30,17 @@ export interface BoardUiCallbacks {
   onCustomise(): void;
   /** Open the cross-device claim panel: a QR, and a code you can type. */
   onLinkDevice(): void;
+  /**
+   * EVERY LEVEL'S BOARD, without loading a level to see it.
+   *
+   * This panel is per-level by construction — it is the board for the thing you
+   * are riding, and it is how the ghost gets chosen — so "how is everybody doing
+   * on the rest of the set" is a question it cannot answer and should not try
+   * to. It hands that question to the browser in the chooser, which already
+   * owns the level list. The button is here because this is where somebody
+   * looking at times already is.
+   */
+  onBrowseAll(): void;
 }
 
 export interface BoardUiState {
@@ -103,6 +114,23 @@ export function createBoardUi(root: HTMLElement, cb: BoardUiCallbacks): BoardUi 
     refresh.addEventListener('click', () => cb.onRefresh());
     head.append(refresh);
     panel.append(head);
+
+    // THE WAY OUT OF ONE LEVEL. Directly under the title, because the first
+    // thing anybody asks after "where do I stand here" is "where do I stand
+    // everywhere", and until today the only way to find out was to load
+    // twenty-four levels one at a time.
+    // NO KEYCAP ON IT, unlike `your bike  Y` above. Every other button in this
+    // panel prints the key that does the same thing so that it teaches rather
+    // than replaces; this one has no key to print. `C` opens the level grid,
+    // and labelling this with `C` would be advertising a binding that lands
+    // somewhere else — which is the exact bug keys.ts exists to stop.
+    const all = el('button', 'bd-all', 'all levels — every board');
+    all.title = 'browse every level’s leaderboard without loading them';
+    all.addEventListener('click', () => {
+      all.blur();
+      cb.onBrowseAll();
+    });
+    panel.append(all);
 
     // --- the name, when there is not one yet ---
     //

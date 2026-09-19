@@ -6,18 +6,31 @@
 // It also means "how hard was that landing" is a continuous parameter rather
 // than a choice between thud_soft.wav and thud_hard.wav.
 //
-// THE GRAPH IS BUILT ONCE AND NEVER GROWS. Twenty-eight nodes, all started at
-// `build()` and all still running when the tab closes; a cue is an envelope
-// scheduled onto an AudioParam of a node that already exists. Creating a node
-// per event is the normal way to do this and it is the wrong way here: level 20
-// is already near the frame budget on a software rasteriser, and node churn
-// costs main-thread time and GC pressure exactly when the frame is busiest —
-// which is exactly when the sounds happen.
+// THE GRAPH IS BUILT ONCE AND NEVER GROWS. Forty-three nodes, all constructed
+// in `createSynth` and all still there when the tab closes; a cue is an
+// envelope scheduled onto an AudioParam of a node that already exists. Creating
+// a node per event is the normal way to do this and it is the wrong way here:
+// level 20 is already near the frame budget on a software rasteriser, and node
+// churn costs main-thread time and GC pressure exactly when the frame is
+// busiest — which is exactly when the sounds happen.
+//
+// TEN OF THOSE NODES ARE THE IMPRESSION ENGINE'S and are disconnected while
+// anything else is selected. They still exist — nothing is ever created or
+// destroyed — but a biquad with no input edge costs the audio thread nothing,
+// and four of the five engines have a pipe rather than a mouth. The edges are
+// made and broken in `applyEngine`, which runs on a click.
 //
 // Taste: Jet Set Radio Future. Synthetic and characterful, not a recording of a
 // motor. Two detuned wave oscillators and a square sub through a filter that
 // opens with LOAD rather than with revs, which is the part that makes it read
 // as a machine doing work rather than as a tone going up.
+//
+// AND ONE OF THEM HAS A MOUTH INSTEAD OF A PIPE. A vowel is a set of formant
+// resonances over a glottal pulse train; the engine here is already a pulse
+// train; so the fifth engine is the same Fourier series through three
+// bandpasses instead of one lowpass, with the vowel travelling as the wheel
+// spins up. That is why it is worth having rather than faking — it reuses the
+// whole mechanism and adds a resonator.
 //
 // THE ENGINE IS A FIRING PATTERN, NOT A WAVEFORM, and that is the one thing in
 // this file worth understanding. `firing.ts` turns a cylinder count and a set
@@ -39,6 +52,16 @@ import type { EngineSpec } from './firing.ts';
 /** Below this an AudioParam change is not worth a scheduling call. */
 const EPS_HZ = 0.5;
 const EPS_GAIN = 0.0015;
+
+/**
+ * Make-up gain on the formant bank, MEASURED against the lowpass it replaces.
+ *
+ * Three bandpasses each pass a slice a couple of hundred hertz wide, so the
+ * bank is far quieter than a lowpass fed the same pulse train. Without this the
+ * impression engine would simply be the quiet one, which is the least
+ * interesting way for a comparison to come out.
+ */
+const VOCAL_MAKEUP = 6;
 
 export interface Synth {
   readonly ctx: AudioContext;
@@ -140,11 +163,42 @@ export function createSynth(ctx: AudioContext): Synth {
   const engSubG = gain(ctx, 0.35);
   const engMix = gain(ctx, 1);
   const engFilter = filter(ctx, 'lowpass', 400, 5);
+  const engLpG = gain(ctx, 1);
   const engGain = gain(ctx, 0);
   engA.connect(engAG).connect(engMix);
   engB.connect(engBG).connect(engMix);
   engSub.connect(engSubG).connect(engMix);
-  engMix.connect(engFilter).connect(engGain).connect(master);
+  engMix.connect(engFilter).connect(engLpG).connect(engGain).connect(master);
+
+  // --- the vocal tract ------------------------------------------------------
+  //
+  // A SECOND RESONATOR ACROSS THE SAME PULSE TRAIN. Three bandpasses in
+  // parallel are a mouth: a vowel is nothing but where its formants sit, and
+  // the thing already feeding the exhaust is a glottal pulse train in every
+  // respect that matters. So the impression engine is not a different
+  // synthesiser, it is the same firing pattern into a different pipe.
+  //
+  // Fed from engMix and NOT from the lowpass, because the top formant lives at
+  // 3 kHz and the lowpass exists to take exactly that away.
+  //
+  // IT IS DISCONNECTED WHEN NOTHING IS USING IT. A biquad with a live input
+  // costs the audio thread whatever it costs whether or not its output is
+  // audible, and four of the five engines never use this — so the edge from
+  // engMix is made and broken in `applyEngine`, which runs on a click and never
+  // in a frame. Same for the blow-off's filter below.
+  const FORMANT_Q = [8, 10, 12];
+  const FORMANT_GAIN = [1, 0.55, 0.22];
+  const formants = FORMANT_Q.map((q, i) => {
+    const f = filter(ctx, 'bandpass', [600, 1000, 2500][i], q);
+    const g = gain(ctx, FORMANT_GAIN[i]);
+    f.connect(g);
+    return { f, g };
+  });
+  // Silent until an engine asks for it. See VOCAL_MAKEUP for why the mix is not
+  // simply `vocal`.
+  const vocalG = gain(ctx, 0);
+  for (const { g } of formants) g.connect(vocalG);
+  vocalG.connect(engGain);
 
   // A slow wobble on the cutoff. Without it the idle is a dead sine and reads
   // as a test tone; with it the bike sounds like it is running rather than
@@ -182,6 +236,15 @@ export function createSynth(ctx: AudioContext): Synth {
   const whooshG = gain(ctx, 0);
   noise.connect(whooshF).connect(whooshG).connect(master);
 
+  // The blow-off. A CONTINUOUS voice and not an event, so it lives here beside
+  // the wind rather than beside the whoosh: `blowGain` is a level the model
+  // spikes and decays, which means it can share a `setTargetAtTime` discipline
+  // with everything else that is followed per frame. Scheduling it as an
+  // envelope would put it in the same fight the note above `crashF` describes.
+  const blowF = filter(ctx, 'bandpass', 900, 0.9);
+  const blowG = gain(ctx, 0);
+  blowF.connect(blowG).connect(master);
+
   // --- event oscillators ----------------------------------------------------
   const thump = osc(ctx, 'sine', 90);
   const thumpG = gain(ctx, 0);
@@ -206,6 +269,7 @@ export function createSynth(ctx: AudioContext): Synth {
   // compare and not a scheduling call. Most frames change two of the nine.
   const last = {
     engHz: -1, engSubHz: -1, engGain: -1, engCut: -1, engQ: -1, sub: -1,
+    vocal: -1, f1: -1, f2: -1, f3: -1, blowGain: -1, blowHz: -1,
     scrubGain: -1, scrubHz: -1,
     windGain: -1, windHz: -1,
     susGain: -1, susHz: -1,
@@ -242,10 +306,27 @@ export function createSynth(ctx: AudioContext): Synth {
    * caught before anybody had to listen to it.
    */
   function applyEngine(e: EngineSpec, milli: number): void {
+    const wasVocal = engineSpec.vocal > 0;
+    const wasBlow = engineSpec.blow > 0;
     engineSpec = e;
     spreadMilli = milli;
     engA.setPeriodicWave(waveFor(e, 0));
     engB.setPeriodicWave(waveFor(e, milli / 1000));
+    // The two optional banks are wired in and out HERE, where a millisecond is
+    // a click on the customiser, rather than left running silently for the four
+    // engines that have a pipe instead of a mouth. Both land on a gain that is
+    // already at zero and is ramped by `apply()` on the next frame, so making
+    // the edge cannot click.
+    if ((e.vocal > 0) !== wasVocal) {
+      for (const { f } of formants) {
+        if (e.vocal > 0) engMix.connect(f);
+        else engMix.disconnect(f);
+      }
+    }
+    if ((e.blow > 0) !== wasBlow) {
+      if (e.blow > 0) noise.connect(blowF);
+      else noise.disconnect(blowF);
+    }
   }
 
   // NOT built here. The oscillators are sawtooths for exactly as long as it
@@ -319,6 +400,28 @@ export function createSynth(ctx: AudioContext): Synth {
       }
       last.engGain = follow(engGain.gain, v.engineGain, last.engGain, t, 0.03, EPS_GAIN);
       last.engCut = follow(engFilter.frequency, v.engineCutoffHz, last.engCut, t, 0.025, EPS_HZ * 6);
+      // THE CROSSFADE, and everything under it. On the four engines with an
+      // exhaust every target here is a constant — `engineVocal` is zero, and so
+      // is the blow-off — so after the first frame this whole block is three
+      // compares and no scheduling calls, for every frame of every ride but the
+      // one somebody chose the impression for. That is what the deadbands in
+      // `follow` are for, and it is why a vocal tract can exist at all without
+      // the drone — the one sound that is always playing — costing more than it
+      // did. bin/audiobench is where that claim is checked rather than argued.
+      if (Math.abs(v.engineVocal - last.vocal) >= EPS_GAIN) {
+        last.vocal = v.engineVocal;
+        // Some exhaust survives on purpose: a pure vowel is a choir, not an
+        // impression of an engine.
+        engLpG.gain.setTargetAtTime(1 - v.engineVocal, t, 0.05);
+        vocalG.gain.setTargetAtTime(v.engineVocal * VOCAL_MAKEUP, t, 0.05);
+      }
+      if (v.engineVocal > 0) {
+        last.f1 = follow(formants[0].f.frequency, v.engineF1Hz, last.f1, t, 0.04, EPS_HZ * 4);
+        last.f2 = follow(formants[1].f.frequency, v.engineF2Hz, last.f2, t, 0.04, EPS_HZ * 4);
+        last.f3 = follow(formants[2].f.frequency, v.engineF3Hz, last.f3, t, 0.04, EPS_HZ * 4);
+      }
+      last.blowGain = follow(blowG.gain, v.blowGain * 1.4, last.blowGain, t, 0.012, EPS_GAIN);
+      last.blowHz = follow(blowF.frequency, v.blowHz, last.blowHz, t, 0.02, EPS_HZ * 8);
       // Per engine and otherwise constant, so this is a compare on every frame
       // but the one where somebody changed motor.
       last.engQ = follow(engFilter.Q, v.engineQ, last.engQ, t, 0.05, 0.01);
@@ -406,10 +509,13 @@ export function createSynth(ctx: AudioContext): Synth {
 
     panic(): void {
       const t = ctx.currentTime;
-      for (const g of [thumpG, crashG, whooshG, growlG, chimeAG, chimeBG]) {
+      for (const g of [thumpG, crashG, whooshG, growlG, chimeAG, chimeBG, blowG]) {
         g.gain.cancelScheduledValues(t);
         g.gain.setValueAtTime(0, t);
       }
+      // The blow-off is the one of those that is also a FOLLOWED voice, so its
+      // deadband has to be told the value was taken away from underneath it.
+      last.blowGain = -1;
     },
 
     close(): Promise<void> {

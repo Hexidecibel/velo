@@ -719,6 +719,171 @@ try {
   if (lb.injectedInHud !== 0) throw new Error(`a display name created ${lb.injectedInHud} element(s) in the readout — stored XSS`);
   if (!lb.hudHasNameAsText) throw new Error('the readout did not draw the name as visible text — markup in a name must be shown, not interpreted');
 
+  // --- the board browser: every level's leaderboard, without loading one -----
+  //
+  // The unit tests cover what a row SAYS. What they cannot cover is the wiring —
+  // that the screen exists in the built page, that a board fetched for a level
+  // you are not standing in reaches it, that the rows carry the riders' actual
+  // bikes, and that stepping through the set does not load a single level. Those
+  // are exactly the failures a smoke test exists for: every unit test passes and
+  // the screen is empty.
+  //
+  // IT ALSO CARRIES THE XSS ASSERTION FORWARD. This is the SECOND place in the
+  // client that renders a display name typed by somebody else, and the payload
+  // posted above is still on the board, so the same count that guards the board
+  // panel guards this screen — for free, on the real stored path, rather than
+  // through a second fixture that could drift from the first.
+  const brOpened = JSON.parse(await evalIn(cdp, `JSON.stringify(window.velo.openBrowse())`));
+  if (!brOpened.visible || brOpened.view !== 'times') {
+    throw new Error(`the board browser did not open (${JSON.stringify(brOpened)})`);
+  }
+  const brDeadline = Date.now() + 10000;
+  let br = brOpened;
+  for (;;) {
+    br = JSON.parse(await evalIn(cdp, `JSON.stringify(window.velo.browse)`));
+    if (br && br.rows > 0) break;
+    if (Date.now() > brDeadline) throw new Error(`the browser never listed a row — ${JSON.stringify(br)}`);
+    await new Promise((r) => setTimeout(r, 120));
+  }
+  console.log('    browser: ' + JSON.stringify({
+    level: br.level, at: br.at, rows: br.rows, par: br.par, parText: br.parText,
+    avatars: br.avatars, watch: br.watch,
+  }));
+  if (!br.text.includes(HOSTILE)) throw new Error('the browser did not print the posted name at all');
+  // MARKUP IN A NAME IS TEXT HERE TOO. Same assertion as the board panel's, on
+  // the same stored payload, against a different sink. The avatars are <img>
+  // the panel drew itself as data: URLs, so they are excluded by their scheme.
+  if (br.injected !== 0) {
+    throw new Error(`a display name created ${br.injected} element(s) in the board browser — stored XSS`);
+  }
+  // A ROW IS A PERSON: one bike drawn per row, which is the half of a
+  // leaderboard that did not exist until customisation shipped.
+  if (br.avatars !== br.rows) throw new Error(`${br.rows} rows drew ${br.avatars} bikes`);
+  // Every human row offers its line; the gap column is on every row including
+  // par's, because a ladder whose columns do not line up reads as a fault.
+  if (br.watch !== br.rows) throw new Error(`${br.rows} human rows offered ${br.watch} watch buttons`);
+  if (br.gaps !== br.rows + br.par) throw new Error(`${br.rows + br.par} rows drew ${br.gaps} gap cells`);
+  // PAR IS A ROW. It is the only number on this screen that is a property of
+  // the level, and 01-first-light has one in the generated table.
+  if (br.par !== 1) throw new Error(`the par marker is not on the ladder (${br.par})`);
+  if (!/^\d+\.\d\ds$/.test(br.parText)) throw new Error(`par printed as "${br.parText}"`);
+  if (br.ghost !== 1) throw new Error('the ghost picker is not on the browser — it is unreachable on touch without it');
+
+  // THE SIM IS HELD WHILE IT IS UP, through the same register the overview and
+  // the about page use, and the recorder proves it rather than the flag.
+  const brHold = JSON.parse(await evalIn(cdp, `JSON.stringify({
+    by: window.velo.hold.by, tick: window.velo.sim.state.tick, frames: window.velo.recordedFrames,
+  })`));
+  if (!brHold.by.includes('browse')) {
+    throw new Error(`the board browser is not holding the sim (${JSON.stringify(brHold.by)})`);
+  }
+  await new Promise((r) => setTimeout(r, 700));
+  const brHold2 = JSON.parse(await evalIn(cdp, `JSON.stringify({
+    tick: window.velo.sim.state.tick, frames: window.velo.recordedFrames,
+  })`));
+  if (brHold2.tick !== brHold.tick || brHold2.frames !== brHold.frames) {
+    throw new Error(`the clock or the recorder ran while the browser was up (${JSON.stringify([brHold, brHold2])})`);
+  }
+
+  // SKIPPING THROUGH LEVELS LOADS NOTHING. This is the ask, in one assertion:
+  // the level on screen is the same one before and after stepping.
+  const brLevelBefore = await evalIn(cdp, `window.velo.level.simHash`);
+  const stepped = JSON.parse(await evalIn(cdp, `JSON.stringify(window.velo.stepBrowse(1))`));
+  if (stepped.levelId === br.levelId) throw new Error('`next ›` did not move to another level');
+  if (stepped.at === br.at) throw new Error(`the stepper did not move (${br.at} -> ${stepped.at})`);
+  if (await evalIn(cdp, `window.velo.level.simHash`) !== brLevelBefore) {
+    throw new Error('stepping through the browser LOADED a level — the whole point is that it does not');
+  }
+  await evalIn(cdp, `(window.velo.closeChooser(), 1)`);
+
+  // --- the keyboard comes back, and this is about FOCUS and not bindings -----
+  //
+  // `keys.test.ts` asserts every advertised key reaches a handler. Nothing
+  // asserted that a handler can be REACHED, which is a different failure and the
+  // one the user hit: "when i click level selector, then choose level. i have to
+  // click back on screen to use hotkeys". A `<select>` keeps focus after a
+  // change and `input.ts` deliberately ignores command keys aimed at a SELECT,
+  // so between them the whole keyboard was dead until a click elsewhere.
+  //
+  // Every key below is a REAL press through the browser's input pipeline,
+  // delivered to whatever has focus — a `dispatchEvent` on `window` goes to
+  // `window` no matter where the keyboard is and would pass while the game was
+  // unplayable.
+  const keyboardLive = async (what) => {
+    const before = await evalIn(cdp, `document.getElementById('hud').className`);
+    await realKey(cdp, 'Backquote', '`', 192);
+    const after = await evalIn(cdp, `document.getElementById('hud').className`);
+    if (before === after) {
+      const who = await evalIn(cdp, `(() => { const a = document.activeElement;
+        return a ? a.tagName + '.' + (a.className || '') + '#' + (a.id || '') : 'null'; })()`);
+      throw new Error(`the keyboard is dead after ${what} — focus is on ${who}`);
+    }
+    // Put the readout back the way it was, so the next check is a fresh one.
+    await realKey(cdp, 'Backquote', '`', 192);
+  };
+
+  // 1. The chooser, opened and answered entirely with real input.
+  await realKey(cdp, 'KeyC', 'c', 67);
+  if (!(await evalIn(cdp, `!!document.querySelector('#chooser:not(.hidden)')`))) {
+    throw new Error('a real C press did not open the chooser');
+  }
+  // The grid, reached by its own tab with a real click — the browser above left
+  // the screen on `times`, and the view is remembered on purpose.
+  await clickEl(cdp, click, '#chooser .ch-view');
+  if (!(await evalIn(cdp, `document.querySelectorAll('#chooser .ch-card').length > 0`))) {
+    throw new Error('the `levels` tab did not bring the grid back');
+  }
+  await clickEl(cdp, click, '#chooser .ch-card');
+  if (await evalIn(cdp, `!!document.querySelector('#chooser:not(.hidden)')`)) {
+    throw new Error('picking a level did not close the chooser');
+  }
+  await keyboardLive('picking a level from the chooser');
+  // And the sim keys, which take a different path through input.ts than the
+  // commands do — a focus bug could plausibly kill one and not the other.
+  await evalIn(cdp, `(window.velo.overview.skipIntro(), window.velo.restart(false), 1)`);
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', code: 'ArrowUp', key: 'ArrowUp', windowsVirtualKeyCode: 38 });
+  await new Promise((r) => setTimeout(r, 700));
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', code: 'ArrowUp', key: 'ArrowUp', windowsVirtualKeyCode: 38 });
+  if (!(await evalIn(cdp, `window.velo.sim.state.px !== window.velo.level.start.x`))) {
+    throw new Error('the bike did not move after picking a level — real arrow keys are not reaching the sim');
+  }
+
+  // 2. The level bar's dropdown, which is the control the report was about.
+  // Focused and changed the way answering a dropdown leaves it, then a real key.
+  const swapped = await evalIn(cdp, `(() => {
+    const sel = document.getElementById('levelselect');
+    if (!sel) return '';
+    const other = [...sel.options].map((o) => o.value).find((v) => v !== sel.value);
+    if (!other) return '';
+    sel.focus();
+    sel.value = other;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    return other;
+  })()`);
+  if (!swapped) throw new Error('the level bar has no second level to choose');
+  const stillFocused = await evalIn(cdp, `document.activeElement === document.getElementById('levelselect')`);
+  if (stillFocused) throw new Error('the level dropdown kept the keyboard after it was answered');
+  await keyboardLive('choosing a level from the dropdown');
+
+  // BACK WHERE THE CHECKS BELOW EXPECT THE PAGE. The armed-start-line block is
+  // about the ghost, and the ghost only exists on the level the run above was
+  // posted to. Swapping back through the same dropdown proves the fix in the
+  // other direction for free.
+  await evalIn(cdp, `(() => {
+    const sel = document.getElementById('levelselect');
+    sel.value = '01-first-light';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    return 1;
+  })()`);
+  const backDeadline = Date.now() + 10000;
+  for (;;) {
+    if (await evalIn(cdp, `!!(window.velo.ghost)`) === true) break;
+    if (Date.now() > backDeadline) {
+      throw new Error(`the ghost did not come back after the focus checks — ${await evalIn(cdp, `window.velo.ghostNote`)}`);
+    }
+    await new Promise((r) => setTimeout(r, 120));
+  }
+
   // --- the armed start line, through the real key path ---------------------
   //
   // THE WHOLE CLAIM IN ONE BLOCK, and it has to be here rather than in a unit
@@ -1420,6 +1585,44 @@ try {
   await evalIn(cdp, `(() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', bubbles: true })); return 1; })()`);
   await new Promise((r) => setTimeout(r, 300));
 
+  // --- `times`, which is the ONLY way to a leaderboard on a phone ------------
+  //
+  // THE BUG THIS BLOCK EXISTS FOR, stated as the fact it was: `body.touch
+  // #board { display: none }` is unconditional, so the leaderboard panel does
+  // not exist on a phone — and the results screen printed a tappable
+  // `leaderboard` button on every finish anyway, which set a flag, persisted it,
+  // refetched the board, and showed nothing. An advertised control that reaches
+  // nothing, on the device where it is dead.
+  //
+  // This is the pad that replaces it, pressed by a real finger in a real phone
+  // viewport, and it spent the drawer's last slot. The assertion that it opens
+  // the TIMES view rather than the grid is the whole of why it is a separate
+  // pad: `levels` two pads to its left opens the same screen showing pictures.
+  await tapPad('tc-menu');
+  await tapPad('tc-times');
+  const timesPad = JSON.parse(await evalIn(cdp, `JSON.stringify({
+    up: !document.getElementById('chooser').classList.contains('hidden'),
+    view: window.velo.browse ? window.velo.browse.view : null,
+    rows: window.velo.browse ? window.velo.browse.rows : -1,
+    level: window.velo.level.name,
+    drawerShut: !document.querySelector('.tc-times') ||
+      document.querySelector('.tc-times').getBoundingClientRect().width === 0,
+    held: window.velo.hold.by,
+  })`));
+  console.log('    times pad: ' + JSON.stringify(timesPad));
+  if (!timesPad.up || timesPad.view !== 'times') {
+    throw new Error(`the times pad did not open the board browser (${JSON.stringify(timesPad)})`);
+  }
+  if (!timesPad.drawerShut) throw new Error('the times pad did not shut the drawer behind itself');
+  if (timesPad.level !== wasLevel) {
+    throw new Error(`the times pad changed level (${wasLevel} -> ${timesPad.level})`);
+  }
+  if (!timesPad.held.includes('browse')) {
+    throw new Error(`the browser opened by a pad is not holding the sim (${JSON.stringify(timesPad.held)})`);
+  }
+  await evalIn(cdp, `(() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', bubbles: true })); return 1; })()`);
+  await new Promise((r) => setTimeout(r, 300));
+
   // --- `your bike`, which is the ONLY way to the customiser on a phone -------
   //
   // THE BUG THIS BLOCK EXISTS FOR, stated as the fact it was: the customiser
@@ -1450,14 +1653,16 @@ try {
         tick: window.velo.sim.state.tick,
         frames: window.velo.recordedFrames,
         options: root.querySelectorAll('.lk-opt').length,
-        // The engine row is the reason this gap mattered most: four exhaust
-        // notes shipped and a phone could not reach one of them.
+        // The engine row is the reason this gap mattered most: the exhaust
+        // notes shipped and a phone could not reach one of them. The list is
+        // spelled out rather than counted so that ADDING an engine and
+        // forgetting the phone fails here, which is the whole point of it.
         engines: [...root.querySelectorAll('.lk-opt')].map((b) => b.textContent).filter((t) =>
-          ['inline four', 'two-stroke', 'v-twin', 'lawnmower'].includes(t)).length,
+          ['inline four', 'two-stroke', 'v-twin', 'lawnmower', 'impression'].includes(t)).length,
         nameField: root.querySelectorAll('.lk-name-input').length,
         seen: root.querySelectorAll('.lk-seen').length,
         // SOUND, which a phone had no way to turn off at all: setMuted had two
-        // callers and both were the keyboard, on a game that ships four engine
+        // callers and both were the keyboard, on a game that ships five engine
         // notes. It is on this panel rather than on a pad because the panel
         // already owns the engine axis and a row here costs no glass.
         soundRow: root.querySelectorAll('.lk-set').length,
@@ -1542,7 +1747,7 @@ try {
   }
   if (lkBefore.tick <= 0) throw new Error('the run never started, so the freeze proves nothing');
   if (lkOpen.options < 20) throw new Error(`the phone reached ${lkOpen.options} options`);
-  if (lkOpen.engines !== 4) throw new Error(`the phone reached ${lkOpen.engines} of the four engines`);
+  if (lkOpen.engines !== 5) throw new Error(`the phone reached ${lkOpen.engines} of the five engines`);
   if (lkOpen.nameField !== 1 || lkOpen.seen !== 1) {
     throw new Error('the profile half of the screen is not on a phone');
   }
@@ -1836,6 +2041,38 @@ function connect(wsUrl) {
 }
 
 /** A TRUSTED click. Page-dispatched MouseEvents do not satisfy a gesture gate. */
+/**
+ * A REAL key press, through the CDP input domain.
+ *
+ * `window.dispatchEvent(new KeyboardEvent(...))` is what most of this file uses
+ * and it is the right tool for "does this binding reach its handler" — but it
+ * is delivered to `window` regardless of what has the keyboard, so it cannot
+ * see a focus bug. This one goes through the browser's own input pipeline to
+ * whatever `document.activeElement` is, exactly as a finger on a keyboard does,
+ * which is the only way to test the class of bug in `keyboardLive` below.
+ */
+async function realKey(cdp, code, key, vk) {
+  const base = { code, key, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk };
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', ...base });
+  await new Promise((r) => setTimeout(r, 40));
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
+  await new Promise((r) => setTimeout(r, 160));
+}
+
+/** Click whatever a selector names, at its centre, with a real mouse. */
+async function clickEl(cdp, cdpClick, selector) {
+  const box = await evalIn(cdp, `(() => {
+    const e = document.querySelector(${JSON.stringify(selector)});
+    if (!e) return '';
+    const r = e.getBoundingClientRect();
+    return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
+  })()`);
+  if (!box) throw new Error(`nothing matched ${selector}`);
+  const { x, y } = JSON.parse(box);
+  await cdpClick(cdp, x, y);
+  await new Promise((r) => setTimeout(r, 250));
+}
+
 async function click(cdp, x, y) {
   const base = { x, y, button: 'left', clickCount: 1, buttons: 1 };
   await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...base });

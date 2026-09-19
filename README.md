@@ -126,9 +126,9 @@ back is the `controls` entry in the command drawer.
 | TAB (hold) | **see the whole level.** The sim and the clock freeze while it is down. On a phone this is the `overview` pad, and it toggles. |
 | R | restart |
 | `[` / `]` | previous / next level |
-| C | **the level chooser** — a picture of every level, its measured difficulty, and your best time on it |
+| C | **the level chooser** — a picture of every level, its measured difficulty, par, and your best time on it. Its `times` view is the **leaderboard browser**: one level's whole board at a time, with `←` / `→` (or `[` / `]`) stepping through the set without loading any of them. On a phone this is the `levels` and `times` pads. |
 | `+` / `-` / `0` | zoom in, zoom out, back to the default. A multiplier on the derived framing, remembered per device, and clamped so it can never ask for a zoom outside `minZoom`..`maxZoom`. On a phone the same variable is driven by a two-finger pinch. |
-| B | show/hide the **leaderboard and ghost picker** — open by default |
+| B | show/hide the **leaderboard and ghost picker** for the level you are on — open by default. It is a desktop panel and is hidden on touch; the `times` pad in the command drawer opens the **board browser** instead, which is the same leaderboards on every level and is reachable on both. |
 | Y | **your bike** — six silhouettes, ten liveries, and what the rider is wearing. None of it changes how the bike rides. |
 | M | **mute** — remembered. Sound starts on your first click or key press, because browsers will not let a page make noise before one. |
 | P | pause |

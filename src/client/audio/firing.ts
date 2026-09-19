@@ -5,7 +5,7 @@
 // WebAudio in it, so the thing the feature actually rests on is testable in
 // plain node like everything else here.
 //
-// THE ARGUMENT, IN FOUR MACHINES:
+// THE ARGUMENT, IN FIVE MACHINES — four of them real:
 //
 //   * A 45-degree V-twin on a SHARED CRANKPIN cannot fire evenly. The two rods
 //     hang off one pin, so the second cylinder comes round 315 degrees after
@@ -25,6 +25,13 @@
 //     per two revolutions, a low governed ceiling, and the governor HUNTS —
 //     that slow surge is the funny part, and it is a real mechanism rather
 //     than a joke bolted on.
+//   * A VOICE is the fifth, and it is not a cheat. A vowel is a set of FORMANT
+//     RESONANCES over a glottal pulse train, and an engine note in this file is
+//     already a pulse train — so the same Fourier series, run through a vocal
+//     tract instead of an exhaust, is a person doing an engine impression. The
+//     firing pattern stays underneath on purpose: a pure vowel with no bangs in
+//     it is a synth pad, not a joke. See `VOWELS` below and `engineVocal` in
+//     model.ts.
 //
 // HOW A FIRING PATTERN BECOMES A SOUND, WITHOUT A NODE PER BANG.
 //
@@ -89,8 +96,9 @@ export interface EngineSpec {
   /** Multiplier on `params.engineCurve`. Above 1 holds low and then comes on. */
   curve: number;
   /**
-   * Output trim, MEASURED rather than guessed: an offline render of all four at
-   * full throttle put them ten decibels apart before these numbers existed.
+   * Output trim, MEASURED rather than guessed: an offline render of the whole
+   * fleet at full throttle put them ten decibels apart before these numbers
+   * existed.
    *
    * A sparse firing pattern is much quieter than a busy one at the same peak —
    * a lawnmower banging fifteen times a second simply has less energy in it
@@ -121,7 +129,50 @@ export interface EngineSpec {
   huntHz: number;
   /** Governor hunt depth, as a fraction of the firing rate. */
   huntDepth: number;
+
+  // --- the vocal tract -------------------------------------------------------
+  //
+  // Zero on every engine that has an exhaust instead of a mouth, which is all
+  // of them but one. They are on the SPEC rather than on a separate list so
+  // that "which engine is the talking one" is a number on the engine and not a
+  // string compared somewhere else.
+
+  /**
+   * How much of the exhaust is replaced by a bank of formant resonances, 0..1.
+   *
+   * Not 1 even on the voice: some exhaust has to survive or it stops being an
+   * engine impression and becomes a choir.
+   */
+  vocal: number;
+  /**
+   * The blow-off on a throttle LIFT — the "pff" when the gas comes off — as a
+   * level, 0 for anything that does not do it. It is a continuous voice and not
+   * a cue (see `blowGain` in model.ts): a cue that only one engine fires would
+   * make the engine able to change the run's event stream, and the engine is
+   * presentation.
+   */
+  blow: number;
 }
+
+/**
+ * THE VOWEL LADDER, as formant frequencies in Hz: F1, F2, F3.
+ *
+ * Four knots from a slack mouth to a strained one — roughly "uh", "ah", "eh",
+ * "ee" — interpolated across the rev range in model.ts, so the vowel TRAVELS as
+ * the wheel spins up. That travel is the whole effect: a filter that merely
+ * opens sounds like a filter opening, and a vowel that changes sounds like
+ * somebody straining.
+ *
+ * These are textbook adult-male formant centres rounded to something a
+ * bandpass can hit. Getting a recognisable VOWEL is what matters; getting a
+ * specific person is neither possible here nor the point.
+ */
+export const VOWELS: readonly (readonly [number, number, number])[] = [
+  [600, 1000, 2500], // uh — the idle
+  [700, 1200, 2600], // ah — pulling away
+  [500, 1800, 2700], // eh — working
+  [300, 2300, 3000], // ee — at the limiter
+];
 
 /** Fires per crank revolution. A two-stroke single is twice a four-stroke single. */
 export function firesPerRev(e: EngineSpec): number {
@@ -182,6 +233,8 @@ export const ENGINE_SPECS: readonly EngineSpec[] = [
     q: 3,
     huntHz: 0,
     huntDepth: 0,
+    vocal: 0,
+    blow: 0,
   },
   {
     // Two-stroke single: ONE bang per revolution, not per two. At 1800 rpm that
@@ -206,6 +259,8 @@ export const ENGINE_SPECS: readonly EngineSpec[] = [
     q: 7,
     huntHz: 0,
     huntDepth: 0,
+    vocal: 0,
+    blow: 0,
   },
   {
     // 45-degree V-twin on a shared crankpin: 315 degrees, then 405. THE LIMP IS
@@ -234,6 +289,8 @@ export const ENGINE_SPECS: readonly EngineSpec[] = [
     q: 4,
     huntHz: 0,
     huntDepth: 0,
+    vocal: 0,
+    blow: 0,
   },
   {
     // Four-stroke single with a mechanical governor. One bang per TWO
@@ -258,6 +315,53 @@ export const ENGINE_SPECS: readonly EngineSpec[] = [
     q: 10,
     huntHz: 3.4,
     huntDepth: 0.07,
+    vocal: 0,
+    blow: 0,
+  },
+  {
+    // THE IMPRESSION, and the mechanism here is a GLOTTIS rather than a crank.
+    //
+    // TWO PULSES PER CYCLE, UNEVENLY SPACED — 205 degrees and then 155 — and
+    // that is not a crank angle borrowed to look busy. A voice pushed down into
+    // a silly deep engine noise goes into CREAK: the folds stop closing cleanly
+    // once per period and start producing a strong pulse and then a weaker one
+    // that does NOT sit halfway between. It is called diplophonia, it is what
+    // makes a creaky voice sound creaky, and it is the same kind of fact as the
+    // V-twin's shared crankpin — a real uneven excitation, not a timbre.
+    //
+    // So the CYCLE is the perceived pitch and there are two bangs inside it:
+    // 25 Hz at idle is fry, 125 Hz at the limiter is an ordinary adult male
+    // shouting. The 250 bangs a second that implies is parked in the widest gap
+    // left in the fleet's firing rates, so it cannot be confused with the
+    // two-stroke.
+    //
+    // `bright` is far higher than any exhaust here because the formants must be
+    // EXCITED: a resonance at 3 kHz over a 25 Hz cycle is the hundred-and-
+    // twentieth harmonic, and a soft pulse has nothing up there to resonate. A
+    // real glottal pulse is bright for exactly that reason, and it is why
+    // speech is intelligible at all.
+    id: 'vocal',
+    cycleDeg: 360,
+    fires: [
+      { at: 0, gain: 1 },
+      { at: 205, gain: 0.7 },
+    ],
+    idleRpm: 1500,
+    redlineRpm: 7500,
+    bright: 48,
+    curve: 0.8,
+    level: 2.55,
+    spread: 1.6,
+    sub: 0.3,
+    subMult: 1,
+    cutBase: 8,
+    cutLoad: 10,
+    cutFloor: 200,
+    q: 2,
+    huntHz: 0,
+    huntDepth: 0,
+    vocal: 0.78,
+    blow: 1,
   },
 ];
 
@@ -267,7 +371,7 @@ export const REFERENCE_ENGINE: EngineSpec = ENGINE_SPECS[0];
 /**
  * A motor's firing rate at idle and at the limiter, as a ratio against the
  * reference. This is what lets `params.engineIdleHz` / `engineRevHz` stay
- * honest sliders while four engines sit under them.
+ * honest sliders while five engines sit under them.
  */
 export function engineScales(e: EngineSpec): { idle: number; rev: number } {
   return {
@@ -292,14 +396,23 @@ export function engineFor(id: unknown): EngineSpec {
 /**
  * Harmonics in the table.
  *
- * SIZED AGAINST THE FILTER, not against taste. The lowpass in front of the
- * engine never opens past `fireHz * (cutBase + cutLoad) + cutFloor`, so the
- * highest harmonic of the CYCLE it can ever pass is
- * `fires * (cutBase + cutLoad + cutFloor / idleFireHz)` — worst at idle under
- * full load, where the floor is largest relative to the rate. The V-twin is the
- * extreme at 113. 160 is that with room, and anything above it is harmonics
- * being synthesised in order to be filtered out. `firing.test.ts` computes that
- * bound rather than trusting this paragraph.
+ * SIZED AGAINST WHAT IS DOWNSTREAM, not against taste, and there are now two
+ * downstreams to be sized against.
+ *
+ * THE EXHAUSTS. The lowpass in front of the engine never opens past
+ * `fireHz * (cutBase + cutLoad) + cutFloor`, so the highest harmonic of the
+ * CYCLE it can ever pass is `fires * (cutBase + cutLoad + cutFloor /
+ * idleFireHz)` — worst at idle under full load, where the floor is largest
+ * relative to the rate. The V-twin is the extreme at 113.
+ *
+ * THE VOICE. Its formant bank is fed from the raw pulse train and not from the
+ * lowpass, so the bound above says nothing about it. What it needs instead is a
+ * harmonic sitting on the TOP formant at the SLOWEST it ever runs: 3000 Hz over
+ * a 25 Hz idle cycle is the 120th, plus the resonance's own width.
+ *
+ * 160 covers both with room, and anything above it is harmonics being
+ * synthesised in order to be thrown away. `firing.test.ts` computes both bounds
+ * rather than trusting this paragraph.
  *
  * It was 256 until a build-cost measurement, and the number matters more than
  * it looks: a table is rebuilt whenever somebody changes engine, and this is

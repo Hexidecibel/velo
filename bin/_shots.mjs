@@ -208,6 +208,27 @@ const OVERVIEW = process.env.SHOTS_OVERVIEW === '1';
  * a thumb can reach and not one only the harness can.
  */
 const ABOUT = process.env.SHOTS_ABOUT === '1';
+/**
+ * `SHOTS_BROWSE=1` — open the board browser before the phone shot.
+ *
+ * It is the newest screen and the one with the most to fit: a stepper, a level
+ * with its picture and its numbers, a category switch, a ladder of rows each
+ * carrying somebody's actual bike, a standing line and a ghost picker. Every
+ * question about it is a question about a picture — does a row still read at
+ * 280 px tall, is the stepper reachable without scrolling, does the level
+ * header eat the board it is a header for, and does par read as a line drawn
+ * across the ladder rather than as a row somebody set.
+ *
+ * It is opened THROUGH THE `times` PAD — `more`, then `times` — which is the
+ * only way in a phone player has, for this file's standing rule: photograph the
+ * state a thumb can reach and not one only the harness can. `SHOTS_BROWSE=api`
+ * opens it through `velo.openBrowse()` instead, for the viewports where there
+ * is no touch overlay to press.
+ */
+const BROWSE = (process.env.SHOTS_BROWSE || '') !== '';
+const BROWSE_VIA_PAD = process.env.SHOTS_BROWSE !== 'api';
+const SCROLL_BROWSE_END = `(()=>{const r=document.getElementById('chooser');`
+  + `if(r)r.scrollTop=r.scrollHeight;})();`;
 const OPEN_ABOUT = `(()=>{window.velo.legend.setOpen(true);`
   + `const b=document.querySelector('#legend .lg-about');if(b)b.click();})();`;
 const SCROLL_ABOUT_END = `(()=>{const s=document.querySelector('#about .ab-scroll');`
@@ -241,6 +262,11 @@ const pressPad = (cls) => `(()=>{const el=document.querySelector('#touch .${cls}
   + `clientX:r.x+r.width/2,clientY:r.y+r.height/2}));})();`;
 const OPEN_MENU = pressPad('tc-menu');
 const OPEN_OVERVIEW = pressPad('tc-overview');
+// `more`, then `times` — the two taps a phone player makes. The API fallback is
+// for the passes with no touch overlay on screen.
+const OPEN_BROWSE = BROWSE_VIA_PAD
+  ? `${pressPad('tc-menu')}${pressPad('tc-times')}`
+  : `window.velo.openBrowse();`;
 
 await mkdir(OUT, { recursive: true });
 const serve = createServer(async (req, res) => {
@@ -248,6 +274,37 @@ const serve = createServer(async (req, res) => {
   if (raw === '/api/spec') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end('{"version":"none","present":false,"override":{},"error":null}');
+    return;
+  }
+  // A BOARD WITH PEOPLE ON IT, so the leaderboard shots are of a leaderboard.
+  //
+  // There is no velo server behind `bin/shots` — it serves `dist/` and nothing
+  // else — so every board would come back offline and every board screenshot
+  // would be a picture of the word "offline". The rows here are synthetic and
+  // deliberately carry NO appearance: `resolveAppearance` derives a stable bike
+  // from the playerId, so eight rows render as eight different riders, which is
+  // exactly the property these shots exist to judge. Deterministic, so two runs
+  // of the harness produce comparable images.
+  if (raw.startsWith('/api/leaderboard/')) {
+    const simHash = raw.slice('/api/leaderboard/'.length);
+    const tas = /category=tas/.test(req.url || '');
+    const NAMES = ['Hexi', 'Marta', 'Kestrel', 'Bo', 'Pip', 'Antoine-Rémy', 'Sig', 'Wren'];
+    const seed = [...simHash].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 9973, 7);
+    const top = (tas ? ['solver'] : NAMES).map((name, i) => ({
+      replayId: `${'0'.repeat(15)}${i}`,
+      playerId: `shot${name.toLowerCase().replace(/[^a-z0-9]/g, '')}${i}`,
+      name,
+      timeTicks: Math.round((9 + ((seed + i * 137) % 40) / 10 + i * 0.6) * 512),
+      frames: 1500, simRev: 4, specHash: 'shots', bike: 'scrambler',
+      category: tas ? 'tas' : 'human', at: `2026-09-1${i % 9}T12:00:00Z`,
+    })).sort((a, b) => a.timeTicks - b.timeTicks);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      simHash, rev: 4, liveRev: 4, category: tas ? 'tas' : 'human',
+      levelId: null, levelName: null, total: top.length, accepted: top.length,
+      top, you: null, rank: null, above: top[top.length - 1] ?? null, best: null,
+      otherRevs: [], note: 'synthetic board, from bin/shots',
+    }));
     return;
   }
   const rel = normalize(raw === '/' ? '/index.html' : raw).replace(/^(\.\.[/\\])+/, '');
@@ -319,6 +376,12 @@ try {
     const variants = phone ? (PROFILE ? [
       [`profile-${phone}`, `(()=>{window.velo.loop.start();${CLOSE_LEGEND}${OPEN_PROFILE}return 1})()`],
       [`profile-${phone}-end`, `(()=>{${OPEN_PROFILE}${SCROLL_PROFILE_END}return 1})()`],
+    ] : BROWSE ? [
+      // The top of the screen, and then the bottom of the same screen. Nothing
+      // is reloaded between them: the second shot is the first one scrolled,
+      // which is what a thumb does to it.
+      [`browse-${phone}`, `(()=>{window.velo.loop.start();${CLOSE_LEGEND}${OPEN_BROWSE}return 1})()`],
+      [`browse-${phone}-end`, `(()=>{${SCROLL_BROWSE_END}return 1})()`],
     ] : ABOUT ? [
       // The top of the page, and then the bottom of the same page. Nothing is
       // reloaded between them: the second shot is the first one scrolled, which
@@ -414,6 +477,20 @@ try {
         ${SCROLL_ABOUT_END}
         return document.querySelector('#about .ab-scroll').scrollTop;
       })()`]);
+      // THE BOARD BROWSER, on a desktop. Two frames: the ladder as it opens,
+      // and the grid it shares a screen with, because the argument for this
+      // being one screen rather than two is a thing you judge by looking at the
+      // two views next to each other.
+      variants.push(['browse', `(()=>{
+        window.dispatchEvent(new KeyboardEvent('keydown',{code:'Escape',bubbles:true}));
+        const r = window.velo.openBrowse();
+        return JSON.stringify({rows:r.rows,par:r.par,at:r.at});
+      })()`]);
+      variants.push(['browse-end', `(()=>{
+        window.velo.openBrowse();
+        ${SCROLL_BROWSE_END}
+        return document.getElementById('chooser').scrollTop;
+      })()`]);
       variants.push(['look', `(()=>{
         window.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyY',bubbles:true}));
         return document.querySelectorAll('#look .lk-opt').length;
@@ -437,6 +514,13 @@ try {
       })()`]);
       variants.push(['chooser', `(async()=>{
         const t0=performance.now();
+        // Shut whatever the variant before this one left up. C is a TOGGLE, so
+        // opening the chooser on top of an open chooser closes it and this shot
+        // comes out as the game. The browse frames above are the ones that made
+        // that reachable, and SHOTS_ONLY can put any two of these next to each
+        // other.
+        window.dispatchEvent(new KeyboardEvent('keydown',{code:'Escape',bubbles:true}));
+        window.velo.closeChooser();
         window.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyC',bubbles:true}));
         for(;;){
           await new Promise((r)=>requestAnimationFrame(r));
@@ -452,8 +536,11 @@ try {
       // The overview blend is an exponential with a 0.13 s half-life that only
       // LANDS on 1 within a thousandth, so half a second photographs the
       // transition and not the destination. Wait it out when it is in play.
+      // `browse` waits because its boards are FETCHED: a shot taken immediately
+      // photographs the honest `loading…` state, which is worth seeing once and
+      // is not what this flag is for.
       if (name === 'hud-off' || name.startsWith('legend') || name.startsWith('about')
-        || name.startsWith('profile') || name.startsWith('phone-')) {
+        || name.startsWith('profile') || name.startsWith('browse') || name.startsWith('phone-')) {
         await new Promise((r) => setTimeout(r, OVERVIEW && name.startsWith('phone-') ? 1600 : 500));
       }
       const r = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false, fromSurface: true });

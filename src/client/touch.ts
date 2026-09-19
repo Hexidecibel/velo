@@ -60,11 +60,11 @@ import { IN_BRAKE, IN_FLIP, IN_LEAN_L, IN_LEAN_R, IN_THROTTLE } from '@/sim/cons
  */
 export type ZoneId =
   | 'throttle' | 'brake' | 'leanL' | 'leanR' | 'flip'
-  | 'restart' | 'menu' | 'overview' | 'levels' | 'auto' | 'zoom' | 'full' | 'help' | 'look';
+  | 'restart' | 'menu' | 'overview' | 'levels' | 'times' | 'auto' | 'zoom' | 'full' | 'help' | 'look';
 
 /** Every id that is a command. Static: a pad does not change what kind it is. */
 export const COMMAND_IDS: readonly ZoneId[] =
-  ['restart', 'menu', 'overview', 'levels', 'look', 'full', 'auto', 'zoom', 'help'];
+  ['restart', 'menu', 'overview', 'levels', 'times', 'look', 'full', 'auto', 'zoom', 'help'];
 
 /**
  * Every zone that can ever exist, in the order the elements are created.
@@ -76,7 +76,7 @@ export const COMMAND_IDS: readonly ZoneId[] =
  * `place` hides the ones this state does not use.
  */
 export const ALL_ZONE_IDS: readonly ZoneId[] = [
-  'restart', 'menu', 'overview', 'levels', 'look', 'full', 'auto', 'zoom', 'help',
+  'restart', 'menu', 'overview', 'levels', 'times', 'look', 'full', 'auto', 'zoom', 'help',
   'flip', 'leanL', 'leanR', 'brake', 'throttle',
 ];
 
@@ -548,6 +548,22 @@ export function touchZones(vp: Viewport, o: LayoutOpts): Zone[] {
   const drawer: Array<[ZoneId, string]> = [];
   if (o.menu) {
     drawer.push(['levels', 'levels']);
+    // THE LEADERBOARD, WHICH HAD NO TOUCH PATH AT ALL AND ADVERTISED ONE ANYWAY.
+    //
+    // `body.touch #board { display: none }` is unconditional, so the board panel
+    // does not exist on a phone — while the results screen printed a tappable
+    // `leaderboard` button on every finish that set a flag, persisted it,
+    // refetched, and showed nothing. That lie has been removed; this is the
+    // capability it was lying about. It opens the browser in the chooser, which
+    // is a whole screen rather than a panel in the gutter, so the rows have room
+    // for the thing that makes a board a place: everybody's actual bike.
+    //
+    // It is THE LAST DRAWER SLOT, spent deliberately. The permanent row is full
+    // at three pads by sixteen pixels on a 736 x 280 phone, so nothing here may
+    // be promoted; and the drawer's own one-row capacity is seven on a 915 px
+    // phone. It sits beside `levels` because it is the same screen — one pad
+    // opens the pictures, the other opens the times.
+    drawer.push(['times', 'times']);
     // THE CUSTOMISER, WHICH HAD NO TOUCH PATH AT ALL UNTIL THIS PAD.
     //
     // It was bound to `Y` and to a button on the leaderboard panel, and
@@ -1025,6 +1041,14 @@ export interface TouchCallbacks {
    */
   onBrowse(): void;
   /**
+   * THE LEADERBOARD BROWSER — the same screen `onBrowse` opens, on its other
+   * view. It is a separate callback rather than an argument because the pad is
+   * a separate pad and the drawer's dispatch is a flat switch on the id; and it
+   * is a separate PAD rather than a tab somebody has to find because the board
+   * was entirely unreachable on a phone until it existed.
+   */
+  onTimes(): void;
+  /**
    * The wide view of the whole level went on, or came off.
    *
    * THE PAD DOES NOT OWN THE STATE. main.ts does — the same `overview.hold()`
@@ -1407,6 +1431,7 @@ export function createTouch(
       closeMenu();
       if (id === 'restart') cb.onRestart();
       else if (id === 'levels') cb.onBrowse();
+      else if (id === 'times') cb.onTimes();
       else if (id === 'look') cb.onLook();
       else if (id === 'help') cb.onHelp();
       else if (id === 'full') toggleFullscreen();

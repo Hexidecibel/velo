@@ -108,6 +108,43 @@ describe('anything holding the sim leaves the replay byte-identical', () => {
     expect(replay(held)).toBe(replay(base));
   });
 
+  it('holds for the BOARD BROWSER, which is open for as long as somebody reads', () => {
+    // THE LONGEST-LIVED HOLD IN THE GAME. The overview is a key you are holding
+    // down and the about page is a page you skim; the board browser is
+    // twenty-four levels' leaderboards with a `next ›` on it, and the whole
+    // point of it is that somebody stays in there. A run held for two minutes
+    // has to bank the same bytes as one never held at all, or "I checked the
+    // times and my run was wrong afterwards" becomes a real sentence.
+    //
+    // It is the fourth source, which is what hold.ts predicted when it said a
+    // fourth was coming, and it is registered even though the chooser ALSO
+    // pauses the loop: the guarantee belongs to `step()`'s gate, and a freeze
+    // that depends on a scheduling flag in another file is a freeze that an
+    // edit about something else can remove.
+    const held = drive(2000, (h, at) => h.add('browse', () => at() >= 150 && at() < 1550));
+    const base = plain();
+    expect(held.sim.hash()).toBe(base.sim.hash());
+    expect(held.sim.state.tick).toBe(base.sim.state.tick);
+    expect(held.rec.frames).toBe(base.rec.frames);
+    expect(replay(held)).toBe(replay(base));
+  });
+
+  it('holds while the browser is opened over the overview and shut in either order', () => {
+    // A phone opens the drawer from a frozen overview and taps `times`. Both
+    // are holding; either can release first; nothing may move until both have.
+    // Each case runs for exactly 600 frames of UNHELD time — the length `plain`
+    // drives — so the comparison is against the same run every time.
+    for (const [browseFrom, browseTo, frames] of [[300, 900, 1450], [600, 1500, 1850]] as const) {
+      const held = drive(frames, (h, at) => {
+        h.add('overview', () => at() >= 250 && at() < 1100);
+        h.add('browse', () => at() >= browseFrom && at() < browseTo);
+      });
+      const base = plain();
+      expect(held.sim.state.tick).toBe(base.sim.state.tick);
+      expect(replay(held)).toBe(replay(base));
+    }
+  });
+
   it('does not let the clock run while held', () => {
     const { sim } = drive(300, (h, at) => h.add('about', () => at() >= 100));
     // 100 frames advanced, 200 held. The clock is state.tick, which only

@@ -13,7 +13,7 @@
 // by tracking a per-wheel extremum across the airborne window rather than by
 // sampling faster.
 import type { AudioParams } from './params.ts';
-import { engineFor, engineScales } from './firing.ts';
+import { engineFor, engineScales, VOWELS } from './firing.ts';
 import type { EngineSpec } from './firing.ts';
 
 /**
@@ -68,7 +68,7 @@ export interface Voices {
    *
    * This is the number a listener actually perceives, and it is the one the HUD
    * and the tests use, because it is the only pitch-like quantity that means
-   * the same thing across four engines. A V-twin at 15 bangs a second is a
+   * the same thing across five engines. A V-twin at 15 bangs a second is a
    * rhythm you can count; an inline four at 333 is a note. The oscillator runs
    * at `engineCycleHz` below, which is this divided by the bangs in one cycle.
    */
@@ -95,6 +95,27 @@ export interface Voices {
   engineSpread: number;
   /** Level of the square sub. Per engine, scaled by the panel. */
   engineSub: number;
+  /**
+   * How much of the engine goes through a VOCAL TRACT instead of an exhaust,
+   * 0..1. Zero on every engine with a pipe, which is four of the five.
+   */
+  engineVocal: number;
+  /** The three formant centres, Hz. Meaningless while `engineVocal` is zero. */
+  engineF1Hz: number;
+  engineF2Hz: number;
+  engineF3Hz: number;
+  /**
+   * The blow-off, 0..1 — the "pff" as the throttle comes off.
+   *
+   * A CONTINUOUS VOICE AND NOT A CUE, deliberately. Cues are events in the run
+   * and the tests hold every engine to producing exactly the same ones (see
+   * model.test.ts); a cue only one engine fires would make what your bike
+   * sounds like able to change the run's event stream. So this is a level that
+   * spikes and decays, applied to a long-lived node exactly like the wind.
+   */
+  blowGain: number;
+  /** Where the blow-off sits, Hz. It falls as it decays, which is the "pff". */
+  blowHz: number;
   scrubGain: number;
   scrubHz: number;
   windGain: number;
@@ -150,7 +171,8 @@ export interface RideModel {
    * A one-off rev, for the picker.
    *
    * The customiser PAUSES the sim, so without this, choosing an engine changes
-   * an idle you have to take on faith. It is done here rather than as a
+   * an idle you have to take on faith. It rises, holds, and is cut off with the
+   * revs still up — see the shape in `update`. It is done here rather than as a
    * scheduled envelope in the synth for one reason: `apply()` runs every
    * rendered frame and would overwrite anything the synth scheduled behind its
    * back. A preview that fights the frame loop is a preview that works until
@@ -204,6 +226,12 @@ export function createRideModel(params: () => AudioParams): RideModel {
     engineQ: 3,
     engineSpread: 0.01,
     engineSub: 0.35,
+    engineVocal: 0,
+    engineF1Hz: VOWELS[0][0],
+    engineF2Hz: VOWELS[0][1],
+    engineF3Hz: VOWELS[0][2],
+    blowGain: 0,
+    blowHz: 900,
     scrubGain: 0,
     scrubHz: 800,
     windGain: 0,
@@ -216,6 +244,19 @@ export function createRideModel(params: () => AudioParams): RideModel {
   let scales = engineScales(engine);
   /** Governor hunt phase, turns. Advanced by wall time; a lawnmower only. */
   let huntPhase = 0;
+  /** The blow-off's level, 0..1. Spiked on a lift, decayed every frame. */
+  let blow = 0;
+  /** Throttle last frame. The blow-off is an EDGE, not a state. */
+  let prevThrottle = false;
+  /**
+   * The rev signal last frame, which is what a lift lets go OF.
+   *
+   * Reading this frame's would be wrong in the one place it matters: the
+   * picker's preview rev is synthetic and vanishes on the same frame its
+   * throttle does, so a blow-off looking at the current value would see a
+   * standstill and stay silent in exactly the screen built to demonstrate it.
+   */
+  let prevRev = 0;
   /** Seconds left of the picker's preview rev. See `blip`. */
   let blipSec = 0;
 
@@ -251,6 +292,10 @@ export function createRideModel(params: () => AudioParams): RideModel {
     prevComp[0] = 0;
     prevComp[1] = 0;
     applesTakenThisRun = 0;
+    blow = 0;
+    prevThrottle = false;
+    prevRev = 0;
+    voices.blowGain = 0;
     voices.engineGain = 0;
     voices.scrubGain = 0;
     voices.windGain = 0;
@@ -330,7 +375,13 @@ export function createRideModel(params: () => AudioParams): RideModel {
         blipSec = Math.max(0, blipSec - dt);
         const u = 1 - blipSec / BLIP_SEC;
         blipping = true;
-        rev = Math.max(rev, 0.06 + 0.74 * Math.sin(Math.PI * clamp01(u)));
+        // A rise, a hold, and then it is CUT rather than faded back to idle.
+        // Stopping the sine three quarters of the way round leaves the preview
+        // ending at about two thirds throttle and then simply stopping, which
+        // is what blipping a real throttle sounds like — and it is also the
+        // only way the impression engine's blow-off can be heard in the picker,
+        // since a blip that fades to nothing never lifts off anything.
+        rev = Math.max(rev, 0.06 + 0.74 * Math.sin(Math.PI * clamp01(u * 0.72)));
       }
       const throttle = s.throttle || blipping;
 
@@ -387,6 +438,37 @@ export function createRideModel(params: () => AudioParams): RideModel {
       voices.engineQ = engine.q;
       voices.engineSpread = clamp((p.engineSpread / 100) * engine.spread, 0, 0.2);
       voices.engineSub = p.engineSub * engine.sub;
+
+      // --- the vocal tract, and the lift ------------------------------------
+      //
+      // THE VOWEL TRAVELS WITH THE NOTE. A bank of fixed formants over a rising
+      // pulse train is a filter with an engine behind it; formants that MOVE —
+      // "uh" through "ah" and "eh" to "ee" — is somebody straining, and the
+      // travel is the entire difference between the two. It rides `shaped`, the
+      // same curve the pitch does, so the mouth and the note arrive together.
+      voices.engineVocal = engine.vocal;
+      if (engine.vocal > 0) {
+        const u = clamp01(shaped) * (VOWELS.length - 1);
+        const i = Math.min(VOWELS.length - 2, Math.floor(u));
+        const f = u - i;
+        voices.engineF1Hz = VOWELS[i][0] + (VOWELS[i + 1][0] - VOWELS[i][0]) * f;
+        voices.engineF2Hz = VOWELS[i][1] + (VOWELS[i + 1][1] - VOWELS[i][1]) * f;
+        voices.engineF3Hz = VOWELS[i][2] + (VOWELS[i + 1][2] - VOWELS[i][2]) * f;
+      }
+      // The blow-off is an EDGE on the throttle, scaled by how much was being
+      // asked of it at the moment it came off — a lift at a standstill is not a
+      // blow-off, and the floor here is what stops the sound firing on every
+      // stab of the gas at walking pace. The preview rev in the customiser ends
+      // with the throttle coming off, so choosing this engine demonstrates it.
+      const letGoOf = Math.max(rev, prevRev);
+      if (prevThrottle && !throttle && !over) blow = Math.max(blow, clamp01((letGoOf - 0.08) / 0.45));
+      blow = toward(blow, 0, dt, 0.11);
+      voices.blowGain = blow * engine.blow;
+      // It falls as it decays. A burst that keeps its brightness all the way
+      // down is a hiss; one that darkens is air escaping.
+      voices.blowHz = 700 + 2600 * blow;
+      prevThrottle = throttle;
+      prevRev = rev;
 
       // --- tyre scrub ------------------------------------------------------
       //

@@ -70,6 +70,63 @@ export function difficultyBand(score: number): Band {
   return 'brutal';
 }
 
+/**
+ * WHY A LEVEL HAS NO RATING, as a code rather than as a sentence.
+ *
+ * Three of these are the solver's own `unrated` reason, recorded on the row when
+ * it was measured; the other two are the client's own dead ends. It is a code
+ * and not prose because two screens now render it — the card in the grid and the
+ * header of the board browser — and two hand-written copies of the same excuse
+ * is the bug at the top of keys.ts wearing different clothes.
+ *
+ * A LEVEL WITH NO RATING SAYS WHY. That rule predates this type; what it adds is
+ * that "why" is now specific: `zero-apples` is a level the search cannot steer
+ * on, `unverified` is a bug in the solver, and `unsolved` is an honest could-not
+ * that has been wrong twice. Reading all three as one grey "unrated" threw away
+ * the only interesting half.
+ */
+export type UnratedCode = 'unsolved' | 'zero-apples' | 'unverified' | 'unmeasured' | 'broken';
+
+/** The code, in the player's words. One copy, read by every screen that shows it. */
+export const UNRATED_WORDS: Record<UnratedCode, string> = {
+  // NEVER SHOWN AS HARD. The solver failing to find a route inside its cap is a
+  // "could not", and bin/solve's own notes say it has been wrong that way twice.
+  unsolved: 'unrated — the solver has not completed it yet',
+  'zero-apples': 'unrated — no apples, so the search has nothing to steer by',
+  unverified: 'unrated — the run it found did not re-simulate, which is a bug',
+  unmeasured: 'unrated — no solver run for this level on this rev',
+  broken: 'unrated — it does not load',
+};
+
+export function unratedWords(code: UnratedCode): string {
+  return UNRATED_WORDS[code];
+}
+
+/**
+ * What the chooser READS off a measured row.
+ *
+ * `MeasuredRow` satisfies it, which is what `measuredFor` returns; the two extra
+ * fields are optional so a test can keep handing in a bare `MeasuredLevel`. They
+ * are optional in the TYPE and mandatory in the FILE — every generated row
+ * carries a `par` and an `unrated` — so an absent one here means a stub, and a
+ * stub gets the honest "no par yet" rather than a made-up number.
+ */
+export type MeasuredRead = MeasuredLevel & {
+  /**
+   * PAR: the fastest run anything has found, seconds. `parFor(simHash, rev)` is
+   * the one-call accessor for it; this is the same number off the same row,
+   * taken here because the row is already in hand.
+   *
+   * It is THE ONLY NUMBER IN THIS FILE THAT IS A PROPERTY OF THE LEVEL rather
+   * than of a run — your best is yours, the board's best is somebody's, and par
+   * is the level's. It beats the best posted human time on 7 of the 24 rated
+   * levels, so it is a target and not a curiosity.
+   */
+  par?: number | null;
+  /** The solver's own reason, when it did not rate the level. */
+  unrated?: string | null;
+};
+
 export interface Rating {
   /** The solver's composite, 0-100, rounded for display. */
   score: number;
@@ -101,6 +158,16 @@ export interface ChooserItem {
   rating: Rating | null;
   /** Why there is no rating, when there is none. Never empty if rating is null. */
   unratedNote: string;
+  /** The same, as a code. Null exactly when `rating` is not. */
+  unratedCode: UnratedCode | null;
+  /**
+   * PAR, seconds: the fastest run anything has found on this level.
+   *
+   * Beside your own best on the card, and the line the board browser measures
+   * everybody against. Null when nothing has solved it — never zero, because a
+   * zero would sort to the top of a ladder as the best time ever set.
+   */
+  parSeconds: number | null;
   current: boolean;
   /**
    * Curation tier. Null — which is what every shipped level carries — means
@@ -127,7 +194,7 @@ export interface ChooserOpts {
   /** The live sim rev. A score from another rev is not a score on this game. */
   rev: number;
   /** Injectable for the tests; defaults to the generated table. */
-  lookup?: (simHash: string, rev: number) => MeasuredLevel | null;
+  lookup?: (simHash: string, rev: number) => MeasuredRead | null;
 }
 
 /** `07-the-chimney` -> 7. Null for `test01` and for adopted replay levels. */
@@ -138,17 +205,19 @@ export function levelNumber(id: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function ratingOf(m: MeasuredLevel | null): { rating: Rating | null; note: string } {
-  if (m === null) {
-    return {
-      rating: null,
-      note: 'unrated — no solver run for this level on this rev',
-    };
-  }
+function isUnratedCode(v: unknown): v is UnratedCode {
+  return typeof v === 'string' && v in UNRATED_WORDS;
+}
+
+function ratingOf(m: MeasuredRead | null): { rating: Rating | null; code: UnratedCode | null } {
+  if (m === null) return { rating: null, code: 'unmeasured' };
   if (!m.solved || m.score === null) {
     // NEVER shown as hard. The solver not finding a route inside its cap is a
     // "could not", and bin/solve's own notes say it has been wrong that way.
-    return { rating: null, note: 'unrated — the solver has not completed it yet' };
+    // The ROW's own reason wins when it carries one — `zero-apples` and
+    // `unverified` are different things to say and the row is the only place
+    // that knows which — and `unsolved` is the honest default for a stub.
+    return { rating: null, code: isUnratedCode(m.unrated) ? m.unrated : 'unsolved' };
   }
   return {
     rating: {
@@ -157,7 +226,7 @@ function ratingOf(m: MeasuredLevel | null): { rating: Rating | null; note: strin
       minHeadClearance: m.minHeadClearance,
       solveSeconds: m.solveSeconds,
     },
-    note: '',
+    code: null,
   };
 }
 
@@ -166,9 +235,13 @@ export function buildItem(entry: LevelEntry, o: ChooserOpts): ChooserItem {
   const lvl = entry.level;
   const simHash = lvl?.simHash ?? null;
   const best = simHash !== null ? o.bests[simHash] : undefined;
-  const { rating, note } = lvl === null
-    ? { rating: null, note: 'unrated — it does not load' }
-    : ratingOf(lookup(lvl.simHash, o.rev));
+  const row = lvl === null ? null : lookup(lvl.simHash, o.rev);
+  const { rating, code } = lvl === null ? { rating: null, code: 'broken' as UnratedCode } : ratingOf(row);
+  // Par is read off the row already in hand rather than through a second
+  // `parFor` scan of the same table. A par of 0 is not a par — it is a row that
+  // was never measured — and letting it through would put "0.00s" at the top of
+  // every ladder as the fastest time anybody ever set.
+  const par = typeof row?.par === 'number' && row.par > 0 ? row.par : null;
   return {
     id: entry.id,
     label: entry.label,
@@ -183,7 +256,9 @@ export function buildItem(entry: LevelEntry, o: ChooserOpts): ChooserItem {
     spanX: lvl ? Math.round(lvl.maxX - lvl.minX) : 0,
     spanY: lvl ? Math.round(lvl.maxY - lvl.minY) : 0,
     rating,
-    unratedNote: note,
+    unratedNote: code === null ? '' : UNRATED_WORDS[code],
+    unratedCode: code,
+    parSeconds: par,
     current: entry.id === o.currentId,
     tier: lvl?.tier ?? null,
   };

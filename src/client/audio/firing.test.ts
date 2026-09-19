@@ -25,6 +25,7 @@ import {
   ENGINE_HARMONICS,
   ENGINE_SPECS,
   REFERENCE_ENGINE,
+  VOWELS,
   engineFor,
   engineScales,
   engineWave,
@@ -233,14 +234,32 @@ describe('the wave itself', () => {
   });
 });
 
-describe('the four are actually four', () => {
+describe('the five are actually five', () => {
   it('has a distinct waveform per engine', () => {
+    // RELATIVE to how much waveform there is, and that correction is not
+    // cosmetic. Every wave here is PEAK-normalised, so a very impulsive engine
+    // is a spike and a row of zeroes: two of them can differ completely in
+    // where their bangs are and still be within a hair of each other on a raw
+    // mean-absolute difference, simply because both are near zero almost
+    // everywhere. Dividing by the waves' own mean level asks the question that
+    // was always meant — how different are these two, as a fraction of what
+    // either of them is — and it does not go soft as `bright` goes up.
     const rendered = ENGINE_SPECS.map((e) => renderCycle(engineWave(e), 256));
+    const level = (a: Float32Array): number => {
+      let s = 0;
+      for (const v of a) s += Math.abs(v);
+      return s / a.length;
+    };
+    // Anti-vacuity: a catalogue of silent waves would sail through a ratio.
+    for (let i = 0; i < rendered.length; i++) {
+      expect(level(rendered[i]), ENGINE_SPECS[i].id).toBeGreaterThan(0.005);
+    }
     for (let i = 0; i < rendered.length; i++) {
       for (let j = i + 1; j < rendered.length; j++) {
         let diff = 0;
         for (let k = 0; k < 256; k++) diff += Math.abs(rendered[i][k] - rendered[j][k]);
-        expect(diff / 256, `${ENGINE_SPECS[i].id} vs ${ENGINE_SPECS[j].id}`).toBeGreaterThan(0.02);
+        const rel = diff / 256 / (level(rendered[i]) + level(rendered[j]));
+        expect(rel, `${ENGINE_SPECS[i].id} vs ${ENGINE_SPECS[j].id}`).toBeGreaterThan(0.2);
       }
     }
   });
@@ -266,6 +285,39 @@ describe('the four are actually four', () => {
     expect(top('dirt')).toBeGreaterThan(top('vtwin'));
     expect(top('vtwin')).toBeGreaterThan(top('mower'));
     expect(top('road') / top('mower')).toBeGreaterThan(2.5);
+  });
+
+  it('gives the vocal tract to exactly one engine, and it is not a real one', () => {
+    // Two joke engines is the deliberate position, and they are different
+    // jokes. What must never happen is a mouth quietly turning up on something
+    // that is supposed to have a pipe.
+    const talkers = ENGINE_SPECS.filter((e) => e.vocal > 0);
+    expect(talkers.map((e) => e.id)).toEqual(['vocal']);
+    for (const e of ENGINE_SPECS) {
+      expect(e.vocal, e.id).toBeGreaterThanOrEqual(0);
+      // Never all of it: a pure vowel with no exhaust left under it is a choir.
+      expect(e.vocal, e.id).toBeLessThan(0.95);
+      // The blow-off belongs to the same engine and to no other.
+      expect(e.blow > 0, e.id).toBe(e.vocal > 0);
+    }
+  });
+
+  it('climbs a vowel ladder that goes somewhere, in a range a formant can be', () => {
+    // F2 is the one that carries the vowel from "uh" to "ee", and it must move
+    // in ONE direction: a ladder that wandered would read as a filter being
+    // swept rather than as somebody straining, which is the whole effect.
+    expect(VOWELS.length).toBeGreaterThanOrEqual(3);
+    for (let i = 1; i < VOWELS.length; i++) {
+      expect(VOWELS[i][1], `F2 knot ${i}`).toBeGreaterThan(VOWELS[i - 1][1]);
+    }
+    // And the mouth closes as it strains: F1 ends lower than it started.
+    expect(VOWELS[VOWELS.length - 1][0]).toBeLessThan(VOWELS[0][0]);
+    for (const [f1, f2, f3] of VOWELS) {
+      expect(f1).toBeGreaterThan(200);
+      expect(f2).toBeGreaterThan(f1);
+      expect(f3).toBeGreaterThan(f2);
+      expect(f3).toBeLessThan(4000);
+    }
   });
 
   it('only gives the governor hunt to the thing that has a governor', () => {
@@ -295,8 +347,27 @@ describe('the four are actually four', () => {
     expect(ENGINE_HARMONICS).toBeLessThan(worst * 2);
   });
 
+  it('also carries enough harmonics to EXCITE the top formant at the slowest cycle', () => {
+    // The bound above is about the lowpass, and the vocal tract is not behind
+    // the lowpass — it is fed from the raw pulse train precisely because the
+    // lowpass exists to remove what the top formant needs. So the voice has a
+    // bound of its own, and without it somebody lowering ENGINE_HARMONICS on
+    // the strength of the filter argument would silently mute a resonance.
+    const topFormant = Math.max(...VOWELS.map((v) => v[2]));
+    for (const e of ENGINE_SPECS) {
+      if (e.vocal <= 0) continue;
+      const idleCycleHz = fireHzAt(e, e.idleRpm) / e.fires.length;
+      // Plus a quarter for the resonance's own width above its centre.
+      const need = (topFormant * 1.25) / idleCycleHz;
+      expect(need, e.id).toBeLessThan(ENGINE_HARMONICS);
+      // And the pulse must actually HAVE something up there: an exponential
+      // decay of `bright` over harmonic index, read at the formant.
+      expect(Math.exp(-(topFormant / idleCycleHz - 1) / e.bright), e.id).toBeGreaterThan(0.02);
+    }
+  });
+
   it('keeps the output trims within a range that cannot deafen anybody', () => {
-    // These are MEASURED — an offline render of all four at full throttle put
+    // These are MEASURED — an offline render of the fleet at full throttle put
     // them ten decibels apart before the trims existed, and they now sit within
     // about two. This is the guard rail around that, not a restatement of it:
     // a trim outside this range is somebody having typed a number, not measured

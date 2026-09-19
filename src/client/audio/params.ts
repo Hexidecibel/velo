@@ -24,7 +24,7 @@ export interface AudioParams {
   // off the line, and throttle held in mid-air, which is a real technique and
   // the sound of it should be a real scream rather than silence.
 
-  // WHAT THE TWO HZ NUMBERS MEAN, now that there are four engines under them:
+  // WHAT THE TWO HZ NUMBERS MEAN, now that there are five engines under them:
   // they are the REFERENCE motor's FIRING RATE — bangs per second, not the
   // oscillator's frequency — and every other engine is a fixed ratio against
   // it, computed from its cylinder count and its rev range in firing.ts. So

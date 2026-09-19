@@ -92,7 +92,7 @@ export const BIKES: readonly AppearanceOption[] = [
 /**
  * THE ENGINES.
  *
- * FOUR FIRING PATTERNS, and the firing pattern is the whole of the character —
+ * FIVE FIRING PATTERNS, and the firing pattern is the whole of the character —
  * see `client/audio/firing.ts`, where each of these is a real crank angle and a
  * real cylinder count rather than an adjective. They are synthesised like every
  * other sound in the game, which is what lets the note follow the driven
@@ -100,7 +100,11 @@ export const BIKES: readonly AppearanceOption[] = [
  *
  * `road` is first and therefore the default, because it is the one the game
  * already sounded closest to and because a default nobody chose should never be
- * the joke.
+ * the joke. Two of the five ARE jokes, and they are different jokes: the mower
+ * idles funny because its governor hunts, and the impression reacts funny
+ * because it changes vowel as you pull and blows off when you lift. Both are
+ * real mechanisms — one mechanical, one phonetic — rather than a noise bolted
+ * on, which is the line these have to stay the right side of.
  *
  * ONLY YOUR OWN BIKE IS AUDIBLE. A ghost carries this field like every other,
  * and nothing plays it: the end-of-level montage puts two dozen bikes on screen
@@ -112,6 +116,7 @@ export const ENGINES: readonly AppearanceOption[] = [
   { id: 'dirt', label: 'two-stroke', note: 'fires every revolution, so twice as busy and twice as rude — brap' },
   { id: 'vtwin', label: 'v-twin', note: 'shared crankpin, 315 then 405 degrees — the limp that goes potato-potato' },
   { id: 'mower', label: 'lawnmower', note: 'one bang per two revolutions, governed, and the governor hunts' },
+  { id: 'vocal', label: 'impression', note: 'somebody doing the noise with their mouth — vowels instead of an exhaust, and it blows off when you lift' },
 ];
 
 /**

@@ -439,6 +439,86 @@ describe('choosing an engine', () => {
   });
 });
 
+// THE IMPRESSION ENGINE, which is the same firing pattern into a mouth. What is
+// checkable without ears is that the vowel MOVES with the note, that the lift
+// makes a noise the held throttle does not, and that neither of those can reach
+// any engine that has an exhaust.
+describe('the vocal tract', () => {
+  const at = (id: string, spin: number, throttle = true): Voices => {
+    const { model } = newModel();
+    model.setEngine(id);
+    return settle(model, (i) => sample({ tick: i * 4, driveSpin: spin, throttle }), 120).voices;
+  };
+
+  it('travels the vowel as the wheel spins up, rather than opening a filter', () => {
+    // A bank of FIXED formants over a rising pulse train is a filter with an
+    // engine behind it. Formants that move are somebody straining, and F2 going
+    // one way over the whole rev range is that statement in one number.
+    let prev = -1;
+    for (const spin of [0, 10, 25, 45, 65, 80]) {
+      const f2 = at('vocal', spin).engineF2Hz;
+      expect(f2, `spin ${spin}`).toBeGreaterThan(prev);
+      prev = f2;
+    }
+    // And the mouth closes rather than merely brightening: F1 comes DOWN.
+    expect(at('vocal', 80).engineF1Hz).toBeLessThan(at('vocal', 0).engineF1Hz);
+  });
+
+  it('is switched fully off on every engine with an exhaust', () => {
+    for (const e of ENGINE_SPECS) {
+      if (e.id === 'vocal') continue;
+      expect(at(e.id, 40).engineVocal, e.id).toBe(0);
+    }
+    expect(at('vocal', 40).engineVocal).toBeGreaterThan(0.5);
+  });
+
+  it('blows off on the LIFT and not while the throttle is held', () => {
+    const { model } = newModel();
+    model.setEngine('vocal');
+    // Wind it up and hold. Nothing should be escaping while it is pulling.
+    const held = settle(model, (i) => sample({ tick: i * 4, driveSpin: 70, throttle: true }), 120).voices;
+    expect(held.blowGain).toBeLessThan(1e-6);
+    // Now lift. The spin is still there — it is the THROTTLE coming off that
+    // does this, which is the difference between a blow-off and a rev drop.
+    const lifted = frame(model, sample({ tick: 500, driveSpin: 70, throttle: false })).voices;
+    expect(lifted.blowGain).toBeGreaterThan(0.3);
+    // It is a burst, so it has to go away on its own.
+    const after = settle(model, (i) => sample({ tick: 520 + i * 4, driveSpin: 0, throttle: false }), 90).voices;
+    expect(after.blowGain).toBeLessThan(lifted.blowGain * 0.1);
+  });
+
+  it('does not blow off at a standstill, or on any engine that has a pipe', () => {
+    // Every stab of the gas at walking pace would otherwise end in a hiss.
+    const { model } = newModel();
+    model.setEngine('vocal');
+    settle(model, (i) => sample({ tick: i * 4, driveSpin: 2, throttle: true }), 60);
+    expect(frame(model, sample({ tick: 300, driveSpin: 2, throttle: false })).voices.blowGain)
+      .toBeLessThan(1e-6);
+    for (const e of ENGINE_SPECS) {
+      if (e.id === 'vocal') continue;
+      const m = newModel().model;
+      m.setEngine(e.id);
+      settle(m, (i) => sample({ tick: i * 4, driveSpin: 70, throttle: true }), 60);
+      expect(frame(m, sample({ tick: 300, driveSpin: 70, throttle: false })).voices.blowGain, e.id)
+        .toBe(0);
+    }
+  });
+
+  it('is a VOICE and not a cue, so it cannot touch the run\'s event stream', () => {
+    // The blow-off is the one sound in the game that only one engine makes, and
+    // that is exactly why it is a level rather than a cue: cues are events in
+    // the run and every engine must produce identically many of them. This is
+    // the same claim the test above makes about landings, aimed at the sound
+    // that would have been the tempting way to break it.
+    const { model } = newModel();
+    model.setEngine('vocal');
+    settle(model, (i) => sample({ tick: i * 4, driveSpin: 70, throttle: true }), 60);
+    const f = frame(model, sample({ tick: 300, driveSpin: 70, throttle: false }));
+    expect(f.voices.blowGain).toBeGreaterThan(0.3);
+    expect(f.cues).toEqual([]);
+  });
+});
+
 describe('the picker preview', () => {
   it('revs a stationary bike and then stops', () => {
     // The customiser pauses the sim, so without this, choosing an engine
@@ -454,6 +534,22 @@ describe('the picker preview', () => {
     expect(peak).toBeGreaterThan(still * 1.5);
     const after = settle(model, () => sample({ tick: 240 }), 120).voices.engineHz;
     expect(after).toBeCloseTo(still, 0);
+  });
+
+  it('ends on a LIFT, so the impression engine demonstrates its blow-off', () => {
+    // The preview is the only place somebody hears an engine before choosing
+    // it, and the blow-off is half of what makes this one different. A blip
+    // that faded back to idle would never let go of anything and the picker
+    // would sell the engine short.
+    const { model } = newModel();
+    model.setEngine('vocal');
+    settle(model, (i) => sample({ tick: i * 4 }), 60);
+    model.blip();
+    let blow = 0;
+    for (let i = 0; i < 120; i++) {
+      blow = Math.max(blow, model.update(sample({ tick: 240 }), FRAME).voices.blowGain);
+    }
+    expect(blow).toBeGreaterThan(0.4);
   });
 
   it('is audible on a dead run, because that is what the panel is usually opened over', () => {

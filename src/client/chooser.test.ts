@@ -9,8 +9,9 @@ import { INPUT_HZ, TICKS_PER_FRAME } from '@/sim/consts.ts';
 import type { Level } from '@/sim/level.ts';
 import type { MeasuredLevel } from '@/solver/measured.ts';
 import { MEASURED, measuredFor } from '@/solver/measured.ts';
-import { buildChooser, buildItem, chooserSummary, difficultyBand, flatten, levelNumber } from './chooser.ts';
-import type { ChooserOpts } from './chooser.ts';
+import { buildChooser, buildItem, chooserSummary, difficultyBand, flatten, levelNumber, UNRATED_WORDS } from './chooser.ts';
+import type { UnratedCode } from './chooser.ts';
+import type { ChooserOpts, MeasuredRead } from './chooser.ts';
 import type { LevelEntry } from './levels.ts';
 
 const SEC = INPUT_HZ * TICKS_PER_FRAME;
@@ -67,7 +68,7 @@ function measured(simHash: string, over: Partial<MeasuredLevel> = {}): MeasuredL
   };
 }
 
-function opts(rows: MeasuredLevel[], over: Partial<ChooserOpts> = {}): ChooserOpts {
+function opts(rows: MeasuredRead[], over: Partial<ChooserOpts> = {}): ChooserOpts {
   return {
     bests: {},
     currentId: '',
@@ -247,5 +248,99 @@ describe('the generated difficulty table', () => {
     expect(measuredFor(m.simHash, m.simRev)?.simHash).toBe(m.simHash);
     expect(measuredFor(m.simHash, m.simRev + 1)).toBe(null);
     expect(measuredFor('0000000000000000', m.simRev)).toBe(null);
+  });
+});
+
+describe('par, on the card and in the browser', () => {
+  // PAR IS THE ONLY NUMBER IN THIS FILE THAT IS ABOUT THE LEVEL. Your best is
+  // yours and the board's best is somebody's; par is what the level itself is
+  // worth. It beats the best posted human time on 7 of the 24 rated levels, so
+  // it is a target rather than a curiosity — and a wrong one is a lie about the
+  // level rather than about a run.
+  it('is read off the row that was measured for this rev', () => {
+    const i = buildItem(entry('01-a', 'h01'), opts([{ ...measured('h01'), par: 10.32 }]));
+    expect(i.parSeconds).toBe(10.32);
+  });
+
+  it('is null on a level with no row for this rev, never a borrowed one', () => {
+    const rows = [{ ...measured('h01', { simRev: 3 }), par: 10.32 }];
+    expect(buildItem(entry('01-a', 'h01'), opts(rows)).parSeconds).toBe(null);
+  });
+
+  it('refuses a par of zero, which would sort to the top of every ladder', () => {
+    // A zero here is a row that was never really measured, and a zero par is
+    // "the fastest time anybody ever set" everywhere it is drawn.
+    expect(buildItem(entry('01-a', 'h01'), opts([{ ...measured('h01'), par: 0 }])).parSeconds).toBe(null);
+    expect(buildItem(entry('01-a', 'h01'), opts([measured('h01')])).parSeconds).toBe(null);
+  });
+
+  it('survives a level the solver could not finish — no rating is not no par', () => {
+    // Different questions. The optimiser can hold the fastest line anything has
+    // found while the scorer declines to rate the level, and vice versa.
+    const i = buildItem(
+      entry('01-a', 'h01'),
+      opts([{ ...measured('h01', { solved: false, score: null }), par: 41.5, unrated: 'unsolved' }]),
+    );
+    expect(i.rating).toBe(null);
+    expect(i.parSeconds).toBe(41.5);
+  });
+
+  it('is real on the shipped set, and every shipped par is positive', () => {
+    for (const m of MEASURED) {
+      if (m.par !== null) expect(m.par, m.name).toBeGreaterThan(0);
+      // A solved level with no par at all would mean the generator emitted a
+      // line it could not time, which is the one state nothing downstream can
+      // render honestly.
+      if (m.solved) expect(m.par, m.name).not.toBe(null);
+    }
+    expect(MEASURED.filter((m) => m.par !== null).length).toBeGreaterThan(10);
+  });
+});
+
+describe('an unrated level says WHY, as a code', () => {
+  // The rule "a level with no score is unrated and says why" predates this; the
+  // code is what lets two screens say it the same way. `zero-apples` and
+  // `unverified` are different sentences and reading all three as one grey
+  // "unrated" threw away the only interesting half.
+  it('carries the solver’s own reason when the row has one', () => {
+    for (const reason of ['unsolved', 'zero-apples', 'unverified'] as const) {
+      const i = buildItem(
+        entry('01-a', 'h01'),
+        opts([{ ...measured('h01', { solved: false, score: null }), unrated: reason }]),
+      );
+      expect(i.unratedCode, reason).toBe(reason);
+      expect(i.unratedNote, reason).toContain('unrated');
+    }
+  });
+
+  it('distinguishes never-measured from could-not-solve from does-not-load', () => {
+    expect(buildItem(entry('01-a', 'h01'), opts([])).unratedCode).toBe('unmeasured');
+    expect(buildItem(entry('01-a', null), opts([])).unratedCode).toBe('broken');
+    expect(
+      buildItem(entry('01-a', 'h01'), opts([measured('h01', { solved: false, score: null })])).unratedCode,
+    ).toBe('unsolved');
+  });
+
+  it('is null exactly when there is a rating, and never both', () => {
+    const rated = buildItem(entry('01-a', 'h01'), opts([measured('h01')]));
+    expect(rated.unratedCode).toBe(null);
+    expect(rated.unratedNote).toBe('');
+    expect(rated.rating).not.toBe(null);
+  });
+
+  it('falls back to an honest reason rather than to a blank, for a row with none', () => {
+    // A stub — or a row from a generator that predates the field — still has to
+    // produce a sentence, because the screen has a space for one either way.
+    const i = buildItem(entry('01-a', 'h01'), opts([measured('h01', { solved: false, score: null })]));
+    expect(i.unratedCode).toBe('unsolved');
+    expect(i.unratedNote.length).toBeGreaterThan(10);
+  });
+
+  it('gives every shipped unrated row a reason this client knows the words for', () => {
+    for (const m of MEASURED) {
+      if (m.solved && m.score !== null) continue;
+      expect(m.unrated, m.name).not.toBe(null);
+      expect(UNRATED_WORDS[m.unrated as UnratedCode], `${m.name}: ${m.unrated}`).toBeTruthy();
+    }
   });
 });
