@@ -26,6 +26,15 @@
 # returns something strictly faster or returns nothing, and the answer can only
 # improve. --gate-time caps the gate's share; the default is a quarter.
 #
+# EVERY ROUND IS HANDED THE RUN IT IS BEATING, not just its time. The gate's
+# stream is replayed into the round's node table, so each leg can be ridden from
+# the state the gate left from and can fall back on the state the gate arrived
+# in. Without that a round inherited one number and had to re-find every run-up
+# the gate had already paid for -- and four levels returned NOTHING rather than
+# nothing-faster, because one leg in the middle of each was a gap only the gate's
+# own arrival states could clear. A round can now improve a leg or leave it
+# alone; it can no longer lose one. See src/solver/solve.ts, SolveOpts.seedRun.
+#
 # IT ALSO CHANGES THE SCORE, AND THAT IS THE POINT OF HAVING IT. Difficulty is
 # measured on the line the tool ends up with, and the gate's line and the
 # optimiser's line are different runs over the same rock. Re-measuring the same
@@ -47,6 +56,13 @@
 # hard to ride". Judged against a ~3 s run-to-run noise floor — a smaller spread
 # than that is not a finding. It doubles the cost, which is why it is a flag:
 # the cheap gate runs on every generated level and has to stay cheap.
+#
+# The forced pass is seeded with the unforced run for the same reason the rounds
+# are, and it only half works. Where the two orders agree so far, the forced legs
+# get states that are known to work and a failure past that point means
+# something. Where they diverge -- which is the interesting case and the reason
+# the level has tension at all -- there is nothing to seed with and "could not"
+# still is not "cannot". Read a null spread as an unanswered question.
 # --order greedy forces that order for a single run, if you want to watch it.
 #
 # --progress streams the search log as it happens instead of printing it in the
