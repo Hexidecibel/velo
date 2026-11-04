@@ -27,9 +27,9 @@
 //     bin/difficulty-import /tmp/par.json
 //
 // 26 level(s), sim rev 4, scoreRev 2.
-// Source: scratch/par.json
-// Merged with: scratch/chimney.json, scratch/cathedral.json, scratch/kicker.json, scratch/retry1720.json, scratch/gate2.json
-// Tension: scratch/greedy.json
+// Source: par.json
+// Merged with: chimney.json, cathedral.json, kicker.json, retry1720.json, gate2.json
+// Tension: greedy.json
 // Measured on one 12-core box, sim rev 4, scoreRev 2, 2026-09-18.
 // 
 // PAR and the optimised line: bin/solve --optimise --jobs 5 --time 720 --gate-time 240 over

@@ -1,35 +1,70 @@
+<p align="center">
+  <a href="https://velo.cush.rocks">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="docs/assets/hero-light.svg">
+      <img alt="Velo. A rider on level 27, Lintel, replayed from a recorded input stream." src="docs/assets/hero-dark.svg" width="100%">
+    </picture>
+  </a>
+</p>
+
 # Velo
+
+**Play: https://velo.cush.rocks** (keyboard on a desktop, touch on a phone; no
+sign-in, no install).
 
 A 2D motorbike physics game in the spirit of **Elasto Mania**: ride through
 polygon caves, collect every apple, touch the flower to finish. Two sprung
 wheels, and a rider whose **head is a death sphere** — touch it to terrain and
 the run is over.
 
-**Milestone 1 is done and signed off.** It was one bike, one deliberately ugly
-test level and a live tuning panel, ridden until it felt good — because if the
-bike does not feel good, nothing downstream rescues it. The user drove every
-preset in the dropdown, picked a character out of the spread, dialled the one
-number that was wrong, and called it *"close to original"*, which is the highest
-praise available here. That bike is now frozen and everything else is built
-against it.
+The part worth reading the code for is the simulation. It is a fixed-step
+integrator — 512 Hz physics, 128 Hz input, orientation kept as a unit complex
+number — and `src/sim/` may use only `+ - * /` and `Math.sqrt`, which a unit
+test enforces. So the same input stream produces the same motion, bit for bit,
+in V8, SpiderMonkey, JavaScriptCore and Node. That is what makes the
+leaderboard honest: a run is uploaded as the buttons you pressed (about a
+kilobyte, run-length encoded), and the server re-simulates it and derives the
+time itself. A time cannot be fabricated, because a time is never submitted.
+There is no physics library: none of them promises bit-identical results across
+engines, and that promise is the whole design.
 
-Since then: twenty hand-authored levels forming a teaching curriculum, replays
-as exportable files, remote tuning from a terminal, level navigation, a
-deployment, and a **leaderboard with ghosts** — times verified by re-simulating
-the input stream on the server, and the run one place ahead of you riding beside
-you while you try to catch it.
+What is built on that:
+
+- **Thirty-five hand-built levels**, ordered as a curriculum, each proven
+  completable by a solver that also measures par and a difficulty score from
+  the line it found (*The solver*, below).
+- **Ghosts.** The verified run one place ahead of you on the board rides
+  beside you while you try to catch it.
+- **Replays as files.** Export one, load it with `L`, re-simulate it in a
+  terminal with `bin/replay`.
+- **A level editor** in the game itself (press **Q**), writing the same plain
+  JSON format the shipped levels use.
+- **Touch controls** sized in millimetres, not pixels, and a camera that keeps
+  the bike out from under your thumbs.
+- **Live tuning**: change the bike from a terminal with `bin/spec` while
+  someone rides it.
+
+The bike was tuned first and frozen before any level was built, because if the
+bike does not feel good nothing downstream rescues it. This README is the
+design record: what each part does, the numbers behind it, and the options that
+were measured and rejected.
 
 ```
-bin/dev                    # dev server, hot-reloads levels as you author them
-bin/deploy                 # build, restart, health-check the live service
+npm install
+bin/dev      # http://127.0.0.1:5173, hot-reloads levels as you author them
+bin/test     # vitest, plain node
+bin/engines  # the cross-engine determinism check (needs Playwright browsers)
 ```
 
-**Live at https://velo.cush.rocks** — 127.0.0.1:9422, systemd `velo.service`,
-behind the cush-auth device gate.
+`bin/deploy` builds, publishes to `release/`, restarts the service and
+health-checks it; it expects the systemd unit that `bin/install-units` renders
+from `deploy/velo.service`.
 
 ## What this is not
 
-- **It is not a game yet.** There are no menus beyond a level picker. `test01` is ugly on purpose, so that you can see what the collision is
+- **It is not finished.** The menus are a level chooser and a board panel.
+  `test01` is ugly on purpose, so that you can see what the collision is
   doing; `test02` exercises the level format's curve primitive.
 - **The leaderboard is not authenticated, and does not pretend to be.**
   Re-simulation means a *time* cannot be faked. *Whose* time it is can be —
@@ -39,8 +74,9 @@ behind the cush-auth device gate.
   solver-generated input stream from a person's, because there is nothing to
   tell — both are just buttons the sim accepts. The split is a convention, and
   a deliberate one.
-- **It is not a level editor.** The level *format* is a deliverable — it is
-  plain JSON you can write in a text editor — but the visual builder is deferred.
+- **The editor is not the format.** The level *format* is the deliverable — it
+  is plain JSON you can write in a text editor. The in-game editor writes that
+  same JSON; it does not own it.
 - **It is not tuned.** The numbers in `DEFAULT_SPEC` are reasoned starting
   points that the plan supplied, and measurement says several of them are wrong
   (see *State of the bike* below). Changing them is the entire point of the
@@ -102,8 +138,8 @@ and the script correctly reports JavaScriptCore as **untested** rather than
 passing on three copies of V8. That distinction is the whole reason the script
 exists: as of 2026-09-18 the hash chain is identical across V8, SpiderMonkey and
 JavaScriptCore over 24,000 sim ticks on a shipped level, and that is a
-measurement rather than an argument from IEEE-754. `docs/launch-audit.md` has
-the full run and what is still not covered (nobody has run it on a real iPhone).
+measurement rather than an argument from IEEE-754. What it does not cover:
+nobody has run it on a real iPhone, only on Playwright's WebKit build.
 
 ## Controls
 
@@ -629,10 +665,9 @@ See *Why a TAS line cannot be watched* under Ghosts.
 
 ### Who you are, and what that is worth
 
-**No identity signal reaches this app.** HAProxy adds only `X-Forwarded-*`, and
-the cush-auth device gate — which decides whether your browser gets through the
-front door at all — sets no identity header downstream. That was checked
-directly, not assumed.
+**No identity signal reaches this app.** There are no accounts, and the reverse
+proxy in front of it adds only `X-Forwarded-*`. That was checked directly, not
+assumed.
 
 So: a `playerId` is generated once on your device and kept in `localStorage`,
 you pick a display name, and both are submitted with a run.
@@ -641,11 +676,11 @@ you pick a display name, and both are submitted with a run.
 > Anyone who can reach the game can post a verified run under any playerId and
 > any name they like.
 
-Among a handful of device-gated friends that is fine and socially
-self-correcting, and saying it plainly is better than implying a guarantee that
-does not exist. The proper fix, when it matters, is **cush-auth passing an
-identity header downstream** and the client reading it instead of minting one.
-That is the migration path; it is deliberately not built.
+For a hobby leaderboard that is an acceptable trade, and saying it plainly is
+better than implying a guarantee that does not exist. The proper fix, when it
+matters, is **a real sign-in upstream passing an identity header down** and the
+client reading it instead of minting one. That is the migration path; it is
+deliberately not built.
 
 **The id is the identity and the name is never a key.** Every board entry, every
 personal best and every player file keys on the opaque `playerId`; the name is
@@ -673,18 +708,14 @@ Scan it on the phone, it lands on the game, and it offers — never applies
 silently — to become that player. The name and the bike come down with it, so
 the phone posts as *them* rather than under their id wearing your label.
 
-Four things are worth being plain about, and the panel says all four rather than
-implying any of them:
+Three things are worth being plain about:
 
 - **It is a bearer credential.** Anyone who can see the code can become that
-  player on their own device. Among a handful of device-gated friends that is a
-  perfectly good trade.
+  player on their own device. For a game with no accounts that is a
+  reasonable trade.
 - **It is not a new exposure.** The `playerId` is not a secret and never was:
   every leaderboard row the API returns carries the playerId of whoever set it,
   so the code gives away nothing the board does not already publish.
-- **The phone has to be enrolled with cush-auth first.** An un-enrolled device
-  bounces to the sign-in page before a byte of the game loads, which looks
-  exactly like a broken QR code and is not one.
 - **It is not a login, and this changes nothing above.** Re-simulation proves a
   time is real; nothing proves whose it is. A claim code does not move that line
   by one bit — it moves an id between two devices that could both already post
@@ -1891,10 +1922,9 @@ by the Hono server in a build and by a Vite middleware under `bin/dev`, both
 calling the same `specPayload()`, so the two cannot disagree.
 
 **The HTTP surface is read-only, deliberately.** Writes go through `bin/spec` to
-a file, which means nothing reachable over the network can change the bike. That
-binds loopback behind the cush-auth gate today, but "the only way to write is to
-be on the box" is a property worth having unconditionally rather than one that
-depends on the front door staying shut.
+a file, which means nothing reachable over the network can change the bike.
+"The only way to write is to be on the box" is a property worth having
+unconditionally rather than one that depends on a front door staying shut.
 
 ### Precedence: per field, not per spec
 
@@ -2847,13 +2877,13 @@ tunes does it constantly and must not have to re-open it on every hot reload.
 
 That is **presentation, not access control.** Anyone who knows the key can open
 it, and that is fine: this app deliberately has no idea who is on the other end
-of the connection. It binds loopback, HAProxy fronts it, the cush-auth device
-gate decides who gets in, and no identity header reaches the process — so a real
+of the connection. There are no accounts and no identity header reaches the
+process — so a real
 admin/non-admin distinction is not something this app can make today, and
 faking one with a hidden panel would imply a guarantee that does not exist. If
 one is ever wanted — most likely when leaderboards need per-user identity — the
-right fix is cush-auth passing an identity header downstream, built for that
-purpose.
+right fix is an upstream sign-in passing an identity header down, built for
+that purpose.
 
 It matters less than it used to anyway: **live tune** below changes the bike from
 a terminal, so the sliders are not the only route to the numbers.

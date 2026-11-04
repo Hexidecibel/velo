@@ -810,8 +810,7 @@ Wave, Labyrinth, Spiral, Turnaround, Upside Down, Hangman, Pipe (internal),
 Animal Farm, Playing, Advanced Tricks, Level Editing, Level Designing Etiquette,
 Tuning, Elasto Mania, EOL, Template:Level Table.
 
-**Images looked at** (in
-`scratch/`):
+**Images looked at** (downloaded to a local scratch directory, not committed):
 `elma-lv-01-WarmUp.jpg`, `elma-lv-01-small.jpg`, `elma-lv-02-FlatTrack-small.jpg`,
 `elma-lv-Twin_Peaks.jpg`, `elma-lv-Over_and_Under.jpg`, `elma-lv-Uphill_Battle.jpg`,
 `elma-lv-06-LongHaul.jpg`, `elma-lv-Hi_Flyer.jpg`, `elma-lv-Tag.jpg`,
