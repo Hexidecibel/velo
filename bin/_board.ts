@@ -23,7 +23,17 @@ import { parseReplayFile, ticksToSeconds, verifyReplay } from '../src/sim/replay
 import { SIM_REV } from '../src/sim/rev.ts';
 import { CATEGORIES, emptyBoard, emptyPlayer, place, ranked, recordPb, revKey, sectionOf } from '../src/server/board.ts';
 import type { BoardFile, Category, Entry, PlayerFile } from '../src/server/board.ts';
-import { allLevels, levelBySimHash, OFFICIAL_SPEC, OFFICIAL_SPEC_HASH } from '../src/server/levels.ts';
+// The KNOWN set, not the offered one: this tool is about data already on disk,
+// and runs kept for a level that is no longer listed (test01, test02-bowl) must
+// still be nameable, checkable and re-simulable. See src/server/levels.ts.
+import {
+  allKnownLevels,
+  allLevels,
+  knownLevelBySimHash as levelBySimHash,
+  levelBySimHash as listedLevelBySimHash,
+  OFFICIAL_SPEC,
+  OFFICIAL_SPEC_HASH,
+} from '../src/server/levels.ts';
 import {
   boardPath,
   dataRoot,
@@ -77,7 +87,7 @@ function revArg(): number {
 
 /** A level by filename stem, by name, or by simHash — whichever the user typed. */
 function resolveLevelArg(want: string): { simHash: string; label: string } {
-  const levels = allLevels();
+  const levels = allKnownLevels();
   const byHash = levels.find((l) => l.simHash === want);
   if (byHash) return { simHash: byHash.simHash, label: `${byHash.id} — ${byHash.name}` };
   const byId = levels.find((l) => l.id === want);
@@ -111,6 +121,15 @@ function cmdList(): void {
     console.log(
       `    ${pad(l.id, 22)} ${pad(l.simHash, 18)} ${pad(String(counts[0]), 7)} ${pad(String(counts[1]), 7)} ${others}`,
     );
+  }
+  // Kept, not offered. A level that is still in levels/ but no longer listed
+  // to players keeps every time ever set on it; say so here, by name, so the
+  // boards below are not mistaken for orphans and nobody prunes them.
+  const unlisted = allKnownLevels().filter((l) => !listedLevelBySimHash(l.simHash) && readBoard(l.simHash));
+  if (unlisted.length) {
+    console.log('');
+    console.log(`    ${unlisted.length} board(s) kept for levels that are no longer listed to players:`);
+    for (const l of unlisted) console.log(`      ${l.id} (${l.simHash}) — bin/board ${l.id} shows it`);
   }
   const orphans = listBoards().filter((h) => !levelBySimHash(h));
   if (orphans.length) {

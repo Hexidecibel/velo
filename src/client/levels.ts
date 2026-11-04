@@ -39,12 +39,47 @@ const ALIASES: Record<string, string> = {
   test: 'test01',
 };
 
-const MODULES = import.meta.glob('../../levels/*.json', { eager: true, import: 'default' }) as Record<string, unknown>;
+// TWO GLOBS, BECAUSE levels/ HOLDS TWO KINDS OF FILE. The numbered levels are
+// the game. `test01` and `test02-bowl` are tooling — the fixtures the sim, the
+// unit tests and `bin/smoke` were built against — and a published build does
+// not list them. See src/shared/levelset.ts for the rule and for why none of
+// this can move a hash.
+//
+// They are left out of the BUNDLE, not merely hidden: the second glob sits
+// behind a condition Vite resolves at build time, so in a production build the
+// branch is dead and the two files are never imported. `bin/dev` (and vitest)
+// take the other branch and see everything, exactly as before; a build that
+// wants them — `bin/smoke`'s — sets VITE_DEV_LEVELS=1.
+//
+// The patterns are literals because `import.meta.glob` accepts nothing else.
+// `test*.json` here is `DEV_LEVEL_PREFIX` there, and levelset.test.ts fails if
+// the two ever disagree about a file.
+//
+// MODE, not DEV. `import.meta.env.DEV` follows NODE_ENV, and this box exports
+// NODE_ENV=production in every shell — under which `bin/dev` and vitest both
+// report DEV as false. MODE is what was actually run: `development` for the dev
+// server, `test` for vitest, `production` only for a build.
+export const DEV_LEVELS_ON: boolean =
+  import.meta.env.MODE !== 'production' || import.meta.env.VITE_DEV_LEVELS === '1';
+
+const SHIPPED_MODULES = import.meta.glob(['../../levels/*.json', '!../../levels/test*.json'], {
+  eager: true,
+  import: 'default',
+}) as Record<string, unknown>;
+
+const DEV_MODULES = DEV_LEVELS_ON
+  ? (import.meta.glob('../../levels/test*.json', { eager: true, import: 'default' }) as Record<string, unknown>)
+  : {};
+
+const MODULES: Record<string, unknown> = { ...SHIPPED_MODULES, ...DEV_MODULES };
 
 function idOf(path: string): string {
   const base = path.slice(path.lastIndexOf('/') + 1);
   return base.endsWith('.json') ? base.slice(0, -5) : base;
 }
+
+/** Ids the unconditional glob matched. Exported for levelset.test.ts only. */
+export const SHIPPED_LEVEL_IDS: readonly string[] = Object.keys(SHIPPED_MODULES).map(idOf).sort();
 
 export const LEVELS: LevelEntry[] = Object.keys(MODULES)
   .sort()

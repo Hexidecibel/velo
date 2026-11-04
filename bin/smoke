@@ -14,7 +14,15 @@
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 ensure_deps
 cd "$ROOT"
-echo "==> build"
+# THE TOOLING LEVELS, ASKED FOR BY NAME. This check drives `test01` end to end
+# — in the page and against a real server — and a published build lists neither
+# of the two test levels (src/shared/levelset.ts). So the bundle built here and
+# the server _smoke.mjs spawns are both told to include them. That makes this
+# dist/ a tooling build rather than the one that ships, which costs nothing:
+# the service serves release/, and bin/deploy rebuilds dist/ before publishing.
+export VITE_DEV_LEVELS=1
+export VELO_DEV_LEVELS=1
+echo "==> build (with the tooling levels)"
 "$ROOT/bin/build" >/dev/null
 echo "==> headless drive"
 exec "$NODE" "$ROOT/bin/_smoke.mjs" "$@"

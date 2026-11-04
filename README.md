@@ -308,6 +308,30 @@ silently vanishing from the menu is the most confusing possible feedback for
 somebody halfway through authoring it. **C** opens the fuller chooser — pictures,
 measured difficulty and best times — which is below.
 
+**Two files in `levels/` are tooling, not game, and a published build does not
+list them:** `test01` and `test02-bowl`, the fixtures the sim was built against.
+They stay on disk where they are, because the unit tests, `bin/smoke`,
+`bin/level-export` and `bin/level-drive` read them from there. The rule is one
+function, `isDevLevelId` in `src/shared/levelset.ts` (a filename starting
+`test`), applied in two places:
+
+- **The client** leaves them out of a production bundle altogether
+  (`src/client/levels.ts`, a second glob behind a build-time condition). They
+  are back under `bin/dev` and vitest, and in a build made with
+  `VITE_DEV_LEVELS=1`.
+- **The server** does not list them on `/api/levels` and will not take a time
+  on them (`unknown-level`), unless it is started with `VELO_DEV_LEVELS=1`.
+  `bin/smoke` sets both, because it rides `test01` against a real server.
+
+**Unlisting moves no hash and deletes nothing.** A level's `simHash` comes from
+its own geometry and no hash is taken over the list, so every other board is
+where it was. The times already set on those two levels stay in `data/` —
+boards, replay blobs and log records — and `bin/board` still names, checks and
+re-simulates them, via `knownLevelBySimHash`. Do **not** move the files out of
+`levels/` to "finish the job": the running server watches that directory's
+mtime and would drop them live, without a deploy, and the tests would lose
+their fixtures.
+
 
 
 - `?level=<id>` selects a level and is kept in sync with the picker, so the

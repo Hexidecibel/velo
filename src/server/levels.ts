@@ -34,6 +34,7 @@ import type { BikeSpec } from '@/sim/spec.ts';
 // alternative, a second copy of the shipped numbers under src/server, is how
 // the server and the client come to disagree about what the bike is.
 import { BOOT_PRESET } from '@/client/presets.ts';
+import { isDevLevelId } from '@/shared/levelset.ts';
 import { ROOT } from './store.ts';
 
 /** The one bike a time may be set on. Recorded on every entry regardless. */
@@ -53,10 +54,26 @@ export function levelsDir(): string {
   return process.env.VELO_LEVELS_DIR ?? join(ROOT, 'levels');
 }
 
+/**
+ * Whether the tooling-only levels (`test01`, `test02-bowl` — see
+ * src/shared/levelset.ts) are offered alongside the real ones.
+ *
+ * Off unless asked for. A published server lists the numbered set and nothing
+ * else; `bin/smoke`, which drives `test01` end to end against a real server,
+ * sets VELO_DEV_LEVELS=1 on the one it spawns. Read per call rather than once
+ * at import so a test can flip it.
+ */
+export function devLevelsEnabled(): boolean {
+  return process.env.VELO_DEV_LEVELS === '1';
+}
+
 interface Cache {
   dir: string;
   mtimeMs: number;
-  bySimHash: Map<string, LevelRef>;
+  /** Every file that parses, listed or not. */
+  known: Map<string, LevelRef>;
+  /** `known` without the tooling-only levels. */
+  listed: Map<string, LevelRef>;
 }
 
 let cache: Cache | null = null;
@@ -69,37 +86,70 @@ let cache: Cache | null = null;
  * fatal: `bin/level-check` is what reports those, and one broken file must not
  * take the leaderboard down for the other nineteen.
  */
-export function loadLevels(): Map<string, LevelRef> {
+function load(): Cache {
   const dir = levelsDir();
   const mtimeMs = existsSync(dir) ? statSync(dir).mtimeMs : 0;
-  if (cache && cache.dir === dir && cache.mtimeMs === mtimeMs) return cache.bySimHash;
+  if (cache && cache.dir === dir && cache.mtimeMs === mtimeMs) return cache;
 
-  const bySimHash = new Map<string, LevelRef>();
+  const known = new Map<string, LevelRef>();
+  const listed = new Map<string, LevelRef>();
   if (existsSync(dir)) {
     for (const f of readdirSync(dir).filter((x) => x.endsWith('.json')).sort()) {
       try {
         const raw: unknown = JSON.parse(readFileSync(join(dir, f), 'utf8'));
         const level = parseLevel(raw);
-        bySimHash.set(level.simHash, {
+        const ref: LevelRef = {
           id: f.slice(0, -5),
           name: level.name,
           simHash: level.simHash,
           level,
           appleCount: level.apples.length,
-        });
+        };
+        known.set(level.simHash, ref);
+        if (!isDevLevelId(ref.id)) listed.set(level.simHash, ref);
       } catch {
         // bin/level-check's problem, not the leaderboard's.
       }
     }
   }
-  cache = { dir, mtimeMs, bySimHash };
-  return bySimHash;
+  cache = { dir, mtimeMs, known, listed };
+  return cache;
+}
+
+/**
+ * The levels this server OFFERS: what `/api/levels` lists and what
+ * `POST /api/runs` will take a time on. The tooling-only levels are in here
+ * only when `devLevelsEnabled()`.
+ */
+export function loadLevels(): Map<string, LevelRef> {
+  const c = load();
+  return devLevelsEnabled() ? c.known : c.listed;
 }
 
 export function levelBySimHash(simHash: string): LevelRef | null {
   return loadLevels().get(simHash) ?? null;
 }
 
+const byId = (a: LevelRef, b: LevelRef): number => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
 export function allLevels(): LevelRef[] {
-  return [...loadLevels().values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return [...loadLevels().values()].sort(byId);
+}
+
+/**
+ * Every level with a file in `levels/`, offered or not.
+ *
+ * FOR STORED DATA, NEVER FOR ADMISSION. Runs were recorded on `test01` and
+ * `test02-bowl` while they were listed, and those boards, replay blobs and log
+ * records are kept. `bin/board` uses this so that `check` and
+ * `rebuild --verify` can still name and re-simulate them instead of reporting
+ * kept data as orphaned or dropping it from a rebuild. Nothing that decides
+ * whether a NEW time is accepted may call it — that is `levelBySimHash`.
+ */
+export function knownLevelBySimHash(simHash: string): LevelRef | null {
+  return load().known.get(simHash) ?? null;
+}
+
+export function allKnownLevels(): LevelRef[] {
+  return [...load().known.values()].sort(byId);
 }
