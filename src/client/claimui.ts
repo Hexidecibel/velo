@@ -10,17 +10,16 @@
 // way round:
 //
 //   1. IT IS A BEARER CREDENTIAL. Anyone who can see this code can become this
-//      player on their own device. At this scale — a device-gated handful of
-//      friends — that is a perfectly good trade, and it is also not a new
-//      exposure: the id is already on every leaderboard row the API returns, so
-//      the code gives away nothing the board does not already publish.
+//      player on their own device. For a casual leaderboard that is a perfectly
+//      good trade, and it is also not a new exposure: the id is already on every
+//      leaderboard row the API returns, so the code gives away nothing the board
+//      does not already publish.
 //   2. IT IS NOT A LOGIN. Re-simulation proves a time is real; nothing proves
 //      whose it is. That note has been in the README since the board shipped
 //      and this extends it rather than softening it.
-//   3. THE PHONE MUST ALREADY BE PAST THE DEVICE GATE. cush-auth decides who
-//      reaches this app at all, and an un-enrolled phone bounces to
-//      auth.cush.rocks before a single byte of the game loads — which looks
-//      exactly like a broken QR code unless somebody says so first.
+//   3. NOTHING HAPPENS UNTIL THE OTHER DEVICE SAYS YES. Opening the link puts
+//      that device in 'adopt' mode, which asks first; the switch is one
+//      button, and "go back to the previous id" undoes it.
 import { CLAIM_PARAM, claimCode, claimUrl, parseClaimCode } from '@/shared/claim.ts';
 import { qrEncode, QrError } from './qr.ts';
 
@@ -169,8 +168,9 @@ export function createClaimUi(root: HTMLElement, cb: ClaimUiCallbacks): ClaimUi 
       el(
         'div',
         'cl-note',
-        'The other device has to be enrolled with the door first. An un-enrolled phone bounces to the sign-in '
-          + 'page before the game loads at all, which looks exactly like a broken code and is not one.',
+        'Scan the code or open the link on the other device and it asks there whether to become this '
+          + 'player — nothing changes until you say yes. There is no sign-in and no account: the id is the '
+          + 'whole of it, and your name and bike come along with it.',
       ),
     );
 
