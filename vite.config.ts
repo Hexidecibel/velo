@@ -106,6 +106,12 @@ export default defineConfig({
   },
   build: {
     target: 'es2022',
-    sourcemap: true,
+    // NO SOURCE MAP IN A PUBLISHED BUILD. `true` wrote a 2 MB .map beside the
+    // bundle and bin/deploy published it with everything else, so the whole
+    // commented source tree was one request away from anybody who opened
+    // devtools on the live game. Nothing in
+    // bin/ reads it. To debug a production bundle locally, build once with
+    // VELO_SOURCEMAP=1 — into dist/, which is not what the service serves.
+    sourcemap: process.env.VELO_SOURCEMAP === '1',
   },
 })

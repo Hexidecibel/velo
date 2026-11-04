@@ -222,10 +222,20 @@ export function createEditor(o: EditorOpts): Editor {
   });
   o.panelRoot.classList.add('hidden');
 
-  void fetchAuthoringStatus().then((s) => {
-    status = s;
-    if (active) sync();
-  });
+  // ASKED ONLY WHERE THE ANSWER CAN BE YES. The authoring endpoint is a
+  // dev-server middleware and exists nowhere else (vite.config.ts), so in a
+  // published build this probe was a guaranteed 404 on every page load — which
+  // the browser prints in the console as a failed request, in red, to anybody
+  // who opens devtools on the live game. `status` already starts as OFFLINE,
+  // which is the truth about a build, so there is nothing to ask. (MODE rather
+  // than DEV: DEV follows NODE_ENV, which this box sets to production in every
+  // shell, and bin/edit must keep its save path regardless.)
+  if (import.meta.env.MODE !== 'production') {
+    void fetchAuthoringStatus().then((s) => {
+      status = s;
+      if (active) sync();
+    });
+  }
 
   // --- state ----------------------------------------------------------------
 

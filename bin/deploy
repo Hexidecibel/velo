@@ -45,6 +45,12 @@ echo "==> Installing dependencies (--include=dev)"
 "$NPM" install --include=dev --no-audit --no-fund
 
 echo "==> Building client"
+# A PUBLISHED BUILD IS NEVER A TOOLING BUILD. Both of these are opt-ins that a
+# shell can be left carrying — bin/smoke exports the first for its own build —
+# and either one in the environment here would publish the two test levels, or
+# a source map, to everybody. Cleared rather than checked: there is no deploy
+# for which the answer is yes.
+unset VITE_DEV_LEVELS VELO_SOURCEMAP
 # bin/build typechecks with `tsc -b` first and then bundles. The typecheck is a
 # separate serial step because Vite transpiles without checking types, so a
 # bundler-only build ships code that does not compile.

@@ -27,6 +27,7 @@
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { SPEC_FILE, specPayload } from './specfile.ts';
 import { createApi } from './api.ts';
 import { checkDataWritable } from './store.ts';
@@ -87,16 +88,40 @@ const STATIC_ROOT = process.env.VELO_STATIC_ROOT || './release';
 // bundle. HAProxy does NOT compress this backend, so if the siblings are
 // missing the bundle simply goes out uncompressed; nothing breaks, it is just
 // bigger.
-app.use('/*', serveStatic({ root: STATIC_ROOT, precompressed: true }));
+//
+// CACHING, in two lines, because the build already made it safe. Everything
+// under /assets/ has a content hash in its name (Vite), so a given URL can
+// never mean different bytes and is cached for good; a new deploy is a new
+// filename. Everything else — index.html above all, which is what POINTS at
+// those filenames — must be revalidated every time, or a returning player
+// keeps booting last month's bundle. Before this neither had a cache-control
+// header at all and browsers guessed.
+const IMMUTABLE = 'public, max-age=31536000, immutable';
+const REVALIDATE = 'no-cache';
+const cachePolicy = (_path: string, c: Context): void => {
+  c.header('cache-control', c.req.path.startsWith('/assets/') ? IMMUTABLE : REVALIDATE);
+};
+
+app.use('/*', serveStatic({ root: STATIC_ROOT, precompressed: true, onFound: cachePolicy }));
 
 // SPA fallback. Anything that is not an /api route and did not match a real
 // file gets index.html, so a deep link or a refresh lands in the game rather
 // than on a 404. The /api guard matters even with no API yet: without it, a
 // typo'd future endpoint would answer 200 with a page of HTML, and the client
 // would report "unexpected token '<'" instead of "404".
+//
+// /assets/ gets the same guard, for the same reason and one more. A bundle
+// filename that is not on disk is a 404, not a page: answering it with HTML is
+// how a stale tab fails with "unexpected token '<'" instead of a missing file,
+// and how a request for a source map that is no longer published
+// (vite.config.ts) would come back 200.
 app.get('*', (c, next) => {
-  if (c.req.path.startsWith('/api')) return next();
-  return serveStatic({ root: STATIC_ROOT, path: 'index.html' })(c, next);
+  if (c.req.path.startsWith('/api') || c.req.path.startsWith('/assets/')) return next();
+  return serveStatic({
+    root: STATIC_ROOT,
+    path: 'index.html',
+    onFound: (_p, ctx) => ctx.header('cache-control', REVALIDATE),
+  })(c, next);
 });
 
 // PORT from the environment with a literal fallback, never a bare literal in
