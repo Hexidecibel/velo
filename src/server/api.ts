@@ -170,7 +170,7 @@ export function createApi(): Hono {
       // and forget to say what it is a board of.
       note:
         rev === SIM_REV
-          ? `live board, sim rev ${SIM_REV}. Through milestone 1 the rev bumps freely and the live board resets; ` +
+          ? `live board, sim rev ${SIM_REV}. A board belongs to one sim rev; if the rev changes, ` +
             'old times are kept and labelled on their own rev, never deleted.'
           : `archived board for sim rev ${rev}. This build is rev ${SIM_REV}, so these times cannot be compared ` +
             'with the live board and no ghost from here can be shown.',

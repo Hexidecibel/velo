@@ -302,7 +302,7 @@ export function createChooserUi(root: HTMLElement, cb: ChooserUiCallbacks): Choo
         'ch-foot',
         'Difficulty is measured by the solver — how tight the winning line is, how much head clearance it '
           + 'leaves, and how hard it was to find — not by apple count or level size. Par is the fastest line '
-          + 'anything has found. Best times are local to this browser and to this sim rev; everybody else’s '
+          + 'anything has found. Your best times are saved in this browser; everybody else’s '
           + 'are under times.',
       ),
     );
@@ -461,10 +461,10 @@ export function createChooserUi(root: HTMLElement, cb: ChooserUiCallbacks): Choo
       el(
         'div',
         'ch-foot',
-        'Times are verified by re-simulation on the server; names are not authenticated. The board is scoped '
-          + 'to this sim rev — through milestone 1 the rev bumps freely and the live board resets, and old '
-          + 'times are kept and labelled rather than deleted. Par comes from the solver and is a property of '
-          + 'the level, not of anybody’s run.',
+        'Every time here was verified by re-running the ride on the server; names are labels people chose '
+          + 'for themselves, not accounts. A board belongs to one version of the physics — if the physics '
+          + 'ever changes, old times are kept and labelled rather than deleted. Par comes from the solver '
+          + 'and is a property of the level, not of anybody’s run.',
       ),
     );
   }

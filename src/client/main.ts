@@ -1449,7 +1449,7 @@ function loadReplay(file: ReplayFile, name: string): void {
     replayNote =
       `CANNOT PLAY ${name}: recorded under SIM_REV ${file.simRev}, this build is rev ${SIM_REV}. ` +
       'The physics changed between them, so replaying it here would show you a different run. ' +
-      'Through milestone 1 the rev bumps freely and replays do not survive it.';
+      'A replay only plays on the physics revision it was recorded under.';
     return;
   }
 
@@ -2138,7 +2138,7 @@ function updateHud(): void {
     // prefixes and is not.
     replayNote ? `<span class="${replayNote.startsWith('REPLAY DESYNC') || replayNote.startsWith('CANNOT PLAY') ? 'bad' : 'warn'}">${esc(replayNote)}</span>` : '',
     '',
-    `<span class="k">rev ${SIM_REV} bumps freely during M1 — times reset on every physics change.</span>`,
+    `<span class="k">physics rev ${SIM_REV} — times and replays belong to the rev they were set on.</span>`,
   ];
   const html = lines.join('\n');
   if (html !== hudCache) {

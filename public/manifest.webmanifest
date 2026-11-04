@@ -1,7 +1,7 @@
 {
   "name": "Velo",
   "short_name": "Velo",
-  "description": "Twenty hand-made levels, one bike, and a clock that does not lie.",
+  "description": "A 2D motorbike physics game in the spirit of Elasto Mania: ride through polygon caves, collect every apple and reach the flower.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

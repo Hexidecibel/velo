@@ -92,7 +92,7 @@ export function createLevelBar(
       const done = levels.filter((l) => l.level && bests[l.level.simHash] !== undefined).length;
       note.textContent = cur?.error
         ? `does not load: ${cur.error}`
-        : `${done}/${levels.length} completed (local, this browser, rev-scoped)`;
+        : `${done}/${levels.length} completed — saved in this browser`;
       note.className = cur?.error ? 'lb-note bad' : 'lb-note';
     },
   };

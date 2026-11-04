@@ -295,8 +295,8 @@ export function createBoardUi(root: HTMLElement, cb: BoardUiCallbacks): BoardUi 
       el(
         'div',
         'bd-foot',
-        `rev-scoped board — through milestone 1 the sim rev bumps freely and the live board resets. ` +
-          'Times are verified by re-simulation on the server; names are not authenticated.',
+        'Every time here was verified by re-running the ride on the server. ' +
+          'Names are labels people chose for themselves, not accounts.',
       ),
     );
   }

@@ -275,7 +275,7 @@ export const PRESETS: Preset[] = [
   },
   {
     id: 'm1',
-    label: 'M1 candidate (stiffer, earlier)',
+    label: 'Stiffer, earlier (first candidate)',
     spec: m1Candidate(),
     note: 'The reasoned candidate the soft default replaced. Stiffer and heavier-feeling; kept for comparison.',
   },
