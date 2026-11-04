@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Re-simulate a replay and report its stunts (flips, airtime, wheelies), or dump
+# a window of sampled bike poses plus the level terrain as JSON. Used by the
+# GitHub profile hero banner, which draws a real ride. See bin/_hero-poses.ts.
+#
+#   bin/hero-poses <replay.json>
+#   bin/hero-poses <replay.json> --from 3.2 --to 8.4 --fps 30 --out poses.json
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+ensure_deps
+cd "$ROOT"
+exec "$ROOT/node_modules/.bin/tsx" "$ROOT/bin/_hero-poses.ts" "$@"
