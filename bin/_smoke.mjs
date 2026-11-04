@@ -122,6 +122,14 @@ try {
   });
   await cdp.send('Runtime.enable', {});
   await cdp.send('Page.enable', {});
+  // THE DEBUG READOUT IS OFF BY DEFAULT IN A BUILD, and half of what follows
+  // reads it — "replay verified", ARMED, the ghost line, the escaping check on
+  // somebody else's name. So every document this session loads starts with the
+  // readout switched on, the same way a developer would have left it: through
+  // the remembered flag, before any of the page's own script runs.
+  await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: "try { if (localStorage.getItem('velo.flag.hud') === null) localStorage.setItem('velo.flag.hud', '1'); } catch (e) {}",
+  });
   // Pinned to test01 with an explicit ?level=, not left to the default. The
   // default is "the first level in levels/ that loads", which MOVES whenever
   // somebody adds a level — and a smoke check whose expectations depend on

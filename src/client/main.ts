@@ -412,7 +412,16 @@ let hudCache = '';
 // "starting to feel like the hud overlay should be toggleable too, almost ready
 // to just play it straight up." What survives being off is decided by
 // hudmode.ts — warnings stay, telemetry goes.
-let hudVisible = loadFlag('hud', true);
+//
+// ON UNDER bin/dev, OFF IN A BUILD — the split live tune already makes.
+// It is a developer's readout: sim hashes, contact counts, frame times. The
+// first thing a stranger saw on the public game was eleven lines of that over
+// the top-left of the level, and everything a PLAYER needs from it (level name,
+// clock, apples) is drawn in the game regardless. ` still toggles it, the
+// choice is still remembered, and anyone who had already toggled it keeps what
+// they chose — only the default for a browser that never has moved. (MODE, not
+// DEV: DEV follows NODE_ENV, which this box exports as production everywhere.)
+let hudVisible = loadFlag('hud', import.meta.env.MODE !== 'production');
 // The art. `enabled` is the A/B switch — V, or the slider on the panel — and it
 // is deliberately kept rather than deleted once the art lands: readability is
 // the acceptance criterion for the whole look, and readability is judged by

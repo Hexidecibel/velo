@@ -469,6 +469,12 @@ From the user: *"starting to feel like the hud overlay should be toggleable too,
 almost ready to just play it straight up."* **`` ` ``** does it, and the choice
 is remembered.
 
+**It starts OFF in a published build and ON under `bin/dev`.** It is a
+developer's instrument, and it was the first thing a stranger saw on the public
+game. Only the default moved: a browser that has ever toggled it keeps what it
+chose. `bin/smoke` reads the readout, so it switches it on through the same
+remembered flag before the page boots.
+
 The interesting part is the line between what is a readout and what is the game:
 
 - **The in-canvas HUD stays.** The level card, the clock and the apple counter
